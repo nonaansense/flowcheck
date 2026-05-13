@@ -98,11 +98,13 @@ def check_multi_strike_pattern(ticker: str, analysis_id: int) -> dict:
 
 
 def is_duplicate(ticker: str, expiry: str, strike: str) -> bool:
-    """True if same ticker+expiry+strike seen in last 60 min."""
+    """True if same ticker+expiry+strike seen in last 5 min.
+    5 min window prevents IFTTT double-firing but allows retesting.
+    """
     import time
     key  = f"{ticker}_{expiry}_{strike}"
     now  = time.time()
-    prev = [t for t in seen_tickers.get(key, []) if now - t < 3600]
+    prev = [t for t in seen_tickers.get(key, []) if now - t < 300]  # 5 min
     seen_tickers[key] = prev + [now]
     return len(prev) > 0
 
@@ -111,7 +113,11 @@ def is_duplicate(ticker: str, expiry: str, strike: str) -> bool:
 # WEBHOOK
 # ─────────────────────────────────────────
 @app.post("/webhook")
-async def webhook(request: Request):
+async def webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Returns immediately to avoid timeout.
+    All processing happens in background task.
+    """
     try:
         body       = await request.json()
         tweet_text = body.get("tweet", "") or body.get("text", "") or str(body)
@@ -122,22 +128,40 @@ async def webhook(request: Request):
             print("[WEBHOOK] No trade info — skipping")
             return {"status": "skipped", "reason": "no trade info"}
 
-        # Duplicate check
+        # Duplicate check — do this synchronously before returning
         if is_duplicate(trade.get("ticker",""),
                         trade.get("expiry",""),
                         trade.get("strike","")):
             print(f"[WEBHOOK] Duplicate — skipping {trade.get('ticker')}")
             return {"status": "skipped", "reason": "duplicate"}
 
-        # Fetch macro warnings (reads from cache populated at 7:30 AM)
-        macro = get_today_warnings()
+        # Return immediately — process everything in background
+        background_tasks.add_task(process_trade, tweet_text, trade)
+        print(f"[WEBHOOK] Queued background processing for {trade.get('ticker')}")
+        return {"status": "queued", "ticker": trade.get("ticker"), "message": "Processing in background — SMS incoming"}
 
-        # Fetch live trade data
-        data = fetch_trade_data(trade, flow_premium=trade.get("option_price"))
+    except Exception as e:
+        print(f"[WEBHOOK ERROR] {e}")
+        return {"status": "error", "message": str(e)}
+
+
+async def process_trade(tweet_text: str, trade: dict):
+    """Background task — does all the heavy lifting after webhook returns."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+
+    try:
+        print(f"[PROCESS] Starting analysis for {trade.get('ticker')}...")
+
+        # Run blocking IO in thread pool so we don't block event loop
+        macro = await loop.run_in_executor(None, get_today_warnings)
+
+        data = await loop.run_in_executor(
+            None, fetch_trade_data, trade, trade.get("option_price")
+        )
         data["macro"] = macro
 
-        # Score with Claude
-        result = score_trade(trade, data)
+        result = await loop.run_in_executor(None, score_trade, trade, data)
 
         analysis_id = len(analyses)
         pattern     = check_multi_strike_pattern(trade.get("ticker",""), analysis_id)
@@ -157,14 +181,17 @@ async def webhook(request: Request):
         analyses.append(entry)
 
         sms_text = build_alert_sms(trade, result, data, macro, pattern, analysis_id)
-        send_sms(sms_text)
+        await loop.run_in_executor(None, send_sms, sms_text)
 
-        print(f"[WEBHOOK] Done: {trade.get('ticker')} {result.get('final_score')}/7 {result.get('verdict')}")
-        return {"status": "ok", "score": result.get("final_score"), "verdict": result.get("verdict")}
+        print(f"[PROCESS] Done: {trade.get('ticker')} {result.get('final_score')}/7 {result.get('verdict')} — SMS sent")
 
     except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}")
-        return {"status": "error", "message": str(e)}
+        print(f"[PROCESS ERROR] {trade.get('ticker')}: {e}")
+        # Try to send error SMS so you know something failed
+        try:
+            send_sms(f"⚠️ FlowCheck error for {trade.get('ticker','?')}\n{str(e)[:100]}")
+        except:
+            pass
 
 
 # ─────────────────────────────────────────
