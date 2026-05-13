@@ -289,7 +289,11 @@ def build_premarket_sms(analyses: list) -> str:
     base_url = os.getenv("BASE_URL", "https://your-app.railway.app")
     lines.append(f"\nHistory: {base_url}/history")
 
-    return "\n".join(str(l) for l in lines)
+    sms = "\n".join(str(l) for l in lines)
+    if len(sms) > 1550:
+        sms = sms[:1500] + f"...\n{os.getenv('BASE_URL','')}/history"
+    print(f"[SMS] Pre-market length: {len(sms)} chars")
+    return sms
 
 
 # ─────────────────────────────────────────
@@ -423,7 +427,11 @@ def build_eod_sms(analyses: list) -> str:
     base_url = os.getenv("BASE_URL", "https://your-app.railway.app")
     lines.append(f"Full history: {base_url}/history")
 
-    return "\n".join(str(l) for l in lines)
+    sms = "\n".join(str(l) for l in lines)
+    if len(sms) > 1550:
+        sms = sms[:1500] + f"...\n{os.getenv('BASE_URL','')}/history"
+    print(f"[SMS] Pre-market length: {len(sms)} chars")
+    return sms
 
 
 # ─────────────────────────────────────────
