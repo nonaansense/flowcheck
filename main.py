@@ -198,73 +198,79 @@ async def process_trade(tweet_text: str, trade: dict):
 # ALERT SMS BUILDER
 # ─────────────────────────────────────────
 def build_alert_sms(trade, result, data, macro, pattern, analysis_id):
+    """
+    Concise SMS — keeps well under Twilio 1600 char limit.
+    Full details available at the link.
+    """
     verdict_emoji = {"TRADE": "✅", "WATCH": "👀", "SKIP": "❌"}.get(result.get("verdict",""), "⚡")
-    market_emoji  = {
-        "FAVORABLE": "🟢", "CAUTION": "🟡",
-        "UNFAVORABLE": "🔴", "AVOID": "🚨"
-    }.get(result.get("market_verdict",""), "⚪")
-
     ticker      = trade.get("ticker", "?")
     strike      = trade.get("strike", "?")
     otype       = trade.get("option_type", "call")[0].upper()
     expiry      = trade.get("expiry", "?")
-    raw_score   = result.get("raw_score", "?")
     final_score = result.get("final_score", "?")
+    raw_score   = result.get("raw_score", "?")
     adj         = result.get("market_adjustment", 0)
     verdict     = result.get("verdict", "?")
-    summary     = result.get("one_liner", "")
-    top_imp     = (result.get("improvements") or [""])[0]
+    one_liner   = result.get("one_liner", "")[:80]  # cap at 80 chars
+    top_imp     = (result.get("improvements") or [""])[0][:80]  # cap at 80 chars
     mkt         = data.get("market", {})
     sector      = data.get("sector", {})
-    tod         = data.get("time_of_day", {})
-    iv_note     = data.get("implied_vs_historical", "")
-    iv_emoji    = data.get("implied_vs_historical_emoji", "")
     chase       = data.get("chasing_flag")
     chase_move  = data.get("price_move_since_flow")
-    adj_str     = f" ({adj:+.1f} mkt)" if adj and adj != 0 else ""
+    adj_str     = f"({adj:+.0f}mkt)" if adj and adj != 0 else ""
+    iv_emoji    = data.get("implied_vs_historical_emoji", "")
+    iv_short    = ""
+    if data.get("implied_move_pct") and data.get("avg_earnings_move"):
+        iv_short = f"{iv_emoji} IV {data['implied_move_pct']}% vs avg {data['avg_earnings_move']}%"
 
     base_url = os.getenv("BASE_URL", "https://your-app.railway.app")
 
     lines = [
         f"{verdict_emoji} {ticker} {strike}{otype} {expiry}",
-        f"Score: {raw_score}/7{adj_str} → Final: {final_score}/7 {verdict}",
-        "",
-        f"{market_emoji} VIX {mkt.get('vix','?')} {mkt.get('vix_label','')} · "
-        f"SPY {mkt.get('spy_trend','?')} · "
-        f"{sector.get('etf','')} {sector.get('sector_trend','?')}",
+        f"{raw_score}/7 {adj_str}→ {final_score}/7 {verdict}",
+        f"VIX {mkt.get('vix','?')} {mkt.get('vix_label','')} · SPY {mkt.get('spy_trend','?')}",
     ]
 
-    # Time of day warning
-    if tod.get("quality") == "LOW":
-        lines.append(f"⚠️ {tod.get('note','')}")
+    # Earnings timing — one line
+    earn = data.get("expiry_timing_label","")
+    if earn:
+        lines.append(f"{data.get('expiry_timing_emoji','')} {earn}")
 
-    # Implied vs historical
-    if iv_note:
-        lines.append(f"{iv_emoji} {iv_note}")
+    # IV cheapness
+    if iv_short:
+        lines.append(iv_short)
 
-    # Chasing risk
+    # Chasing risk — only if notable
     if chase == "HIGH" and chase_move:
-        lines.append(f"🚨 Chasing risk: already +{chase_move}% from flow entry")
-    elif chase == "MODERATE" and chase_move:
-        lines.append(f"⚠️ Moved +{chase_move}% since flow — entering late")
+        lines.append(f"🚨 Already +{chase_move}% from flow — chasing")
 
-    # Macro warning
+    # Macro — only if HIGH or EXTREME
     if macro.get("avoid_buying"):
-        lines.append(f"\n🚨 MACRO: {macro.get('advisory','')}")
+        lines.append(f"🚨 FOMC — avoid all day")
     elif macro.get("max_impact") in ["HIGH", "EXTREME"]:
-        avoid = macro.get("avoid_until", "10:00 AM ET")
-        lines.append(f"\n{macro.get('advisory_emoji','')} Do not enter before {avoid}")
-        for w in (macro.get("events_summary") or [])[:1]:
-            lines.append(f"  {w}")
+        avoid = macro.get("avoid_until", "10 AM")
+        lines.append(f"🔴 Macro: wait until {avoid}")
 
-    lines += ["", summary, "", top_imp]
-
+    # Pattern
     if pattern.get("detected"):
-        lines += ["", pattern["message"]]
+        lines.append(f"⚠️ {ticker} alerted {pattern.get('count','?')}x today")
 
-    lines += ["", f"Details: {base_url}/analysis/{analysis_id}"]
+    # One liner + top improvement
+    if one_liner:
+        lines.append(f"→ {one_liner}")
+    if top_imp:
+        lines.append(top_imp)
 
-    return "\n".join(str(l) for l in lines if l is not None)
+    lines.append(f"{base_url}/analysis/{analysis_id}")
+
+    sms = "\n".join(str(l) for l in lines if l)
+
+    # Safety truncation — never exceed 1550 chars
+    if len(sms) > 1550:
+        sms = sms[:1500] + f"...\n{base_url}/analysis/{analysis_id}"
+
+    print(f"[SMS] Message length: {len(sms)} chars")
+    return sms
 
 
 # ─────────────────────────────────────────
@@ -643,6 +649,20 @@ body{{background:#080810;color:#fff;font-family:-apple-system,sans-serif;
 @app.get("/health")
 async def health():
     return {"status": "ok", "analyses": len(analyses)}
+
+
+@app.get("/check-env")
+async def check_env():
+    """Temporary diagnostic — confirms env vars are loaded. Remove after testing."""
+    import os
+    return {
+        "ANTHROPIC_API_KEY":  "SET ✅" if os.environ.get("ANTHROPIC_API_KEY") else "MISSING ❌",
+        "TWILIO_ACCOUNT_SID": "SET ✅" if os.environ.get("TWILIO_ACCOUNT_SID") else "MISSING ❌",
+        "TWILIO_AUTH_TOKEN":  "SET ✅" if os.environ.get("TWILIO_AUTH_TOKEN") else "MISSING ❌",
+        "TWILIO_FROM_NUMBER": "SET ✅" if os.environ.get("TWILIO_FROM_NUMBER") else "MISSING ❌",
+        "TWILIO_TO_NUMBER":   "SET ✅" if os.environ.get("TWILIO_TO_NUMBER") else "MISSING ❌",
+        "BASE_URL":           os.environ.get("BASE_URL", "MISSING ❌"),
+    }
 
 @app.get("/")
 async def root():
