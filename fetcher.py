@@ -51,43 +51,80 @@ def get_crumb():
     return None
 
 
+def get_crumb_and_cookie():
+    """Get Yahoo Finance crumb and session cookie required for API calls."""
+    try:
+        # First hit the main page to get cookies
+        r1 = _session.get("https://finance.yahoo.com", timeout=10)
+        # Then get crumb
+        r2 = _session.get(
+            "https://query1.finance.yahoo.com/v1/test/getcrumb",
+            timeout=10
+        )
+        if r2.status_code == 200:
+            return r2.text.strip()
+    except Exception as e:
+        print(f"[FETCHER] Crumb error: {e}")
+    return None
+
+
 def fetch_quote(ticker: str) -> dict:
-    """Fetch current price and basic info for a ticker."""
+    """Fetch current price — tries multiple Yahoo endpoints with fallbacks."""
     now = time.time()
     cached = _price_cache.get(f"quote_{ticker}")
     if cached and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
 
-    for attempt in range(3):
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-            params = {"interval": "1d", "range": "1d"}
-            r = _session.get(url, params=params, timeout=15)
+    # Try query1 and query2 alternately
+    for base in ["query1", "query2"]:
+        for attempt in range(2):
+            try:
+                url    = f"https://{base}.finance.yahoo.com/v8/finance/chart/{ticker}"
+                params = {"interval": "1d", "range": "2d", "includePrePost": "false"}
+                r      = _session.get(url, params=params, timeout=15)
 
-            if r.status_code == 429:
-                wait = (attempt + 1) * 5
-                print(f"[FETCHER] Rate limited on {ticker} — waiting {wait}s")
-                time.sleep(wait)
-                continue
+                if r.status_code == 429:
+                    wait = (attempt + 1) * 4
+                    print(f"[FETCHER] Rate limited {ticker} on {base} — waiting {wait}s")
+                    time.sleep(wait)
+                    continue
 
-            if r.status_code == 200:
-                data = r.json()
-                result = data.get("chart", {}).get("result", [])
-                if result:
-                    meta  = result[0].get("meta", {})
-                    price = meta.get("regularMarketPrice") or meta.get("previousClose")
-                    quote = {
-                        "price":    round(float(price), 2) if price else None,
-                        "currency": meta.get("currency", "USD"),
-                        "symbol":   meta.get("symbol", ticker),
-                    }
+                if r.status_code == 200:
+                    data   = r.json()
+                    result = data.get("chart", {}).get("result", [])
+                    if result:
+                        meta  = result[0].get("meta", {})
+                        price = (meta.get("regularMarketPrice") or
+                                 meta.get("chartPreviousClose") or
+                                 meta.get("previousClose"))
+                        if price:
+                            quote = {"price": round(float(price), 2), "symbol": ticker}
+                            _price_cache[f"quote_{ticker}"] = (quote, now)
+                            print(f"[FETCHER] {ticker} price: ${quote['price']} via {base}")
+                            return quote
+                break
+            except Exception as e:
+                print(f"[FETCHER] Quote error {ticker} via {base}: {e}")
+                time.sleep(1)
+
+    # Last resort: try the v7 quote endpoint
+    try:
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote"
+        r   = _session.get(url, params={"symbols": ticker}, timeout=15)
+        if r.status_code == 200:
+            data  = r.json()
+            quote_data = data.get("quoteResponse", {}).get("result", [])
+            if quote_data:
+                price = quote_data[0].get("regularMarketPrice")
+                if price:
+                    quote = {"price": round(float(price), 2), "symbol": ticker}
                     _price_cache[f"quote_{ticker}"] = (quote, now)
+                    print(f"[FETCHER] {ticker} price: ${quote['price']} via v7 quote")
                     return quote
-            break
-        except Exception as e:
-            print(f"[FETCHER] Quote error for {ticker}: {e}")
-            time.sleep(2)
+    except Exception as e:
+        print(f"[FETCHER] v7 quote error {ticker}: {e}")
 
+    print(f"[FETCHER] Could not get price for {ticker}")
     return {"price": None}
 
 
