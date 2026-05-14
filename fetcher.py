@@ -1,24 +1,13 @@
 """
-Fetcher — Uses direct Yahoo Finance API calls with browser headers.
-Avoids yfinance library which gets blocked on Railway shared IPs.
+Fetcher — Uses yfinance with cookie/crumb workaround for Railway hosting.
+Falls back gracefully when data unavailable.
 """
 import time, re, requests, json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-# Persistent session with browser headers
-_session = requests.Session()
-_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Origin": "https://finance.yahoo.com",
-    "Referer": "https://finance.yahoo.com/",
-})
-
 _price_cache = {}
-_CACHE_TTL   = 120  # 2 min cache
+_CACHE_TTL   = 120
 
 SECTOR_ETF_MAP = {
     "AAPL":"XLK","MSFT":"XLK","NVDA":"XLK","AMD":"XLK",
@@ -27,178 +16,206 @@ SECTOR_ETF_MAP = {
     "JPM":"XLF","BAC":"XLF","GS":"XLF","MS":"XLF",
     "XOM":"XLE","CVX":"XLE","BE":"XLE",
     "ALB":"XLB","FCX":"XLB","NEM":"XLB",
-    "JNJ":"XLV","PFE":"XLV","INO":"XLV",
+    "JNJ":"XLV","PFE":"XLV","INO":"XLV","VLN":"XLV","ENPH":"XLK",
     "AMZN":"XLY","TSLA":"XLY","META":"XLC",
     "ASTS":"XLK","RKLB":"XLI","SPCE":"XLI",
     "NOK":"XLC","BAND":"XLC","GLD":"XLB",
+    "DRAM":"XLK","XYZ":"SPY",
 }
 
+# ─────────────────────────────────────────
+# SESSION WITH ROTATING HEADERS
+# ─────────────────────────────────────────
+_session = requests.Session()
+_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://finance.yahoo.com/",
+    "Origin": "https://finance.yahoo.com",
+})
 
-# ─────────────────────────────────────────
-# CORE DATA FETCHERS
-# ─────────────────────────────────────────
+_crumb = None
+
 def get_crumb():
-    """Get Yahoo Finance crumb for authenticated requests."""
+    """Get Yahoo Finance crumb — required for authenticated API calls."""
+    global _crumb
+    if _crumb:
+        return _crumb
     try:
+        # Step 1: Hit consent page to get cookies
+        _session.get("https://finance.yahoo.com/", timeout=10)
+        time.sleep(0.5)
+        # Step 2: Get crumb
         r = _session.get(
             "https://query1.finance.yahoo.com/v1/test/getcrumb",
             timeout=10
         )
-        if r.status_code == 200 and r.text:
-            return r.text.strip()
-    except:
-        pass
-    return None
-
-
-def get_crumb_and_cookie():
-    """Get Yahoo Finance crumb and session cookie required for API calls."""
-    try:
-        # First hit the main page to get cookies
-        r1 = _session.get("https://finance.yahoo.com", timeout=10)
-        # Then get crumb
-        r2 = _session.get(
-            "https://query1.finance.yahoo.com/v1/test/getcrumb",
-            timeout=10
-        )
-        if r2.status_code == 200:
-            return r2.text.strip()
+        if r.status_code == 200 and r.text and r.text != "null":
+            _crumb = r.text.strip()
+            print(f"[FETCHER] Got crumb: {_crumb[:10]}...")
+            return _crumb
     except Exception as e:
         print(f"[FETCHER] Crumb error: {e}")
     return None
 
 
-def fetch_quote(ticker: str) -> dict:
-    """Fetch current price — tries multiple Yahoo endpoints with fallbacks."""
+def yahoo_get(url, params=None, retries=3):
+    """Make Yahoo Finance API call with crumb and retry logic."""
+    crumb = get_crumb()
+    if crumb and params is not None:
+        params["crumb"] = crumb
+    elif crumb:
+        params = {"crumb": crumb}
+
+    for attempt in range(retries):
+        try:
+            r = _session.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                return r
+            elif r.status_code == 401:
+                # Crumb expired — refresh
+                global _crumb
+                _crumb = None
+                crumb = get_crumb()
+                if crumb and params:
+                    params["crumb"] = crumb
+                time.sleep(1)
+            elif r.status_code == 429:
+                wait = (attempt + 1) * 5
+                print(f"[FETCHER] Rate limited — waiting {wait}s")
+                time.sleep(wait)
+            else:
+                print(f"[FETCHER] HTTP {r.status_code} for {url[:60]}")
+                break
+        except Exception as e:
+            print(f"[FETCHER] Request error: {e}")
+            time.sleep(2)
+    return None
+
+
+def fetch_price(ticker: str) -> float | None:
+    """Get current stock price with cache."""
     now = time.time()
-    cached = _price_cache.get(f"quote_{ticker}")
+    cached = _price_cache.get(ticker)
     if cached and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
 
-    # Try query1 and query2 alternately
-    for base in ["query1", "query2"]:
-        for attempt in range(2):
-            try:
-                url    = f"https://{base}.finance.yahoo.com/v8/finance/chart/{ticker}"
-                params = {"interval": "1d", "range": "2d", "includePrePost": "false"}
-                r      = _session.get(url, params=params, timeout=15)
-
-                if r.status_code == 429:
-                    wait = (attempt + 1) * 4
-                    print(f"[FETCHER] Rate limited {ticker} on {base} — waiting {wait}s")
-                    time.sleep(wait)
-                    continue
-
-                if r.status_code == 200:
-                    data   = r.json()
-                    result = data.get("chart", {}).get("result", [])
-                    if result:
-                        meta  = result[0].get("meta", {})
-                        price = (meta.get("regularMarketPrice") or
-                                 meta.get("chartPreviousClose") or
-                                 meta.get("previousClose"))
-                        if price:
-                            quote = {"price": round(float(price), 2), "symbol": ticker}
-                            _price_cache[f"quote_{ticker}"] = (quote, now)
-                            print(f"[FETCHER] {ticker} price: ${quote['price']} via {base}")
-                            return quote
-                break
-            except Exception as e:
-                print(f"[FETCHER] Quote error {ticker} via {base}: {e}")
-                time.sleep(1)
-
-    # Last resort: try the v7 quote endpoint
-    try:
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote"
-        r   = _session.get(url, params={"symbols": ticker}, timeout=15)
-        if r.status_code == 200:
+    # Try chart endpoint
+    r = yahoo_get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+        params={"interval": "1d", "range": "2d"}
+    )
+    if r:
+        try:
             data  = r.json()
-            quote_data = data.get("quoteResponse", {}).get("result", [])
-            if quote_data:
-                price = quote_data[0].get("regularMarketPrice")
+            meta  = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
+            price = meta.get("regularMarketPrice") or meta.get("previousClose")
+            if price:
+                price = round(float(price), 2)
+                _price_cache[ticker] = (price, now)
+                print(f"[FETCHER] {ticker}: ${price}")
+                return price
+        except Exception as e:
+            print(f"[FETCHER] Price parse error {ticker}: {e}")
+
+    # Fallback: quote endpoint
+    r2 = yahoo_get(
+        "https://query1.finance.yahoo.com/v7/finance/quote",
+        params={"symbols": ticker}
+    )
+    if r2:
+        try:
+            data  = r2.json()
+            result = data.get("quoteResponse", {}).get("result", [])
+            if result:
+                price = result[0].get("regularMarketPrice")
                 if price:
-                    quote = {"price": round(float(price), 2), "symbol": ticker}
-                    _price_cache[f"quote_{ticker}"] = (quote, now)
-                    print(f"[FETCHER] {ticker} price: ${quote['price']} via v7 quote")
-                    return quote
-    except Exception as e:
-        print(f"[FETCHER] v7 quote error {ticker}: {e}")
+                    price = round(float(price), 2)
+                    _price_cache[ticker] = (price, now)
+                    print(f"[FETCHER] {ticker}: ${price} (v7 fallback)")
+                    return price
+        except Exception as e:
+            print(f"[FETCHER] Quote fallback error {ticker}: {e}")
 
     print(f"[FETCHER] Could not get price for {ticker}")
-    return {"price": None}
+    return None
 
 
-def fetch_price_history(ticker: str, days: int = 7) -> list:
-    """Fetch recent daily closing prices."""
-    try:
-        import time as t
-        end   = int(t.time())
-        start = end - (days * 86400)
-        url   = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        params = {"interval": "1d", "period1": start, "period2": end}
-        r = _session.get(url, params=params, timeout=15)
-        if r.status_code == 200:
-            data    = r.json()
-            result  = data.get("chart", {}).get("result", [])
+def fetch_price_history(ticker: str, days: int = 10) -> list:
+    """Fetch recent daily closes."""
+    import time as t
+    end   = int(t.time())
+    start = end - (days * 86400)
+    r = yahoo_get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+        params={"interval": "1d", "period1": start, "period2": end}
+    )
+    if r:
+        try:
+            data   = r.json()
+            result = data.get("chart", {}).get("result", [])
             if result:
                 closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                 return [c for c in closes if c is not None]
-    except Exception as e:
-        print(f"[FETCHER] History error for {ticker}: {e}")
+        except Exception as e:
+            print(f"[FETCHER] History parse error {ticker}: {e}")
     return []
 
 
-def fetch_options_chain(ticker: str, expiry_timestamp: int = None) -> dict:
-    """Fetch options chain for a ticker."""
-    try:
-        url = f"https://query1.finance.yahoo.com/v7/finance/options/{ticker}"
-        params = {}
-        if expiry_timestamp:
-            params["date"] = expiry_timestamp
-        r = _session.get(url, params=params, timeout=15)
-        if r.status_code == 200:
+def fetch_options_chain(ticker: str, expiry_ts: int = None) -> dict:
+    """Fetch options chain."""
+    params = {}
+    if expiry_ts:
+        params["date"] = expiry_ts
+    r = yahoo_get(
+        f"https://query1.finance.yahoo.com/v7/finance/options/{ticker}",
+        params=params
+    )
+    if r:
+        try:
             return r.json()
-    except Exception as e:
-        print(f"[FETCHER] Options error for {ticker}: {e}")
+        except:
+            pass
     return {}
 
 
-def fetch_earnings_date(ticker: str) -> str | None:
+def fetch_earnings_date(ticker: str):
     """Fetch next earnings date."""
-    try:
-        url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
-        params = {"modules": "calendarEvents"}
-        r = _session.get(url, params=params, timeout=15)
-        if r.status_code == 200:
-            data = r.json()
+    r = yahoo_get(
+        f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}",
+        params={"modules": "calendarEvents"}
+    )
+    if r:
+        try:
+            data   = r.json()
             result = data.get("quoteSummary", {}).get("result", [])
             if result:
-                earnings = result[0].get("calendarEvents", {}).get("earnings", {})
-                dates    = earnings.get("earningsDate", [])
+                dates = result[0].get("calendarEvents", {}).get("earnings", {}).get("earningsDate", [])
                 if dates:
                     ts = dates[0].get("raw")
                     if ts:
                         dt = datetime.fromtimestamp(ts)
                         return dt.strftime("%b %d, %Y"), dt
-    except Exception as e:
-        print(f"[FETCHER] Earnings date error for {ticker}: {e}")
+        except Exception as e:
+            print(f"[FETCHER] Earnings parse error {ticker}: {e}")
     return None, None
 
 
-def expiry_to_timestamp(expiry_raw: str) -> int | None:
-    """Convert MM/DD/YY expiry to Unix timestamp."""
+def expiry_to_ts(expiry_raw: str) -> int | None:
+    """Convert MM/DD/YY to Unix timestamp."""
     try:
-        parts  = expiry_raw.split("/")
-        m, d, y = parts
+        p = expiry_raw.split("/")
+        m, d, y = p
         y = "20" + y if len(y) == 2 else y
-        dt = datetime(int(y), int(m), int(d))
-        return int(dt.timestamp())
+        return int(datetime(int(y), int(m), int(d)).timestamp())
     except:
         return None
 
 
 # ─────────────────────────────────────────
-# MARKET CONDITIONS
+# TIME OF DAY
 # ─────────────────────────────────────────
 def check_time_of_day() -> dict:
     now_et = datetime.now(ZoneInfo("America/New_York"))
@@ -211,12 +228,15 @@ def check_time_of_day() -> dict:
                 "quality":"LOW","note":"First 30 min noisy — avoid entries until 10:00 AM ET."}
     elif total > 15*60+30:
         return {"window":"NOISY_CLOSE","emoji":"⚠️","label":"Closing 30 min",
-                "quality":"LOW","note":"Last 30 min noisy — position squaring, not directional."}
+                "quality":"LOW","note":"Last 30 min noisy — position squaring."}
     else:
         return {"window":"PRIME","emoji":"✅","label":"Prime hours",
                 "quality":"HIGH","note":"10:00 AM–3:30 PM — highest quality flow."}
 
 
+# ─────────────────────────────────────────
+# MARKET CONDITIONS
+# ─────────────────────────────────────────
 def fetch_market_conditions() -> dict:
     conditions = {
         "vix":None,"vix_label":None,"vix_emoji":None,
@@ -224,32 +244,29 @@ def fetch_market_conditions() -> dict:
         "market_bias":None,"market_score_adjustment":0,"market_summary":None,
     }
 
-    # VIX
-    vix_quote = fetch_quote("^VIX")
-    v = vix_quote.get("price")
-    if v:
-        conditions["vix"] = v
-        if v < 18:
+    vix = fetch_price("^VIX")
+    if vix:
+        conditions["vix"] = vix
+        if vix < 18:
             conditions["vix_label"]="Calm";     conditions["vix_emoji"]="✅"
-        elif v < 25:
+        elif vix < 25:
             conditions["vix_label"]="Elevated"; conditions["vix_emoji"]="⚠️"
             conditions["market_score_adjustment"] -= 0.5
-        elif v < 35:
+        elif vix < 35:
             conditions["vix_label"]="High";     conditions["vix_emoji"]="🔴"
             conditions["market_score_adjustment"] -= 1
         else:
             conditions["vix_label"]="Extreme";  conditions["vix_emoji"]="🚨"
             conditions["market_score_adjustment"] -= 2
 
-    # SPY 5-day
-    spy_prices = fetch_price_history("SPY", days=10)
-    if len(spy_prices) >= 5:
-        pct = round(((spy_prices[-1] - spy_prices[-5]) / spy_prices[-5]) * 100, 1)
+    spy = fetch_price_history("SPY", days=10)
+    if len(spy) >= 5:
+        pct = round(((spy[-1] - spy[-5]) / spy[-5]) * 100, 1)
         conditions["spy_5d_pct"] = pct
         if pct > 2:
-            conditions["spy_trend"]=f"Uptrend +{pct}%";    conditions["spy_emoji"]="✅"
+            conditions["spy_trend"]=f"Uptrend +{pct}%";     conditions["spy_emoji"]="✅"
         elif pct > -2:
-            conditions["spy_trend"]=f"Flat {pct:+.1f}%";   conditions["spy_emoji"]="⚠️"
+            conditions["spy_trend"]=f"Flat {pct:+.1f}%";    conditions["spy_emoji"]="⚠️"
         else:
             conditions["spy_trend"]=f"Downtrend {pct:+.1f}%"; conditions["spy_emoji"]="🔴"
             conditions["market_score_adjustment"] -= 1
@@ -260,13 +277,13 @@ def fetch_market_conditions() -> dict:
         conditions["market_summary"]="Market conditions favor buying premium."
     elif adj >= -1:
         conditions["market_bias"]="CAUTION"
-        conditions["market_summary"]="Elevated volatility — be selective, size smaller."
+        conditions["market_summary"]="Elevated volatility — be selective."
     elif adj >= -2:
         conditions["market_bias"]="UNFAVORABLE"
-        conditions["market_summary"]="High VIX or downtrend — avoid buying premium."
+        conditions["market_summary"]="High VIX/downtrend — avoid buying premium."
     else:
         conditions["market_bias"]="AVOID"
-        conditions["market_summary"]="Extreme conditions — do not buy premium today."
+        conditions["market_summary"]="Extreme conditions — do not buy premium."
     return conditions
 
 
@@ -278,7 +295,7 @@ def fetch_sector_conditions(ticker: str) -> dict:
         pct = round(((prices[-1] - prices[-5]) / prices[-5]) * 100, 1)
         sector["etf_5d_pct"] = pct
         if pct > 1:
-            sector["sector_trend"]=f"Bullish +{pct}%";  sector["sector_emoji"]="✅"
+            sector["sector_trend"]=f"Bullish +{pct}%";   sector["sector_emoji"]="✅"
         elif pct > -1:
             sector["sector_trend"]=f"Neutral {pct:+.1f}%"; sector["sector_emoji"]="⚠️"
         else:
@@ -287,7 +304,7 @@ def fetch_sector_conditions(ticker: str) -> dict:
 
 
 # ─────────────────────────────────────────
-# MAIN TRADE DATA FETCHER
+# MAIN FETCHER
 # ─────────────────────────────────────────
 def fetch_trade_data(trade, flow_premium=None) -> dict:
     ticker      = trade.get("ticker")
@@ -311,29 +328,29 @@ def fetch_trade_data(trade, flow_premium=None) -> dict:
         "market":{},"sector":{},
     }
 
-    print(f"[FETCHER] Fetching market conditions...")
+    # Initialize crumb early
+    get_crumb()
+
+    print(f"[FETCHER] Starting data fetch for {ticker}...")
     data["market"] = fetch_market_conditions()
     data["sector"] = fetch_sector_conditions(ticker or "SPY")
 
     # Stock price
-    print(f"[FETCHER] Fetching {ticker} price...")
-    quote = fetch_quote(ticker)
-    stock_price = quote.get("price")
+    stock_price = fetch_price(ticker)
     data["stock_price"] = stock_price
 
     # Earnings date
-    print(f"[FETCHER] Fetching {ticker} earnings date...")
     earn_str, earn_dt = fetch_earnings_date(ticker)
     if earn_str:
         data["earnings_date"]     = earn_str
         data["earnings_date_raw"] = earn_dt
+        print(f"[FETCHER] {ticker} earnings: {earn_str}")
 
     # Days to expiry
     if expiry_raw:
         try:
-            parts  = expiry_raw.split("/")
-            m, d, y = parts
-            y = "20" + y if len(y) == 2 else y
+            p = expiry_raw.split("/"); m,d,y = p
+            y = "20"+y if len(y)==2 else y
             data["days_to_expiry"] = (datetime(int(y),int(m),int(d)) - datetime.now()).days
         except Exception as e:
             print(f"[FETCHER] DTE error: {e}")
@@ -341,96 +358,83 @@ def fetch_trade_data(trade, flow_premium=None) -> dict:
     # Options chain
     current_ask = None
     if expiry_raw and strike and stock_price:
-        print(f"[FETCHER] Fetching {ticker} options chain...")
-        exp_ts  = expiry_to_timestamp(expiry_raw)
+        exp_ts     = expiry_to_ts(expiry_raw)
         chain_data = fetch_options_chain(ticker, exp_ts)
-
         try:
-            result    = chain_data.get("optionChain", {}).get("result", [])
+            result = chain_data.get("optionChain",{}).get("result",[])
             if result:
                 opts_key = "calls" if option_type == "call" else "puts"
-                options  = result[0].get("options", [{}])[0].get(opts_key, [])
-                sf       = float(strike)
-
-                # Find closest strike
-                closest = min(options, key=lambda x: abs(x.get("strike",99999) - sf), default=None)
+                options  = result[0].get("options",[{}])[0].get(opts_key,[])
+                sf = float(strike)
+                closest = min(options, key=lambda x: abs(x.get("strike",99999)-sf), default=None)
                 if closest:
-                    data["bid"]              = round(float(closest.get("bid", 0)), 2)
-                    data["ask"]              = round(float(closest.get("ask", 0)), 2)
-                    data["open_interest"]    = int(closest.get("openInterest", 0))
-                    data["implied_volatility"] = round(float(closest.get("impliedVolatility",0))*100, 1)
+                    data["bid"]           = round(float(closest.get("bid",0)),2)
+                    data["ask"]           = round(float(closest.get("ask",0)),2)
+                    data["open_interest"] = int(closest.get("openInterest",0))
+                    data["implied_volatility"] = round(float(closest.get("impliedVolatility",0))*100,1)
                     current_ask = data["ask"]
                     data["current_ask"] = current_ask
-
-                    if data["ask"] and data["ask"] > 0:
-                        data["spread_pct"] = round(((data["ask"]-data["bid"])/data["ask"])*100, 1)
-                    if option_type == "call":
-                        data["otm_pct"] = round(((sf-stock_price)/stock_price)*100, 1)
+                    if data["ask"] and data["ask"]>0:
+                        data["spread_pct"] = round(((data["ask"]-data["bid"])/data["ask"])*100,1)
+                    if option_type=="call":
+                        data["otm_pct"] = round(((sf-stock_price)/stock_price)*100,1)
                     else:
-                        data["otm_pct"] = round(((stock_price-sf)/stock_price)*100, 1)
+                        data["otm_pct"] = round(((stock_price-sf)/stock_price)*100,1)
+                    print(f"[FETCHER] {ticker} options: bid={data['bid']} ask={data['ask']} OI={data['open_interest']}")
 
-                # ATM straddle for implied move
+                # ATM straddle
                 try:
                     calls = result[0].get("options",[{}])[0].get("calls",[])
                     puts  = result[0].get("options",[{}])[0].get("puts",[])
-                    atm_call = min(calls, key=lambda x: abs(x.get("strike",99999)-stock_price), default=None)
-                    atm_put  = min(puts,  key=lambda x: abs(x.get("strike",99999)-stock_price), default=None)
-                    if atm_call and atm_put:
-                        straddle = float(atm_call.get("lastPrice",0)) + float(atm_put.get("lastPrice",0))
+                    ac = min(calls, key=lambda x: abs(x.get("strike",99999)-stock_price), default=None)
+                    ap = min(puts,  key=lambda x: abs(x.get("strike",99999)-stock_price), default=None)
+                    if ac and ap:
+                        straddle = float(ac.get("lastPrice",0)) + float(ap.get("lastPrice",0))
                         if straddle > 0:
-                            data["implied_move_pct"] = round((straddle/stock_price)*100, 1)
+                            data["implied_move_pct"] = round((straddle/stock_price)*100,1)
                 except Exception as e:
                     print(f"[FETCHER] Straddle error: {e}")
         except Exception as e:
             print(f"[FETCHER] Options parse error: {e}")
 
-    # Chasing detection
+    # Chasing
     if flow_premium and current_ask and flow_premium > 0:
-        mv = round(((current_ask-flow_premium)/flow_premium)*100, 1)
+        mv = round(((current_ask-flow_premium)/flow_premium)*100,1)
         data["price_move_since_flow"] = mv
-        if mv > 75:
-            data["chasing_flag"]="HIGH";     data["chasing_emoji"]="🚨"
-        elif mv > 40:
-            data["chasing_flag"]="MODERATE"; data["chasing_emoji"]="⚠️"
-        else:
-            data["chasing_flag"]="LOW";      data["chasing_emoji"]="✅"
+        data["chasing_flag"] = "HIGH" if mv>75 else "MODERATE" if mv>40 else "LOW"
+        data["chasing_emoji"] = "🚨" if mv>75 else "⚠️" if mv>40 else "✅"
 
     # Expiry timing vs earnings
     if data.get("earnings_date_raw") and data.get("days_to_expiry") is not None:
         try:
             ed = data["earnings_date_raw"]
-            if hasattr(ed, 'date'): ed = ed.date()
-            parts  = expiry_raw.split("/"); m,d,y = parts
+            if hasattr(ed,'date'): ed = ed.date()
+            p = expiry_raw.split("/"); m,d,y = p
             y = "20"+y if len(y)==2 else y
             exp_date = datetime(int(y),int(m),int(d)).date()
             gap = (exp_date - ed).days
             data["days_earnings_to_expiry"] = gap
-            if gap < 0:
-                data["expiry_timing_label"]="Expiry BEFORE earnings";          data["expiry_timing_emoji"]="❌"
-            elif gap == 0:
-                data["expiry_timing_label"]="Expiry SAME DAY as earnings";     data["expiry_timing_emoji"]="❌"
-            elif gap <= 4:
-                data["expiry_timing_label"]=f"Expiry {gap}d after — very tight"; data["expiry_timing_emoji"]="⚠️"
-            elif gap <= 14:
-                data["expiry_timing_label"]=f"Expiry {gap}d after — sweet spot"; data["expiry_timing_emoji"]="✅"
-            else:
-                data["expiry_timing_label"]=f"Expiry {gap}d after — too long";  data["expiry_timing_emoji"]="⚠️"
+            if gap<0:   data["expiry_timing_label"]="Expiry BEFORE earnings";           data["expiry_timing_emoji"]="❌"
+            elif gap==0:data["expiry_timing_label"]="Expiry SAME DAY as earnings";      data["expiry_timing_emoji"]="❌"
+            elif gap<=4:data["expiry_timing_label"]=f"Expiry {gap}d after — very tight"; data["expiry_timing_emoji"]="⚠️"
+            elif gap<=14:data["expiry_timing_label"]=f"Expiry {gap}d after — sweet spot";data["expiry_timing_emoji"]="✅"
+            else:       data["expiry_timing_label"]=f"Expiry {gap}d after — too long";  data["expiry_timing_emoji"]="⚠️"
         except Exception as e:
             print(f"[FETCHER] Timing error: {e}")
 
     # Implied vs historical
     if data.get("implied_move_pct") and data.get("avg_earnings_move"):
         implied = data["implied_move_pct"]; actual = data["avg_earnings_move"]
-        ratio = implied/actual if actual > 0 else 1
-        if ratio < 0.85:
+        ratio = implied/actual if actual>0 else 1
+        if ratio<0.85:
             data["implied_vs_historical"]=f"Options CHEAP — implied {implied}% vs avg {actual}%"
             data["implied_vs_historical_emoji"]="✅"
-        elif ratio < 1.15:
+        elif ratio<1.15:
             data["implied_vs_historical"]=f"Options FAIR — implied {implied}% vs avg {actual}%"
             data["implied_vs_historical_emoji"]="⚠️"
         else:
             data["implied_vs_historical"]=f"Options EXPENSIVE — implied {implied}% vs avg {actual}%"
             data["implied_vs_historical_emoji"]="❌"
 
-    print(f"[FETCHER] Done for {ticker}: price=${stock_price}, earnings={data.get('earnings_date')}, OI={data.get('open_interest')}")
+    print(f"[FETCHER] Done: price=${data['stock_price']}, earn={data['earnings_date']}, OI={data['open_interest']}, spread={data['spread_pct']}%")
     return data
