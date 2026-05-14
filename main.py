@@ -270,19 +270,28 @@ def build_alert_sms(trade, result, data, macro, pattern, analysis_id, tweet_url=
     if top_imp:
         lines.append(top_imp)
 
-    # Build footer links — always included regardless of length
+    # Build footer — always preserved
     footer_lines = []
     if tweet_url:
         footer_lines.append(f"🐦 {tweet_url}")
     footer_lines.append(f"📊 {base_url}/analysis/{analysis_id}")
     footer = "\n".join(footer_lines)
 
-    # Build body — truncate this if needed, never the footer
-    body = "\n".join(str(l) for l in lines if l)
-    max_body = 1500 - len(footer) - 2  # leave room for footer + newlines
+    # Build body — truncate cleanly at line boundaries, never mid-sentence
+    body_lines = [str(l) for l in lines if l]
+    body = "\n".join(body_lines)
+    max_body = 1400 - len(footer)
 
     if len(body) > max_body:
-        body = body[:max_body - 3] + "..."
+        # Truncate at last complete line that fits
+        truncated = []
+        running = 0
+        for line in body_lines:
+            if running + len(line) + 1 > max_body - 4:
+                break
+            truncated.append(line)
+            running += len(line) + 1
+        body = "\n".join(truncated)
 
     sms = body + "\n" + footer
     print(f"[SMS] Message length: {len(sms)} chars")
