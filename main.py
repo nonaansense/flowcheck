@@ -9,6 +9,7 @@ from fetcher import fetch_trade_data
 from scorer import score_trade, format_premium
 from sms import send_sms
 from parser import parse_tweet
+from vision_parser import extract_trade_from_tweet
 from economic_calendar import get_today_warnings, get_week_ahead_summary, fetch_and_cache_today
 from premarket_summary import (
     send_premarket_summary, send_eod_summary, verify_eod_positions
@@ -121,12 +122,19 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body       = await request.json()
         tweet_text = body.get("tweet", "") or body.get("text", "") or str(body)
+        image_url  = body.get("image_url") or body.get("imageUrl") or None
+        tweet_url  = body.get("tweet_url") or body.get("linkToTweet") or None
         print(f"[WEBHOOK] Received: {tweet_text[:120]}")
+        if image_url:
+            print(f"[WEBHOOK] Image URL: {image_url[:80]}")
+        if tweet_url:
+            print(f"[WEBHOOK] Tweet URL: {tweet_url[:80]}")
 
-        trade = parse_tweet(tweet_text)
+        # Try text first, fall back to vision using image or tweet URL
+        trade = extract_trade_from_tweet(tweet_text, image_url, tweet_url)
         if not trade:
-            print("[WEBHOOK] No trade info — skipping")
-            return {"status": "skipped", "reason": "no trade info"}
+            print("[WEBHOOK] Could not extract trade from text or image — skipping")
+            return {"status": "skipped", "reason": "no trade info found in text or image"}
 
         # Duplicate check — do this synchronously before returning
         if is_duplicate(trade.get("ticker",""),
@@ -136,7 +144,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             return {"status": "skipped", "reason": "duplicate"}
 
         # Return immediately — process everything in background
-        background_tasks.add_task(process_trade, tweet_text, trade)
+        background_tasks.add_task(process_trade, tweet_text, trade, image_url, tweet_url)
         print(f"[WEBHOOK] Queued background processing for {trade.get('ticker')}")
         return {"status": "queued", "ticker": trade.get("ticker"), "message": "Processing in background — SMS incoming"}
 
@@ -145,7 +153,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         return {"status": "error", "message": str(e)}
 
 
-async def process_trade(tweet_text: str, trade: dict):
+async def process_trade(tweet_text: str, trade: dict, image_url: str = None, tweet_url: str = None):
     """Background task — does all the heavy lifting after webhook returns."""
     import asyncio
     loop = asyncio.get_event_loop()
