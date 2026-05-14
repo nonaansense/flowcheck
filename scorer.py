@@ -61,7 +61,13 @@ Respond ONLY with valid JSON:
   ]
 }
 
-Verdict: TRADE (6-7), WATCH (4-5), SKIP (0-3) based on FINAL score."""
+Verdict: TRADE (6-7), WATCH (4-5), SKIP (0-3) based on FINAL score.
+
+IMPORTANT: If data is missing or zero (bid=$0, OI<100), explain WHY specifically:
+- Bid=$0 at market open (9:30-10:00 AM) = options spreads not yet posted by market makers, normal at open
+- OI<100 = brand new position opened today, very thin liquidity
+- No earnings date = earnings recently passed or far out
+Never just say "wait for complete data" — explain the specific reason."""
 
 
 def score_trade(trade, data):
@@ -113,7 +119,12 @@ MARKET (real-time):
 
 TIME: {tod.get('label','N/A')} {tod.get('emoji','')} — {tod.get('quality','N/A')}
 
-TWEET: {trade.get('raw_text','')}"""
+TWEET: {trade.get('raw_text','')}
+
+IMPORTANT: If live data fields show N/A or None, score based on what IS visible
+in the tweet text and image data. Do not refuse to score — use available data.
+For missing fields, note the gap but still provide best assessment.
+Never say "wait for complete data" as a suggestion — give actionable trade advice."""
 
     try:
         response = client.messages.create(
@@ -152,7 +163,10 @@ def default_result():
         "chasing_risk": "UNKNOWN", "chasing_note": "",
         "market_verdict": "UNKNOWN", "market_reasoning": "",
         "time_quality": "UNKNOWN",
-        "reasoning": "Analysis unavailable — check API credentials in Railway variables.",
-        "one_liner": "Could not analyze — verify ANTHROPIC_API_KEY in Railway.",
-        "improvements": ["→ Check Railway environment variables are set correctly"]
+        "reasoning": "Claude API scoring failed — check Railway logs for details.",
+        "one_liner": "Scoring error — see Railway logs.",
+        "improvements": [
+            "→ Check Railway logs for the specific error",
+            "→ Verify ANTHROPIC_API_KEY is set correctly in Railway variables",
+        ]
     }
