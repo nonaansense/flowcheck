@@ -500,4 +500,206 @@ body{{background:#080810;color:#fff;font-family:-apple-system,sans-serif;
     {row("ATM Straddle Implied", f"{data.get('implied_move_pct','N/A')}%")}
     {row("Avg Actual (8 qtrs)", f"{data.get('avg_earnings_move','N/A')}%")}
   </div>
-  <div class="note" style="color:{'#0
+  <div class="note" style="color:{'#00ff88' if data.get('implied_vs_historical_emoji')=='✅' else '#ffc93d' if data.get('implied_vs_historical_emoji')=='⚠️' else '#ff4d6d'}">
+    {data.get('implied_vs_historical_emoji','')} {data.get('implied_vs_historical','N/A')}
+  </div>
+</div>
+
+<div class="sec">
+  <div class="sec-title">Earnings Quality</div>
+  <div class="grid">
+    {row("Beat Rate", f"{data.get('beats_pct','N/A')}% ({len(data.get('earnings_surprises',[]))} qtrs)", '#00ff88' if (data.get('beats_pct') or 0) >= 75 else '#ffc93d')}
+    {row("Avg EPS Surprise", f"{data.get('avg_earnings_surprise','N/A')}%", '#00ff88' if (data.get('avg_earnings_surprise') or 0) > 5 else '#ffc93d')}
+  </div>
+  <div class="note">{result.get('earnings_quality_note','')}</div>
+</div>
+
+<div class="sec">
+  <div class="sec-title">Expiry Timing</div>
+  <div class="grid">
+    {row("Earnings Date", data.get('earnings_date','N/A'))}
+    {row("Expiry", trade.get('expiry','N/A'))}
+    {row("Days to Expiry", str(data.get('days_to_expiry','N/A')))}
+    {row("Timing", f"{data.get('expiry_timing_emoji','')} {data.get('expiry_timing_label','N/A')}")}
+  </div>
+</div>
+
+<div class="sec">
+  <div class="sec-title">Chasing Risk</div>
+  <div class="grid">
+    {row("Flow Fill", f"${data.get('flow_fill_price','N/A')}")}
+    {row("Current Ask", f"${data.get('current_ask','N/A')}")}
+    {row("Move Since Flow", f"{'+' if (data.get('price_move_since_flow') or 0) > 0 else ''}{data.get('price_move_since_flow','N/A')}%", '#00ff88' if (data.get('price_move_since_flow') or 0) < 40 else '#ffc93d' if (data.get('price_move_since_flow') or 0) < 75 else '#ff4d6d')}
+    {row("Risk Level", f"{data.get('chasing_emoji','')} {data.get('chasing_flag','N/A')}", '#00ff88' if data.get('chasing_flag') in ['LOW','NONE'] else '#ffc93d' if data.get('chasing_flag')=='MODERATE' else '#ff4d6d')}
+  </div>
+  <div class="note">{result.get('chasing_note','')}</div>
+</div>
+
+<div class="sec">
+  <div class="sec-title">Live Trade Data</div>
+  <div class="grid">
+    {row("Stock Price", f"${data.get('stock_price','N/A')}")}
+    {row("Bid / Ask", f"${data.get('bid','N/A')} / ${data.get('ask','N/A')}")}
+    {row("Spread", f"{data.get('spread_pct','N/A')}%", '#00ff88' if (data.get('spread_pct') or 99) < 10 else '#ff4d6d')}
+    {row("Open Interest", f"{(data.get('open_interest') or 0):,}", '#00ff88' if (data.get('open_interest') or 0) >= 500 else '#ffc93d')}
+    {row("OTM %", f"{data.get('otm_pct','N/A')}%", '#00ff88' if (data.get('otm_pct') or 99) < 10 else '#ffc93d')}
+    {row("Implied Vol", f"{data.get('implied_volatility','N/A')}%")}
+  </div>
+</div>
+
+<div class="sec">
+  <div class="sec-title">9-Point Checklist</div>
+  {checklist_html}
+</div>
+
+<div class="sec">
+  <div class="sec-title">Analysis</div>
+  <div class="note">{result.get('reasoning','')}</div>
+</div>
+
+<div class="sec">
+  <div class="sec-title" style="color:#ffc93d">⚡ Improve This Trade</div>
+  {improvements_html}
+</div>
+
+<div class="foot">Not financial advice · FlowCheck</div>
+</body>
+</html>"""
+
+
+# ─────────────────────────────────────────
+# HISTORY PAGE
+# ─────────────────────────────────────────
+@app.get("/history", response_class=HTMLResponse)
+async def history_page():
+    now_et    = datetime.now(ZoneInfo("America/New_York"))
+    today_str = now_et.date().isoformat()
+    base_url  = os.getenv("BASE_URL", "https://your-app.railway.app")
+
+    today_list = [a for a in reversed(analyses) if a.get("date") == today_str]
+
+    rows = ""
+    for a in today_list:
+        t  = a["trade"]
+        r  = a["result"]
+        vc = {"TRADE": "#00ff88", "WATCH": "#ffc93d", "SKIP": "#ff4d6d"}.get(
+            r.get("verdict",""), "#fff"
+        )
+        rows += f"""
+<a href="{base_url}/analysis/{a['id']}"
+   style="display:block;text-decoration:none;padding:14px;border-radius:10px;
+          border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.02);
+          margin-bottom:8px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <span style="font-family:monospace;font-weight:700;color:#fff;font-size:15px">
+        {t.get('ticker','?')}
+      </span>
+      <span style="font-family:monospace;color:rgba(255,255,255,0.4);
+                   font-size:12px;margin-left:10px">
+        {t.get('strike','?')}{t.get('option_type','c')[0].upper()} {t.get('expiry','?')}
+      </span>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="font-family:monospace;font-size:14px;font-weight:700;color:{vc}">
+        {r.get('final_score','?')}/7
+      </span>
+      <span style="font-family:monospace;font-size:11px;color:{vc};padding:2px 8px;
+                   border-radius:100px;border:1px solid {vc}44">
+        {r.get('verdict','?')}
+      </span>
+      <span style="font-size:11px;color:rgba(255,255,255,0.2);font-family:monospace">
+        {a.get('time','')}
+      </span>
+    </div>
+  </div>
+  <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-top:6px;font-style:italic">
+    {r.get('one_liner','')}
+  </div>
+</a>"""
+
+    if not rows:
+        rows = (
+            '<div style="color:rgba(255,255,255,0.3);text-align:center;'
+            'padding:40px;font-family:monospace">No alerts today</div>'
+        )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FlowCheck — History</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#080810;color:#fff;font-family:-apple-system,sans-serif;
+     padding:20px;max-width:640px;margin:0 auto}}
+</style>
+</head>
+<body>
+<div style="display:flex;align-items:center;gap:10px;padding:20px 0;
+            border-bottom:1px solid rgba(255,255,255,0.08);margin-bottom:20px">
+  <div style="width:32px;height:32px;border-radius:8px;
+              background:linear-gradient(135deg,#ffc93d,#ff6b35);
+              display:flex;align-items:center;justify-content:center;font-size:16px">⚡</div>
+  <div>
+    <div style="font-size:16px;font-weight:700">FlowCheck</div>
+    <div style="font-size:11px;color:rgba(255,255,255,0.3);font-family:monospace">
+      Today — {today_str}
+    </div>
+  </div>
+  <div style="margin-left:auto;font-size:12px;color:rgba(255,255,255,0.3);font-family:monospace">
+    {len(today_list)} alerts
+  </div>
+</div>
+{rows}
+<div style="padding:20px 0;text-align:center;font-size:11px;
+            color:rgba(255,255,255,0.2);font-family:monospace">
+  Not financial advice · FlowCheck
+</div>
+</body>
+</html>"""
+
+
+# ─────────────────────────────────────────
+# HEALTH + ROOT
+# ─────────────────────────────────────────
+@app.get("/health")
+async def health():
+    return {"status": "ok", "analyses": len(analyses)}
+
+
+@app.get("/check-env")
+async def check_env():
+    """Temporary diagnostic — confirms env vars are loaded. Remove after testing."""
+    import os
+    return {
+        "ANTHROPIC_API_KEY":  "SET ✅" if os.environ.get("ANTHROPIC_API_KEY") else "MISSING ❌",
+        "TWILIO_ACCOUNT_SID": "SET ✅" if os.environ.get("TWILIO_ACCOUNT_SID") else "MISSING ❌",
+        "TWILIO_AUTH_TOKEN":  "SET ✅" if os.environ.get("TWILIO_AUTH_TOKEN") else "MISSING ❌",
+        "TWILIO_FROM_NUMBER": "SET ✅" if os.environ.get("TWILIO_FROM_NUMBER") else "MISSING ❌",
+        "TWILIO_TO_NUMBER":   "SET ✅" if os.environ.get("TWILIO_TO_NUMBER") else "MISSING ❌",
+        "BASE_URL":           os.environ.get("BASE_URL", "MISSING ❌"),
+    }
+
+@app.get("/")
+async def root():
+    now_et    = datetime.now(ZoneInfo("America/New_York"))
+    today_str = now_et.date().isoformat()
+    today_ct  = len([a for a in analyses if a.get("date") == today_str])
+    return {
+        "service": "FlowCheck",
+        "version": "3.0",
+        "time_et": now_et.strftime("%H:%M ET"),
+        "analyses_today": today_ct,
+        "analyses_total": len(analyses),
+        "schedule": {
+            "07:30": "Fetch economic calendar",
+            "08:00": "Pre-market SMS",
+            "16:15": "Verify EOD OI",
+            "16:30": "EOD summary SMS",
+        }
+    }
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
