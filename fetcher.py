@@ -9,6 +9,12 @@ from zoneinfo import ZoneInfo
 _price_cache = {}
 _CACHE_TTL   = 120
 
+# Free data sources in priority order:
+# 1. Yahoo Finance v8 (with crumb)
+# 2. Yahoo Finance v7 quote
+# 3. FMP free tier (no key needed for basic quotes)
+# 4. Return None gracefully
+
 SECTOR_ETF_MAP = {
     "AAPL":"XLK","MSFT":"XLK","NVDA":"XLK","AMD":"XLK",
     "CSCO":"XLK","ORCL":"XLK","CRM":"XLK","QCOM":"XLK",
@@ -95,14 +101,37 @@ def yahoo_get(url, params=None, retries=3):
     return None
 
 
+def fetch_price_fmp(ticker: str) -> float | None:
+    """Fetch price from Financial Modeling Prep free tier — no API key needed for basic quotes."""
+    try:
+        # FMP free endpoint — works without auth for basic price data
+        r = _session.get(
+            f"https://financialmodelingprep.com/api/v3/quote-short/{ticker}",
+            params={"apikey": "demo"},
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if data and isinstance(data, list) and data[0].get("price"):
+                price = round(float(data[0]["price"]), 2)
+                print(f"[FETCHER] {ticker}: ${price} via FMP")
+                return price
+    except Exception as e:
+        print(f"[FETCHER] FMP error for {ticker}: {e}")
+    return None
+
+
 def fetch_price(ticker: str) -> float | None:
-    """Get current stock price with cache."""
+    """Get current stock price — tries Yahoo then FMP."""
     now = time.time()
     cached = _price_cache.get(ticker)
     if cached and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
 
-    # Try chart endpoint
+    # Skip FMP for index tickers like ^VIX
+    is_index = ticker.startswith("^")
+
+    # Try Yahoo v8 chart
     r = yahoo_get(
         f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
         params={"interval": "1d", "range": "2d"}
@@ -115,29 +144,34 @@ def fetch_price(ticker: str) -> float | None:
             if price:
                 price = round(float(price), 2)
                 _price_cache[ticker] = (price, now)
-                print(f"[FETCHER] {ticker}: ${price}")
+                print(f"[FETCHER] {ticker}: ${price} via Yahoo v8")
                 return price
         except Exception as e:
-            print(f"[FETCHER] Price parse error {ticker}: {e}")
+            print(f"[FETCHER] Yahoo v8 parse error {ticker}: {e}")
 
-    # Fallback: quote endpoint
-    r2 = yahoo_get(
-        "https://query1.finance.yahoo.com/v7/finance/quote",
-        params={"symbols": ticker}
-    )
+    # Try Yahoo v7 quote
+    r2 = yahoo_get("https://query1.finance.yahoo.com/v7/finance/quote",
+                   params={"symbols": ticker})
     if r2:
         try:
-            data  = r2.json()
+            data   = r2.json()
             result = data.get("quoteResponse", {}).get("result", [])
             if result:
                 price = result[0].get("regularMarketPrice")
                 if price:
                     price = round(float(price), 2)
                     _price_cache[ticker] = (price, now)
-                    print(f"[FETCHER] {ticker}: ${price} (v7 fallback)")
+                    print(f"[FETCHER] {ticker}: ${price} via Yahoo v7")
                     return price
         except Exception as e:
-            print(f"[FETCHER] Quote fallback error {ticker}: {e}")
+            print(f"[FETCHER] Yahoo v7 parse error {ticker}: {e}")
+
+    # Try FMP as last resort (stocks only, not indices)
+    if not is_index:
+        price = fetch_price_fmp(ticker)
+        if price:
+            _price_cache[ticker] = (price, now)
+            return price
 
     print(f"[FETCHER] Could not get price for {ticker}")
     return None
