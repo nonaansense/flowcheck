@@ -1,4 +1,4 @@
-import json, os, re
+import json, os, re, time
 
 def get_client():
     """Create Anthropic client lazily — reads env var at call time not import time."""
