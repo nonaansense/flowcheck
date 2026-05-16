@@ -78,8 +78,8 @@ def fetch_price(ticker: str) -> float | None:
     if cached and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
 
-    # Finnhub serves ^VIX directly
-    fh_ticker = ticker
+    # Finnhub uses VIX without the ^ prefix
+    fh_ticker = ticker.replace("^", "")
 
     data = fh_get("/quote", {"symbol": fh_ticker})
     if data:
@@ -350,13 +350,26 @@ def fetch_trade_data(trade, flow_premium=None) -> dict:
             exp_date = datetime(int(y),int(m),int(d)).date()
             gap = (exp_date - ed).days
             data["days_earnings_to_expiry"] = gap
-            if gap < 0:    data["expiry_timing_label"]="Expiry BEFORE earnings";           data["expiry_timing_emoji"]="❌"
-            elif gap == 0: data["expiry_timing_label"]="Expiry SAME DAY as earnings";      data["expiry_timing_emoji"]="❌"
-            elif gap <= 4: data["expiry_timing_label"]=f"Expiry {gap}d after — very tight"; data["expiry_timing_emoji"]="⚠️"
-            elif gap <= 14:data["expiry_timing_label"]=f"Expiry {gap}d after — sweet spot"; data["expiry_timing_emoji"]="✅"
-            else:          data["expiry_timing_label"]=f"Expiry {gap}d after — too long";  data["expiry_timing_emoji"]="⚠️"
+            if gap < 0:    data["expiry_timing_label"]=f"Expiry {abs(gap)}d BEFORE earnings — misses catalyst"; data["expiry_timing_emoji"]="❌"
+            elif gap == 0: data["expiry_timing_label"]="Expiry SAME DAY as earnings — max IV risk";              data["expiry_timing_emoji"]="❌"
+            elif gap <= 4: data["expiry_timing_label"]=f"Expiry {gap}d after earnings — very tight";            data["expiry_timing_emoji"]="⚠️"
+            elif gap <= 14:data["expiry_timing_label"]=f"Expiry {gap}d after earnings — sweet spot";            data["expiry_timing_emoji"]="✅"
+            else:          data["expiry_timing_label"]=f"Expiry {gap}d after earnings — too much time";         data["expiry_timing_emoji"]="⚠️"
         except Exception as e:
             print(f"[FETCHER] Timing error: {e}")
+
+    # If earnings date unknown, set a clear label
+    if not data.get("expiry_timing_label") and data.get("days_to_expiry") is not None:
+        dte = data["days_to_expiry"]
+        if dte <= 1:
+            data["expiry_timing_label"] = f"⚠️ {dte}-DTE — expires immediately, no catalyst known"
+            data["expiry_timing_emoji"] = "❌"
+        elif dte <= 7:
+            data["expiry_timing_label"] = f"{dte}d to expiry — no earnings date found"
+            data["expiry_timing_emoji"] = "⚠️"
+        else:
+            data["expiry_timing_label"] = f"{dte}d to expiry — earnings date unknown"
+            data["expiry_timing_emoji"] = "❓"
 
     print(f"[FETCHER] Done: price=${stock_price}, earn={data['earnings_date']}, OTM={data['otm_pct']}%, DTE={data['days_to_expiry']}")
     return data
