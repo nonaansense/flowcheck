@@ -66,8 +66,9 @@ Verdict: TRADE (6-7), WATCH (4-5), SKIP (0-3) based on FINAL score.
 CRITICAL FORMATTING RULES:
 - one_liner: MAX 15 words, must be a complete sentence
 - improvements: each item MAX 15 words, must be complete
-- reasoning: MAX 2 sentences
+- reasoning: MAX 2 sentences, identify flow TYPE (catalyst/insider/momentum)
 - Never cut a sentence mid-word in any field
+- Never say SKIP just because no public catalyst — evaluate the full picture
 
 IMPORTANT: If data is missing or zero (bid=$0, OI<100), explain WHY specifically:
 - Bid=$0 at market open (9:30-10:00 AM) = options spreads not yet posted by market makers, normal at open
