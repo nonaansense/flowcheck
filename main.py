@@ -37,36 +37,32 @@ scheduler = BackgroundScheduler(timezone="America/New_York")
 
 @app.on_event("startup")
 async def startup():
-    # 7:30 AM — fetch and cache today's economic calendar
-    scheduler.add_job(
-        fetch_and_cache_today,
-        "cron", day_of_week="mon-fri", hour=7, minute=30,
-        id="fetch_calendar"
-    )
-    # 8:00 AM — pre-market SMS (reads cached calendar)
-    scheduler.add_job(
-        lambda: send_premarket_summary(analyses),
-        "cron", day_of_week="mon-fri", hour=8, minute=0,
-        id="premarket_summary"
-    )
-    # 4:15 PM — verify EOD OI now that market is closed
-    scheduler.add_job(
-        lambda: verify_eod_positions(analyses),
-        "cron", day_of_week="mon-fri", hour=16, minute=15,
-        id="verify_eod_oi"
-    )
-    # 4:30 PM — EOD summary SMS (15 min after OI verification)
-    scheduler.add_job(
-        lambda: send_eod_summary(analyses),
-        "cron", day_of_week="mon-fri", hour=16, minute=30,
-        id="eod_summary"
-    )
-    scheduler.start()
-    print("[SCHEDULER] Started:")
-    print("  7:30 AM — fetch economic calendar")
-    print("  8:00 AM — pre-market SMS")
-    print("  4:15 PM — verify EOD OI")
-    print("  4:30 PM — EOD summary SMS")
+    try:
+        scheduler.add_job(
+            fetch_and_cache_today,
+            "cron", day_of_week="mon-fri", hour=7, minute=30,
+            id="fetch_calendar"
+        )
+        scheduler.add_job(
+            lambda: send_premarket_summary(analyses),
+            "cron", day_of_week="mon-fri", hour=8, minute=0,
+            id="premarket_summary"
+        )
+        scheduler.add_job(
+            lambda: verify_eod_positions(analyses),
+            "cron", day_of_week="mon-fri", hour=16, minute=15,
+            id="verify_eod_oi"
+        )
+        scheduler.add_job(
+            lambda: send_eod_summary(analyses),
+            "cron", day_of_week="mon-fri", hour=16, minute=30,
+            id="eod_summary"
+        )
+        scheduler.start()
+        print("[SCHEDULER] Started: 7:30AM fetch | 8:00AM pre-market | 4:15PM EOD OI | 4:30PM EOD SMS")
+    except Exception as e:
+        print(f"[SCHEDULER] Warning — could not start scheduler: {e}")
+        print("[SCHEDULER] Server will still process webhooks normally")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -508,3 +504,5 @@ body{{background:#080810;color:#fff;font-family:-apple-system,sans-serif;
     {row("SPY 5-Day", f"{market.get('spy_trend','N/A')} {market.get('spy_emoji','')}")}
     {row(f"Sector ({sector.get('etf','?')})", f"{sector.get('sector_trend','N/A')} {sector.get('sector_emoji','')}")}
     {row("Market Bias", market.get('market_bias','N/A'), '#00ff88' if market.get('market_bias')=='FAVORABLE' else '#ffc93d' if market.get('market_bias')=='CAUTION' else '#ff4d6d')}
+  </div>
+  <div class="note">{result.get('market_reasoning','')}</d
