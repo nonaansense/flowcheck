@@ -89,7 +89,7 @@ def fetch_calendar_via_claude(date_str: str) -> list:
         date_readable = dt.strftime("%A, %B %d, %Y")
 
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-sonnet-4-5",
             max_tokens=600,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content":
