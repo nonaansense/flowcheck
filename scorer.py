@@ -54,14 +54,20 @@ Respond ONLY with valid JSON:
   "reasoning": "2-3 sentences on score and key factors",
   "one_liner": "Single punchy sentence under 15 words",
   "improvements": [
-    "→ Better strike: use $X because...",
-    "→ Better expiry: use MonDD — X days after earnings",
-    "→ Wait for: stock to pull back to $X",
-    "→ Watch out for: specific risk"
+    "→ Better strike: $X (reason in under 10 words)",
+    "→ Better expiry: MonDD (reason in under 10 words)",
+    "→ Wait for: specific condition in under 10 words",
+    "→ Watch: specific risk in under 10 words"
   ]
 }
 
 Verdict: TRADE (6-7), WATCH (4-5), SKIP (0-3) based on FINAL score.
+
+CRITICAL FORMATTING RULES:
+- one_liner: MAX 15 words, must be a complete sentence
+- improvements: each item MAX 15 words, must be complete
+- reasoning: MAX 2 sentences
+- Never cut a sentence mid-word in any field
 
 IMPORTANT: If data is missing or zero (bid=$0, OI<100), explain WHY specifically:
 - Bid=$0 at market open (9:30-10:00 AM) = options spreads not yet posted by market makers, normal at open
