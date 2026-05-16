@@ -208,9 +208,12 @@ def get_today_warnings() -> dict:
             warnings["avoid_until"] = defn.get("avoid_until")
         if impact == "EXTREME":
             warnings["avoid_buying"] = True
+        emoji   = defn.get('emoji','📊') or '📊'
+        time_et = str(event.get('time_et','') or '')
+        name    = str(event.get('event','') or '')
+        warning = str(defn.get('warning','') or '')
         warnings["events_summary"].append(
-            f"{defn['emoji']} {event.get('time_et','')}: "
-            f"{event.get('event','')} — {defn['warning']}"
+            f"{emoji} {time_et}: {name} — {warning}"
         )
 
     # Week ahead
@@ -261,7 +264,7 @@ def get_week_ahead_summary(warnings: dict) -> list:
         for event in events:
             defn = classify_event(event.get("event", ""))
             lines.append(
-                f"  {defn['emoji']} {day_name}: {event.get('event','')} "
-                f"— avoid before {defn.get('avoid_until','10 AM ET')}"
+                f"  {defn.get('emoji','📊')} {day_name}: {str(event.get('event','') or '')} "
+                f"— avoid before {str(defn.get('avoid_until','10 AM ET') or '10 AM ET')}"
             )
     return lines
