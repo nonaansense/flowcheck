@@ -104,6 +104,13 @@ LIVE DATA:
 - Spread: {data.get('spread_pct','N/A')}% | OI: {data.get('open_interest','N/A')}
 - OTM: {data.get('otm_pct','N/A')}% | IV: {data.get('implied_volatility','N/A')}%
 
+EXPIRY TIMING — READ CAREFULLY:
+- Days to expiry (calculated): {data.get('days_to_expiry','N/A')} days from TODAY
+- Expiry date: {trade.get('expiry','N/A')}
+- TODAY'S DATE: {__import__('datetime').datetime.now().strftime('%B %d, %Y')}
+- If days_to_expiry is 0 or 1, this is a 0-DTE or 1-DTE — score harshly on criterion 2
+- If days_to_expiry > 365, this is a LEAP — note as institutional long-term position
+
 EARNINGS:
 - Date: {data.get('earnings_date','Unknown')}
 - Timing: {data.get('expiry_timing_label','N/A')} {data.get('expiry_timing_emoji','')}
@@ -140,7 +147,24 @@ Never say "wait for complete data" as a suggestion — give actionable trade adv
         print(f"[SCORER] JSON parse error: {e}")
         return default_result()
     except Exception as e:
-        print(f"[SCORER] API error: {e}")
+        err_str = str(e)
+        if "rate_limit" in err_str or "rate limit" in err_str.lower():
+            print(f"[SCORER] Rate limited — waiting 30s then retrying once")
+            time.sleep(30)
+            try:
+                response = client.messages.create(
+                    model="claude-sonnet-4-5",
+                    max_tokens=1200,
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                raw = response.content[0].text.strip()
+                raw = re.sub(r"```json\s*|\s*```", "", raw).strip()
+                return json.loads(raw)
+            except Exception as e2:
+                print(f"[SCORER] Retry also failed: {e2}")
+        else:
+            print(f"[SCORER] API error: {e}")
         return default_result()
 
 
