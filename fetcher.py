@@ -67,7 +67,7 @@ def get_crumb():
     return None
 
 
-def yahoo_get(url, params=None, retries=3):
+def yahoo_get(url, params=None, retries=2):
     """Make Yahoo Finance API call with crumb and retry logic."""
     crumb = get_crumb()
     if crumb and params is not None:
@@ -89,7 +89,7 @@ def yahoo_get(url, params=None, retries=3):
                     params["crumb"] = crumb
                 time.sleep(1)
             elif r.status_code == 429:
-                wait = (attempt + 1) * 5
+                wait = (attempt + 1) * 2  # max 6s total
                 print(f"[FETCHER] Rate limited — waiting {wait}s")
                 time.sleep(wait)
             else:
