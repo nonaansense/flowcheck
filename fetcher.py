@@ -73,16 +73,13 @@ def fh_get(path: str, params: dict = None) -> dict | None:
 # ─────────────────────────────────────────
 def fetch_price(ticker: str) -> float | None:
     """Get current stock price via Finnhub quote."""
-    # Handle index tickers
-    fh_ticker = ticker.replace("^", "")
-    if ticker == "^VIX":
-        # Finnhub doesn't serve VIX directly — use VIXY ETF as proxy
-        fh_ticker = "VIXY"
-
     now = time.time()
     cached = _price_cache.get(ticker)
     if cached and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
+
+    # Finnhub serves ^VIX directly
+    fh_ticker = ticker
 
     data = fh_get("/quote", {"symbol": fh_ticker})
     if data:
@@ -90,8 +87,7 @@ def fetch_price(ticker: str) -> float | None:
         if price and float(price) > 0:
             price = round(float(price), 2)
             _price_cache[ticker] = (price, now)
-            label = "VIX proxy (VIXY)" if ticker == "^VIX" else "via Finnhub"
-            print(f"[FETCHER] {ticker}: ${price} {label}")
+            print(f"[FETCHER] {ticker}: ${price} via Finnhub")
             return price
 
     print(f"[FETCHER] Could not get price for {ticker}")
@@ -212,20 +208,9 @@ def fetch_market_conditions() -> dict:
         "market_summary":"Market conditions favor buying premium.",
     }
 
-    # VIX via VIXY proxy
-    vixy = fetch_price("^VIX")
-    # VIXY is ~1/10 of VIX, scale up for approximation
-    if vixy:
-        # Use VIXY directly as a fear indicator (normally $15-30 range)
-        vix_approx = round(vixy * 10, 1)
-        # Actually fetch SPY-based vol differently — just use VIX directly from CBOE
-        # Try fetching VIX via a different symbol
-        vix_data = fh_get("/quote", {"symbol": "^VIX"})
-        if vix_data and vix_data.get("c", 0) > 0:
-            vix_val = round(float(vix_data["c"]), 1)
-        else:
-            vix_val = vix_approx
-
+    # VIX direct from Finnhub
+    vix_val = fetch_price("^VIX")
+    if vix_val and vix_val > 0:
         conditions["vix"] = vix_val
         if vix_val < 18:
             conditions["vix_label"]="Calm";     conditions["vix_emoji"]="✅"
@@ -238,6 +223,8 @@ def fetch_market_conditions() -> dict:
         else:
             conditions["vix_label"]="Extreme";  conditions["vix_emoji"]="🚨"
             conditions["market_score_adjustment"] -= 2
+    else:
+        print("[FETCHER] VIX unavailable — no market adjustment applied")
 
     # SPY 5-day trend
     spy = fetch_price_history("SPY", days=10)
