@@ -201,20 +201,22 @@ def get_today_warnings() -> dict:
                 warnings["avoid_until"] = "3:00 PM (day before FOMC)"
 
     for event in today_events:
-        defn   = classify_event(event.get("event", ""))
-        impact = defn.get("impact", "LOW")
-        if IMPACT_RANK.get(impact, 0) > IMPACT_RANK.get(warnings["max_impact"], 0):
-            warnings["max_impact"] = impact
-            warnings["avoid_until"] = defn.get("avoid_until")
-        if impact == "EXTREME":
-            warnings["avoid_buying"] = True
-        emoji   = defn.get('emoji','📊') or '📊'
-        time_et = str(event.get('time_et','') or '')
-        name    = str(event.get('event','') or '')
-        warning = str(defn.get('warning','') or '')
-        warnings["events_summary"].append(
-            f"{emoji} {time_et}: {name} — {warning}"
-        )
+        try:
+            defn   = classify_event(str(event.get("event") or ""))
+            impact = str(defn.get("impact") or "LOW")
+            if IMPACT_RANK.get(impact, 0) > IMPACT_RANK.get(warnings["max_impact"], 0):
+                warnings["max_impact"] = impact
+                warnings["avoid_until"] = str(defn.get("avoid_until") or "10:00 AM")
+            if impact == "EXTREME":
+                warnings["avoid_buying"] = True
+            emoji   = str(defn.get("emoji") or "📊")
+            time_et = str(event.get("time_et") or "")
+            name    = str(event.get("event") or "")
+            warning = str(defn.get("warning") or "")
+            warnings["events_summary"].append(f"{emoji} {time_et}: {name} — {warning}")
+        except Exception as e:
+            print(f"[CALENDAR] Event parse error: {e}")
+            continue
 
     # Week ahead
     week = {}
