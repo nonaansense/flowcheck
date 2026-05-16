@@ -195,6 +195,38 @@ def check_time_of_day() -> dict:
 # ─────────────────────────────────────────
 # MARKET CONDITIONS
 # ─────────────────────────────────────────
+def fetch_vix_cboe() -> float | None:
+    """Fetch VIX from CBOE public API — no key needed, works everywhere."""
+    try:
+        urls = [
+            "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/_VIX.json",
+            "https://www.cboe.com/delayed_quotes/_VIX/json/",
+        ]
+        for url in urls:
+            try:
+                r = requests.get(url, timeout=10, headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json",
+                })
+                if r.status_code == 200:
+                    data = r.json()
+                    # CBOE returns array of [timestamp, price] pairs
+                    chart = data.get("data") or data.get("chart") or []
+                    if chart and isinstance(chart, list):
+                        last = chart[-1]
+                        price = last[1] if isinstance(last, list) else last.get("price")
+                        if price and 10 <= float(price) <= 80:
+                            vix = round(float(price), 1)
+                            print(f"[FETCHER] VIX: {vix} via CBOE")
+                            return vix
+            except Exception as e:
+                print(f"[FETCHER] CBOE URL failed: {e}")
+                continue
+    except Exception as e:
+        print(f"[FETCHER] VIX CBOE error: {e}")
+    return None
+
+
 def fetch_market_conditions() -> dict:
     now = time.time()
     if _market_cache.get("ts") and (now - _market_cache["ts"]) < _MARKET_TTL:
@@ -208,9 +240,9 @@ def fetch_market_conditions() -> dict:
         "market_summary":"Market conditions favor buying premium.",
     }
 
-    # VIX direct from Finnhub
-    vix_val = fetch_price("^VIX")
-    if vix_val and vix_val > 0:
+    # VIX — fetch from CBOE public API (no key required, works everywhere)
+    vix_val = fetch_vix_cboe()
+    if vix_val:
         conditions["vix"] = vix_val
         if vix_val < 18:
             conditions["vix_label"]="Calm";     conditions["vix_emoji"]="✅"
@@ -224,7 +256,10 @@ def fetch_market_conditions() -> dict:
             conditions["vix_label"]="Extreme";  conditions["vix_emoji"]="🚨"
             conditions["market_score_adjustment"] -= 2
     else:
-        print("[FETCHER] VIX unavailable — no market adjustment applied")
+        conditions["vix"] = 18.0
+        conditions["vix_label"] = "Est."
+        conditions["vix_emoji"] = "📊"
+        print("[FETCHER] VIX unavailable — using neutral estimate, no penalty")
 
     # SPY 5-day trend
     spy = fetch_price_history("SPY", days=10)
