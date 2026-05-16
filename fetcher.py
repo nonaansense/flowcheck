@@ -42,7 +42,7 @@ def av_get(params: dict) -> dict | None:
         return None
 
     if _api_calls_today >= _MAX_CALLS:
-        print(f"[FETCHER] Daily API limit reached ({_api_calls_today}/{_MAX_CALLS}) — skipping")
+        print(f"[FETCHER] Daily API limit reached ({_api_calls_today}/{_MAX_CALLS}) — using cached data only")
         return None
 
     params["apikey"] = key
@@ -53,10 +53,12 @@ def av_get(params: dict) -> dict | None:
 
         if r.status_code == 200:
             data = r.json()
-            # Check for rate limit message
+            # Check for rate limit or info messages
             if "Note" in data or "Information" in data:
-                msg = data.get("Note") or data.get("Information", "")
-                print(f"[FETCHER] AV limit message: {msg[:80]}")
+                msg = str(data.get("Note") or data.get("Information") or "")
+                print(f"[FETCHER] AV message: {msg[:100]}")
+                # Daily limit hit — don't count this as a successful call
+                _api_calls_today -= 1
                 return None
             return data
         else:
