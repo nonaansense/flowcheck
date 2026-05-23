@@ -456,17 +456,24 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
         relative_label = None
         relative_emoji = None
 
+        prem_str = f"${premium/1000000:.1f}M" if premium >= 1000000 else f"${premium/1000:.0f}K"
+
         if stock_price < 10 and premium >= 200000:
             multiple = round(premium / (stock_price * 100), 0)
-            relative_label = (f"${premium/1000:.0f}K on ${stock_price:.2f} stock "
+            relative_label = (f"{prem_str} on ${stock_price:.2f} stock "
                               f"= {multiple:.0f}x typical daily notional — UNUSUAL SIZE")
             relative_emoji = "🚨"
-        elif stock_price < 50 and premium >= 500000:
-            relative_label = (f"${premium/1000:.0f}K on ${stock_price:.0f} stock "
+        elif stock_price < 50 and premium >= 200000:
+            # Covers $21 stocks with $462K — clearly notable
+            ratio = round(premium / (stock_price * 10000), 1)
+            relative_label = (f"{prem_str} on ${stock_price:.0f} stock "
                               f"— large relative to stock price")
             relative_emoji = "⚠️"
+        elif premium >= 1000000:
+            relative_label = f"MEGA flow {prem_str} — whale activity"
+            relative_emoji = "🐋🐋"
         elif contract_equiv > 50000:
-            relative_label = (f"${premium/1000:.0f}K = {contract_equiv/1000:.0f}K contract-equiv "
+            relative_label = (f"{prem_str} = {contract_equiv/1000:.0f}K contract-equiv "
                               f"— significant size")
             relative_emoji = "👀"
 
