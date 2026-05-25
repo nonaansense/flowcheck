@@ -1,129 +1,140 @@
 """
-Persistent storage for FlowCheck using Supabase PostgreSQL.
-Every save logs explicitly to Railway console so you can see what's happening.
+Persistent storage for FlowCheck.
 
-Set DATABASE_URL in Railway environment variables.
+Uses Supabase REST API (no direct Postgres port needed — works on Railway).
+Falls back to /tmp if not configured.
+
+Required Railway environment variables:
+  SUPABASE_URL = https://iczaezmcrueskbheyenx.supabase.co
+  SUPABASE_KEY = your-anon-key (from Supabase Settings > API)
 """
-import os, json
+import os, json, requests
 
-def get_db_url() -> str | None:
-    return (
-        os.environ.get("DATABASE_URL") or
-        os.environ.get("POSTGRES_URL") or
-        None
-    )
+def get_supabase_url() -> str | None:
+    return os.environ.get("SUPABASE_URL","").rstrip("/") or None
+
+def get_supabase_key() -> str | None:
+    return os.environ.get("SUPABASE_KEY","") or None
 
 def has_db() -> bool:
-    return bool(get_db_url())
+    return bool(get_supabase_url() and get_supabase_key())
+
+def _headers() -> dict:
+    return {
+        "apikey":        get_supabase_key(),
+        "Authorization": "Bearer " + get_supabase_key(),
+        "Content-Type":  "application/json",
+        "Prefer":        "return=representation",
+    }
+
+def _base() -> str:
+    return get_supabase_url() + "/rest/v1/flowcheck_store"
 
 _db_initialized = False
 
-def get_conn():
-    """Open a fresh Supabase connection with SSL."""
-    try:
-        import psycopg2
-        url = get_db_url()
-        if not url:
-            return None
-        # Force SSL for Supabase
-        if "sslmode" not in url:
-            conn = psycopg2.connect(url, sslmode="require", connect_timeout=10)
-        else:
-            conn = psycopg2.connect(url, connect_timeout=10)
-        return conn
-    except Exception as e:
-        print(f"[STORAGE] Connection failed: {e}")
-        return None
-
 def init_db():
+    """Verify Supabase REST API is reachable. Table must exist in Supabase."""
     global _db_initialized
     if _db_initialized:
         return
     if not has_db():
-        print("[STORAGE] ⚠️  No DATABASE_URL — data will be lost on redeploy!")
-        _db_initialized = True
-        return
-    conn = get_conn()
-    if not conn:
-        print("[STORAGE] ⚠️  Cannot connect to Supabase — data will be lost on redeploy!")
+        print("[STORAGE] ⚠️  No SUPABASE_URL/SUPABASE_KEY — data lost on redeploy!")
         _db_initialized = True
         return
     try:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS flowcheck_store (
-                key     TEXT PRIMARY KEY,
-                value   TEXT NOT NULL,
-                updated TIMESTAMPTZ DEFAULT NOW()
-            )
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        _db_initialized = True
-        print("[STORAGE] ✅ Supabase connected — data will persist across redeploys")
+        r = requests.get(
+            _base() + "?key=eq.__ping__&select=key",
+            headers=_headers(),
+            timeout=8
+        )
+        if r.status_code in (200, 406):
+            _db_initialized = True
+            print("[STORAGE] ✅ Supabase REST API connected — data persists across redeploys")
+        else:
+            print(f"[STORAGE] ⚠️  Supabase ping failed: {r.status_code} {r.text[:100]}")
+            print("[STORAGE] Make sure the flowcheck_store table exists in Supabase")
+            _db_initialized = True
     except Exception as e:
-        print(f"[STORAGE] ⚠️  Init error: {e}")
+        print(f"[STORAGE] ⚠️  Supabase connection failed: {e}")
         _db_initialized = True
 
+def ensure_table():
+    """
+    Create the storage table in Supabase if it doesn't exist.
+    Run this once via /migrate endpoint.
+    Uses Supabase SQL API.
+    """
+    url = get_supabase_url()
+    key = get_supabase_key()
+    if not url or not key:
+        return "No Supabase credentials"
+    try:
+        r = requests.post(
+            url + "/rest/v1/rpc/exec_sql",
+            headers={
+                "apikey":        key,
+                "Authorization": "Bearer " + key,
+                "Content-Type":  "application/json",
+            },
+            json={"sql": """
+                CREATE TABLE IF NOT EXISTS flowcheck_store (
+                    key     TEXT PRIMARY KEY,
+                    value   TEXT NOT NULL,
+                    updated TIMESTAMPTZ DEFAULT NOW()
+                );
+            """},
+            timeout=10
+        )
+        return f"Table creation: {r.status_code}"
+    except Exception as e:
+        return f"Table creation error: {e}"
+
 def db_get(key: str) -> str | None:
-    """Read from Supabase. Returns None if unavailable."""
+    """Read value from Supabase via REST API."""
     if not has_db():
         return None
-    conn = get_conn()
-    if not conn:
-        print(f"[STORAGE] ⚠️  db_get({key}): no connection")
-        return None
     try:
-        cur = conn.cursor()
-        cur.execute("SELECT value FROM flowcheck_store WHERE key = %s", (key,))
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row:
-            print(f"[STORAGE] ✅ Loaded '{key}' from Supabase ({len(row[0])} chars)")
-            return row[0]
-        print(f"[STORAGE] '{key}' not in Supabase yet")
+        r = requests.get(
+            _base() + f"?key=eq.{key}&select=value",
+            headers=_headers(),
+            timeout=8
+        )
+        if r.status_code == 200:
+            rows = r.json()
+            if rows:
+                val = rows[0].get("value")
+                print(f"[STORAGE] ✅ Loaded '{key}' from Supabase ({len(val)} chars)")
+                return val
+        print(f"[STORAGE] '{key}' not found in Supabase (status {r.status_code})")
         return None
     except Exception as e:
         print(f"[STORAGE] ⚠️  db_get({key}) error: {e}")
-        try: conn.close()
-        except: pass
         return None
 
 def db_set(key: str, value: str) -> bool:
-    """Write to Supabase. Returns True on success."""
+    """Write value to Supabase via REST API (upsert)."""
     if not has_db():
-        print(f"[STORAGE] ⚠️  db_set({key}): no DATABASE_URL")
-        return False
-    conn = get_conn()
-    if not conn:
-        print(f"[STORAGE] ⚠️  db_set({key}): no connection — NOT saved to Supabase!")
         return False
     try:
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO flowcheck_store (key, value, updated)
-            VALUES (%s, %s, NOW())
-            ON CONFLICT (key) DO UPDATE
-            SET value = EXCLUDED.value, updated = NOW()
-        """, (key, value))
-        conn.commit()
-        cur.close()
-        conn.close()
-        print(f"[STORAGE] ✅ Saved '{key}' to Supabase ({len(value)} chars)")
-        return True
+        r = requests.post(
+            _base(),
+            headers={**_headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+            json={"key": key, "value": value},
+            timeout=10
+        )
+        if r.status_code in (200, 201, 204):
+            print(f"[STORAGE] ✅ Saved '{key}' to Supabase ({len(value)} chars)")
+            return True
+        print(f"[STORAGE] ⚠️  db_set({key}) failed: {r.status_code} {r.text[:120]}")
+        return False
     except Exception as e:
-        print(f"[STORAGE] ⚠️  db_set({key}) FAILED: {e} — NOT saved to Supabase!")
-        try: conn.close()
-        except: pass
+        print(f"[STORAGE] ⚠️  db_set({key}) error: {e} — NOT saved!")
         return False
 
 def load_data(key: str, tmp_path: str, default) -> dict | list:
-    """Load from Supabase first, then /tmp, then default."""
+    """Load from Supabase first, /tmp fallback, then default."""
     init_db()
 
-    # 1. Supabase (authoritative)
     if has_db():
         raw = db_get(key)
         if raw:
@@ -132,7 +143,6 @@ def load_data(key: str, tmp_path: str, default) -> dict | list:
             except Exception as e:
                 print(f"[STORAGE] JSON parse error ({key}): {e}")
 
-    # 2. /tmp fallback
     try:
         with open(tmp_path) as f:
             data = json.load(f)
@@ -145,39 +155,42 @@ def load_data(key: str, tmp_path: str, default) -> dict | list:
     return default
 
 def save_data(key: str, tmp_path: str, data) -> bool:
-    """Save to Supabase AND /tmp."""
+    """Save to Supabase AND /tmp backup."""
     init_db()
     json_str = json.dumps(data)
     db_ok    = False
 
-    # 1. Supabase first
     if has_db():
         db_ok = db_set(key, json_str)
         if not db_ok:
-            print(f"[STORAGE] ⚠️  '{key}' NOT in Supabase — will be lost on redeploy!")
+            print(f"[STORAGE] ⚠️  '{key}' NOT saved to Supabase — will be lost on redeploy!")
 
-    # 2. Always /tmp as local cache
     try:
         with open(tmp_path, "w") as f:
             f.write(json_str)
     except Exception as e:
-        print(f"[STORAGE] /tmp save error ({tmp_path}): {e}")
+        print(f"[STORAGE] /tmp save error: {e}")
 
     return db_ok
 
 def storage_status() -> str:
     if not has_db():
-        return "/tmp only — add DATABASE_URL for persistence"
-    conn = get_conn()
-    if conn:
-        conn.close()
-        return "Supabase ✅"
-    return "Supabase configured but connection failing ⚠️"
+        return "/tmp only (add SUPABASE_URL + SUPABASE_KEY for persistence)"
+    try:
+        r = requests.get(
+            _base() + "?key=eq.__ping__&select=key",
+            headers=_headers(), timeout=5
+        )
+        if r.status_code in (200, 406):
+            return "Supabase REST API ✅"
+        return f"Supabase error: {r.status_code}"
+    except Exception as e:
+        return f"Supabase unreachable: {str(e)[:60]}"
 
 def migrate_tmp_to_db():
-    """Copy /tmp files to Supabase. Skips keys already in Supabase."""
+    """Copy /tmp files to Supabase. Safe to run multiple times."""
     if not has_db():
-        return "No database configured"
+        return "No Supabase credentials configured"
     files = {
         "journal":      "/tmp/flowcheck_journal.json",
         "accounts":     "/tmp/flowcheck_accounts.json",
