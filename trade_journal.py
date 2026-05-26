@@ -21,6 +21,19 @@ ACCOUNTS_KEY  = "accounts"
 def poly_key():
     return os.environ.get("POLYGON_API_KEY")
 
+def normalize_expiry(expiry: str) -> str:
+    """Normalize expiry to MM/DD/YY format consistently."""
+    if not expiry:
+        return expiry
+    expiry = expiry.strip()
+    from datetime import datetime as _dt
+    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return _dt.strptime(expiry, fmt).strftime("%m/%d/%y")
+        except:
+            continue
+    return expiry  # Return as-is if can't parse
+
 # -- Accounts (stored separately in Supabase) -------------------------
 
 def load_accounts() -> dict:

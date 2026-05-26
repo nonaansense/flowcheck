@@ -722,6 +722,24 @@ async def migrate_storage():
     result = migrate_tmp_to_db()
     return {"result": result}
 
+@app.get("/normalize-expiry")
+async def normalize_expiry_endpoint():
+    """Normalize all expiry dates in journal to MM/DD/YY format."""
+    from trade_journal import load_journal, save_journal, normalize_expiry
+    journal = load_journal()
+    fixed   = 0
+    for bucket in ("trades", "closed"):
+        for t in journal.get(bucket, []):
+            raw = t.get("expiry","")
+            if raw:
+                normalized = normalize_expiry(raw)
+                if normalized != raw:
+                    t["expiry"] = normalized
+                    fixed += 1
+    if fixed:
+        save_journal(journal)
+    return {"normalized": fixed, "message": f"Fixed {fixed} expiry dates to MM/DD/YY format"}
+
 @app.get("/setup-storage")
 async def setup_storage():
     """Create flowcheck_store table in Supabase. Run once after connecting."""

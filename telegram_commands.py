@@ -831,6 +831,11 @@ def handle_sync_position(args: list, reply_chat_id: str):
             elif "/" in a or "-" in a:
                 expiry = a
 
+        # Normalize expiry format
+        if expiry:
+            from trade_journal import normalize_expiry
+            expiry = normalize_expiry(expiry)
+
         from trade_journal import load_journal, add_entry
         journal = load_journal()
         open_t  = journal.get("trades",[])
@@ -1294,7 +1299,12 @@ def handle_trade_photo(photo_list: list, caption: str, reply_chat_id: str):
     ticker     = (data.get("ticker","") or "").upper()
     strike     = str(data.get("strike","") or "")
     opt_type   = data.get("option_type","call")
-    expiry     = data.get("expiry","")
+    expiry_raw = data.get("expiry","")
+    try:
+        from trade_journal import normalize_expiry
+        expiry = normalize_expiry(expiry_raw)
+    except:
+        expiry = expiry_raw
     contracts  = data.get("contracts")
     price      = data.get("price")
     date_str   = data.get("date","")
