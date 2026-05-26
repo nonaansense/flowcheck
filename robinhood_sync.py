@@ -100,26 +100,36 @@ def login(mfa_code: str = None) -> tuple:
                 print(f"[RH] Device token login failed: {e} — trying fresh login")
 
         # Fresh login
-        result = rh.login(
-            username, password,
-            store_session=False,
-            mfa_code=mfa_code,
-        )
-
-        # Save device token for future logins
-        new_token = result.get("device_token") if isinstance(result, dict) else None
-        if new_token:
-            save_device_token(new_token)
-
-        _logged_in = True
-        print("[RH] ✅ Logged in successfully")
-        return True, "Logged in successfully"
+        try:
+            result = rh.login(
+                username, password,
+                store_session=False,
+                mfa_code=mfa_code,
+            )
+            # Save device token for future logins
+            new_token = result.get("device_token") if isinstance(result, dict) else None
+            if new_token:
+                save_device_token(new_token)
+            _logged_in = True
+            print("[RH] ✅ Logged in successfully")
+            return True, "Logged in successfully"
+        except Exception as e2:
+            err2 = str(e2).lower()
+            print(f"[RH] Fresh login error: {e2}")
+            if "mfa" in err2 or "challenge" in err2 or "verification" in err2:
+                return False, "MFA_REQUIRED"
+            # Check if already logged in despite exception
+            if _logged_in:
+                return True, "Logged in successfully"
+            return False, f"Login failed: {str(e2)[:100]}"
 
     except Exception as e:
         err = str(e)
         print(f"[RH] Login error: {err}")
         if "mfa" in err.lower() or "challenge" in err.lower() or "verification" in err.lower():
             return False, "MFA_REQUIRED"
+        if _logged_in:
+            return True, "Logged in successfully"
         return False, f"Login failed: {err[:100]}"
 
 def parse_option_order(order: dict) -> dict | None:
