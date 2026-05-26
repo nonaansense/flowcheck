@@ -1,4 +1,4 @@
-# FlowCheck v15.0
+# FlowCheck v16.0
 
 Automated options flow analysis system. Monitors @FL0WG0D on X via IFTTT,
 analyzes Bullflow screenshots with Claude vision, scores against a multi-factor
@@ -232,6 +232,7 @@ IV Rank: X% Label — advice
 | Every 30 min | IFTTT watchdog (alerts if no webhook 2h+ during market) |
 | 4:00 PM ET Mon-Fri | Outcome tracking with option P&L |
 | 4:02 PM ET Mon-Fri | EOD option pricer — updates last price + unrealized P&L for open positions |
+| 4:05 PM ET Mon-Fri | Daily position check-in — shows open journal positions, prompts to sync missing |
 | 4:02 PM ET Mon-Fri | Auto-close expired positions |
 | 4:05 PM ET Mon-Fri | Paper trade outcome update |
 | 4:10 PM ET Mon-Fri | EOD journal reminder for unclosed trades |
@@ -349,6 +350,7 @@ View P&L per account with `/pnl @accountid` or overview with `/accounts`.
 Daily P&L summary sent automatically at 4:10 PM ET.
 EOD option prices fetched automatically at 4:02 PM ET — use `/refresh` for on-demand updates.
 Web table shows Last $ and Open P&L columns with green/red coloring.
+Daily position check-in at 4:05 PM ET — compare journal vs broker, sync any missing trades with `/sync`.
 
 ---
 
