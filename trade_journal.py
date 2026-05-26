@@ -1430,6 +1430,76 @@ def get_missed_summary() -> str:
 
 # ── Display Functions ──────────────────────────────────────────────────
 
+def sync_positions(positions: list) -> dict:
+    """
+    Reconcile a list of positions against open journal trades.
+    positions: list of dicts with ticker, strike, opt_type, expiry, contracts, price, account_id
+
+    Returns:
+      added:   trades that were in positions but not in journal — auto-logged
+      missing: trades that are in journal but not in positions list — flagged
+      matched: trades that match
+    """
+    journal  = load_journal()
+    open_t   = journal.get("trades", [])
+    added    = []
+    matched  = []
+    missing  = []
+
+    # Check each position against journal
+    for pos in positions:
+        ticker     = pos.get("ticker","").upper()
+        strike     = str(pos.get("strike",""))
+        opt_type   = pos.get("opt_type","call").lower()
+        expiry     = pos.get("expiry","")
+        contracts  = int(pos.get("contracts",1))
+        price      = float(pos.get("price",0))
+        account_id = pos.get("account_id","default")
+
+        # Find matching open trade
+        found = False
+        for t in open_t:
+            if (t.get("ticker","").upper() == ticker and
+                str(t.get("strike","")) == strike and
+                t.get("option_type","call").lower() == opt_type and
+                t.get("account_id","default") == account_id):
+                found = True
+                matched.append(ticker + " " + strike + opt_type[0].upper())
+                break
+
+        if not found:
+            # Not in journal — add it
+            trade = add_entry(
+                ticker, strike, opt_type, expiry,
+                contracts, price,
+                None, None, account_id
+            )
+            added.append({
+                "ticker":    ticker,
+                "strike":    strike,
+                "opt_type":  opt_type,
+                "expiry":    expiry,
+                "contracts": contracts,
+                "price":     price,
+                "account_id": account_id,
+            })
+            print(f"[SYNC] Added missing position: {ticker} {strike}{opt_type[0].upper()}")
+
+    # Check journal for positions not in sync list
+    sync_tickers = set(
+        (p.get("ticker","").upper(), str(p.get("strike","")), p.get("account_id","default"))
+        for p in positions
+    )
+    for t in open_t:
+        key = (t.get("ticker","").upper(), str(t.get("strike","")), t.get("account_id","default"))
+        if key not in sync_tickers:
+            missing.append(
+                t.get("ticker","") + " " + str(t.get("strike","")) +
+                t.get("option_type","call")[0].upper() + " " + str(t.get("expiry",""))
+            )
+
+    return {"added": added, "matched": matched, "missing": missing}
+
 def delete_trade(ticker: str, account_id: str = None, trade_id: str = None) -> tuple:
     """
     Delete a trade from open or closed journal.

@@ -155,6 +155,19 @@ def handle_command(text: str, from_chat_id: str):
         handle_accounts(from_chat_id)
     elif cmd == "refresh":
         handle_refresh(from_chat_id)
+    elif cmd == "sync" and args:
+        # /sync TICKER STRIKE C/P CONTRACTS PRICE [@ACCOUNT]
+        # /sync FLNC 23 C 3 2.85 @rh_trad
+        # Can send multiple lines — each /sync adds one position
+        handle_sync_position(args, from_chat_id)
+    elif cmd == "sync" and not args:
+        send_reply(
+            "Sync your open positions against the journal." + chr(10) + chr(10) +
+            "Format: /sync TICKER STRIKE C/P CONTRACTS PRICE [@ACCOUNT]" + chr(10) +
+            "Example: /sync FLNC 23 C 3 2.85 @rh_trad" + chr(10) + chr(10) +
+            "Send one line per position. Bot adds any missing to journal.",
+            from_chat_id
+        )
     elif cmd == "debrief":
         handle_debrief(from_chat_id)
     elif cmd == "account" and args:
@@ -782,6 +795,85 @@ def handle_refresh(reply_chat_id: str):
     except Exception as e:
         send_reply("Error: " + str(e), reply_chat_id)
 
+def handle_sync_position(args: list, reply_chat_id: str):
+    """
+    Log a position if not already in journal.
+    /sync TICKER STRIKE C/P CONTRACTS PRICE [@ACCOUNT]
+    /sync FLNC 23 C 3 2.85 @rh_trad
+    """
+    try:
+        if len(args) < 5:
+            send_reply(
+                "Format: /sync TICKER STRIKE C/P CONTRACTS PRICE [@ACCOUNT]" + chr(10) +
+                "Example: /sync FLNC 23 C 3 2.85 @rh_trad",
+                reply_chat_id
+            )
+            return
+
+        ticker     = args[0].upper()
+        strike     = args[1]
+        opt_type   = "call" if args[2].upper() in ("C","CALL") else "put"
+        contracts  = int(args[3])
+        price      = float(args[4])
+        account_id = "default"
+        expiry     = ""
+
+        # Parse optional expiry and @account from remaining args
+        for a in args[5:]:
+            if a.startswith("@"):
+                account_id = a[1:].lower()
+            elif "/" in a or "-" in a:
+                expiry = a
+
+        from trade_journal import load_journal, add_entry
+        journal = load_journal()
+        open_t  = journal.get("trades",[])
+
+        # Check if already in journal
+        for t in open_t:
+            if (t.get("ticker","").upper() == ticker and
+                str(t.get("strike","")) == strike and
+                t.get("option_type","call") == opt_type and
+                t.get("account_id","default") == account_id):
+                otype = opt_type[0].upper()
+                send_reply(
+                    "Already in journal: " + ticker + " " + strike + otype +
+                    " [@" + account_id + "]" + chr(10) +
+                    "No duplicate added.",
+                    reply_chat_id
+                )
+                return
+
+        # Not found — add it
+        trade     = add_entry(
+            ticker, strike, opt_type, expiry,
+            contracts, price, None, None, account_id
+        )
+        otype     = opt_type[0].upper()
+        acc_label = " [@" + account_id + "]" if account_id != "default" else ""
+        total     = round(price * contracts * 100, 2)
+
+        sizing_note = ""
+        if trade.get("_deployed") is not None:
+            sizing_note = (
+                chr(10) + "Deployed: $" + str(trade["_deployed"]) +
+                " of $" + str(int(trade["_acc_size"])) +
+                " (" + str(trade["_deployed_pct"]) + "%)"
+            )
+
+        send_reply(
+            "✅ Synced to journal" + acc_label + ":" + chr(10) +
+            ticker + " " + strike + otype +
+            (" " + expiry if expiry else "") +
+            " x" + str(contracts) + " @ $" + str(price) + chr(10) +
+            "Total: $" + str(total) +
+            sizing_note,
+            reply_chat_id
+        )
+
+    except Exception as e:
+        send_reply("Error: " + str(e), reply_chat_id)
+
 def handle_help(reply_chat_id: str):
     msg = chr(10).join([
         'FlowCheck Commands',
@@ -804,6 +896,7 @@ def handle_help(reply_chat_id: str):
         '',
         'TRADE JOURNAL',
         '/journal [@ACCOUNT] — open trades with last price + unrealized P&L',
+        '/sync TICKER STRIKE C/P CONTRACTS PRICE [@ACCOUNT] — add missing position',
         '/refresh — fetch current prices for all open positions',
         '/pnl [@ACCOUNT] — P&L + slippage + fees analysis',
         '/accounts — all accounts with P&L overview',
@@ -834,6 +927,13 @@ def handle_journal_help(reply_chat_id: str):
         '    /spread AAPL dc 06/20/26 2 200 205 1.50            (buy 200C, sell 205C)',
         '    /spread SPY dp 06/20/26 1 520 515 2.00             (buy 520P, sell 515P)',
         '  Max profit/loss calculated automatically',
+        '',
+        'POSITION SYNC (no screenshot needed)',
+        '/sync TICKER STRIKE C/P CONTRACTS PRICE [@ACCOUNT]',
+        '  Adds position to journal if not already there',
+        '  /sync FLNC 23 C 3 2.85 @rh_trad',
+        '  /sync BE 460 C 3 13.20 @rh_brok',
+        '  Send one line per position after each trading day',
         '',
         'SCREENSHOT LOGGING',
         '  Send any broker fill confirmation photo to the bot',

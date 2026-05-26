@@ -23,6 +23,42 @@ from weekly_report import send_weekly_report
 from market_calendar import is_market_open, market_status, get_holiday_name
 from price_alerts import check_price_alerts
 from daily_pnl import send_daily_pnl
+
+def send_position_check():
+    """
+    Send daily position check at 4:05 PM ET.
+    Shows open journal positions and prompts to sync any missing.
+    """
+    try:
+        from trade_journal import load_journal
+        journal  = load_journal()
+        open_t   = journal.get("trades",[])
+        accounts = journal.get("accounts",{})
+
+        if not open_t:
+            return
+
+        lines = ["📋 Daily Position Check — verify your open positions"]
+        lines.append("")
+        lines.append("Journal shows " + str(len(open_t)) + " open position(s):")
+        for t in open_t:
+            otype  = t.get("option_type","call")[0].upper()
+            aid    = t.get("account_id","default")
+            aname  = accounts.get(aid,{}).get("name",aid)
+            remaining = t.get("contracts_remaining") or t.get("contracts","?")
+            lines.append(
+                "  " + t.get("ticker","") + " " + str(t.get("strike","")) + otype +
+                " " + str(t.get("expiry","")) +
+                " x" + str(remaining) + " [@" + aname + "]"
+            )
+        lines.append("")
+        lines.append("Missing a position? Add it with:")
+        lines.append("/sync TICKER STRIKE C/P CONTRACTS PRICE @ACCOUNT")
+        lines.append("Example: /sync FLNC 23 C 3 2.85 @rh_trad")
+        send_sms(chr(10).join(lines))
+        print("[POSITION CHECK] Sent daily check")
+    except Exception as e:
+        print(f"[POSITION CHECK] Error: {e}")
 from eod_pricer import update_eod_prices
 from storage import init_db, storage_status
 from position_sizing import calc_position_size, format_sizing_for_sms
@@ -231,6 +267,9 @@ async def startup():
                           "cron", day_of_week="mon-fri", hour=16, minute=2, id="expire_cleanup")
         scheduler.add_job(lambda: remind_open_journal_trades() if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=10, id="journal_reminder")
+        scheduler.add_job(lambda: send_position_check() if is_market_open() else None,
+                          "cron", day_of_week="mon-fri", hour=16, minute=5, id="position_check",
+                          max_instances=1, coalesce=True)
         scheduler.add_job(lambda: send_daily_pnl(send_sms) if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=10, id="daily_pnl",
                           max_instances=1, coalesce=True)
