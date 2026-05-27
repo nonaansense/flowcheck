@@ -1491,6 +1491,92 @@ async def journal_page(account: str = None, sort: str = "desc"):
     open_t   = sorted(open_t,   key=_sort_key, reverse=sort_desc)
     closed_t = sorted(closed_t, key=_sort_key, reverse=sort_desc)
 
+    # ── Stats dashboard ──────────────────────────────────────
+    from datetime import datetime as _dt, date as _date
+    now_et    = _dt.now(__import__("zoneinfo").ZoneInfo("America/New_York"))
+    today_str = now_et.strftime("%Y-%m-%d")
+
+    # Today's closed P&L
+    closed_today = [t for t in all_closed if t.get("exit_date","") == today_str]
+    today_pnl    = sum(float(t.get("pnl_total",0) or 0) for t in closed_today)
+    today_wins   = sum(1 for t in closed_today if float(t.get("pnl_total",0) or 0) > 0)
+    today_losses = len(closed_today) - today_wins
+
+    # Total open exposure per account
+    acct_exposure = {}
+    for t in all_open:
+        aid  = t.get("account_id","default")
+        cost = float(t.get("total_cost",0) or 0)
+        acct_exposure[aid] = acct_exposure.get(aid, 0) + cost
+
+    # Total unrealized P&L
+    total_unreal = sum(float(t.get("unrealized_pnl",0) or 0) for t in all_open)
+
+    # All-time P&L
+    all_time_pnl  = sum(float(t.get("pnl_total",0) or 0) for t in all_closed)
+    all_time_wins = sum(1 for t in all_closed if float(t.get("pnl_total",0) or 0) > 0)
+    win_rate      = round(all_time_wins / len(all_closed) * 100) if all_closed else 0
+
+    def stat_card(label, value, color=""):
+        c = f"color:{color}" if color else ""
+        return (f"<div style='background:#1e293b;border-radius:10px;padding:14px 18px;"
+                f"min-width:130px;flex:1'>"
+                f"<div style='font-size:11px;color:#94a3b8;margin-bottom:4px'>{label}</div>"
+                f"<div style='font-size:18px;font-weight:700;{c}'>{value}</div>"
+                f"</div>")
+
+    def money(v, plus=True):
+        sign = "+" if v >= 0 and plus else ""
+        col  = "#22c55e" if v >= 0 else "#ef4444"
+        return f"<span style='color:{col}'>{sign}${round(abs(v),2):,}</span>" if v != 0 else "—"
+
+    # Build account exposure cards
+    exposure_cards = ""
+    for aid, exp in acct_exposure.items():
+        aname = acc_name(aid)
+        acc_size = float(accounts.get(aid,{}).get("size",0) or 0)
+        pct_str  = f" ({round(exp/acc_size*100,1)}%)" if acc_size > 0 else ""
+        exposure_cards += stat_card(aname + " Exposure", f"${exp:,.0f}{pct_str}")
+
+    # Today P&L color
+    today_color = "#22c55e" if today_pnl >= 0 else "#ef4444"
+    today_sign  = "+" if today_pnl >= 0 else ""
+
+    # Per-account today P&L
+    acct_today = {}
+    for t in closed_today:
+        aid = t.get("account_id","default")
+        acct_today[aid] = acct_today.get(aid,0) + float(t.get("pnl_total",0) or 0)
+
+    acct_today_html = ""
+    if len(acct_today) > 1:
+        for aid, pnl in acct_today.items():
+            aname = acc_name(aid)
+            sign  = "+" if pnl >= 0 else ""
+            col   = "#22c55e" if pnl >= 0 else "#ef4444"
+            acct_today_html += (f"<span style='color:{col};font-size:12px;margin-right:10px'>"
+                               f"{aname}: {sign}${round(pnl,2):,}</span>")
+
+    unreal_color = "#22c55e" if total_unreal >= 0 else "#ef4444"
+    unreal_sign  = "+" if total_unreal >= 0 else ""
+    alltime_color = "#22c55e" if all_time_pnl >= 0 else "#ef4444"
+    alltime_sign  = "+" if all_time_pnl >= 0 else ""
+
+    stats_dashboard = f"""
+<div style='margin:16px 0;display:flex;flex-wrap:wrap;gap:10px;align-items:stretch'>
+  {stat_card("Today P&L (" + str(len(closed_today)) + " trades)",
+             f"<span style='color:{today_color}'>{today_sign}${abs(round(today_pnl,2)):,}</span>")}
+  {stat_card("Today W/L", f"{today_wins}W / {today_losses}L") if closed_today else ""}
+  {stat_card("Open Unrealized",
+             f"<span style='color:{unreal_color}'>{unreal_sign}${abs(round(total_unreal,2)):,}</span>")}
+  {exposure_cards}
+  {stat_card("All-Time P&L",
+             f"<span style='color:{alltime_color}'>{alltime_sign}${abs(round(all_time_pnl,2)):,}</span>")}
+  {stat_card("Win Rate", f"{win_rate}% ({all_time_wins}/{len(all_closed)})")}
+</div>
+{('<div style="margin-bottom:12px;font-size:13px">' + acct_today_html + '</div>') if acct_today_html else ""}
+"""
+
     rows_open = ""
     for t in open_t:
         otype     = t.get("option_type","call")[0].upper()
@@ -1657,6 +1743,7 @@ tr:hover td{{background:#1e293b}}
 <body>
 <h1>FlowCheck Journal{title_suffix}</h1>
 <p>{len(closed_t)} closed &nbsp;·&nbsp; {len(open_t)} open &nbsp;·&nbsp; {len(missed_t)} missed</p>
+{stats_dashboard}
 {tabs_html}
 <button class="btn" onclick="downloadCSV()">⬇ Download CSV for Excel</button>
 <div style="display:inline-block;margin-left:12px">
