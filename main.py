@@ -870,6 +870,27 @@ async def clear_test_trades():
     save_analyses()
     return {"removed_analyses": removed_anal, "note": "Watchlist clears on next redeploy"}
 
+@app.post("/journal-delete")
+async def journal_delete_api(request: Request):
+    """Delete a trade by ID from web table. POST body: {"trade_id": "abc", "bucket": "trades"}"""
+    try:
+        body     = await request.json()
+        trade_id = body.get("trade_id","")
+        bucket   = body.get("bucket","trades")  # "trades" or "closed"
+        if not trade_id:
+            return {"success": False, "error": "trade_id required"}
+        from trade_journal import load_journal, save_journal
+        journal = load_journal()
+        before  = len(journal.get(bucket,[]))
+        journal[bucket] = [t for t in journal.get(bucket,[]) if str(t.get("id","")) != str(trade_id)]
+        after   = len(journal.get(bucket,[]))
+        if before != after:
+            save_journal(journal)
+            return {"success": True, "deleted": before - after}
+        return {"success": False, "error": "Trade not found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.post("/journal-edit")
 async def journal_edit_api(request: Request):
     """
@@ -1703,26 +1724,32 @@ async def journal_page(account: str = None, sort: str = "desc"):
             type_str     = ot
         tid = str(t.get("id",""))
         acc_disp = acc_name(t.get("account_id","default"))
+        lp   = t.get("last_price")
+        pct  = t.get("unrealized_pct")
+        pnl  = t.get("unrealized_pnl")
+        if lp:
+            lp_cell  = f"<td data-edit='last_price' data-trade-id='{tid}'>${lp}</td>"
+            pnl_sign = "+" if float(pnl or 0) >= 0 else ""
+            pnl_col  = "color:#22c55e" if float(pnl or 0) >= 0 else "color:#ef4444"
+            pnl_cell = f"<td style='{pnl_col}'>{pnl_sign}{pct}% / ${pnl_sign}{pnl}</td>"
+        else:
+            lp_cell  = f"<td data-edit='last_price' data-trade-id='{tid}'>—</td>"
+            pnl_cell = "<td>—</td>"
         rows_open += (
             "<tr>"
             + (f"<td data-edit='account_id' data-trade-id='{tid}'>{acc_disp}</td>" if multi_account else "") +
-            f"<td>{t.get('ticker','')}</td>"
-            f"<td>{type_str}</td>"
-            f"<td>{contract_str}</td>"
+            f"<td data-edit='ticker' data-trade-id='{tid}'>{t.get('ticker','')}</td>"
+            f"<td data-edit='order_type' data-trade-id='{tid}'>{type_str}</td>"
+            f"<td data-edit='strike' data-trade-id='{tid}'>{contract_str}</td>"
             f"<td data-edit='expiry' data-trade-id='{tid}'>{t.get('expiry','')}</td>"
             f"<td data-edit='contracts' data-trade-id='{tid}'>{remaining}/{t.get('contracts','?')}</td>"
             f"<td data-edit='entry_price' data-trade-id='{tid}'>${t.get('entry_price') or t.get('credit','')}</td>"
-            + (lambda lp, pct, pnl: (
-                f"<td>${lp}</td>"
-                f"<td style='{'color:#22c55e' if float(pnl or 0) >= 0 else 'color:#ef4444'}'>"
-                f"{'+'if float(pnl or 0)>=0 else ''}{pct}% / ${'+'if float(pnl or 0)>=0 else ''}{pnl}</td>"
-            ) if lp else "<td>—</td><td>—</td>")(
-                t.get("last_price"), t.get("unrealized_pct"), t.get("unrealized_pnl")
-            ) +
+            + lp_cell + pnl_cell +
             f"<td>${t.get('total_cost','')}</td>"
-            f"<td>{t.get('entry_date','')} {t.get('entry_time','')}</td>"
+            f"<td data-edit='entry_date' data-trade-id='{tid}'>{t.get('entry_date','')} {t.get('entry_time','')}</td>"
             f"<td data-edit='fc_score' data-trade-id='{tid}'>{fmt(t.get('fc_score'))}/7 {fmt(t.get('fc_verdict'))}</td>"
             f"<td data-edit='note' data-trade-id='{tid}'>{t.get('note','')}</td>"
+            "<td><button onclick='deleteTrade(\"" + tid + "\",\"open\")' style='background:#ef4444;color:white;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px'>✕</button></td>"
             "</tr>"
         )
 
@@ -1765,6 +1792,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             f"<td data-edit='fc_score' data-trade-id='{tid_c}'>{fmt(t.get('fc_score'))}/7 {fmt(t.get('fc_verdict'))}</td>"
             f"<td>{tags}</td>"
             f"<td data-edit='note' data-trade-id='{tid_c}'>{t.get('note','')}</td>"
+            "<td><button onclick='deleteTrade(\"" + tid_c + "\",\"closed\")' style='background:#ef4444;color:white;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px'>✕</button></td>"
             "</tr>"
         )
 
@@ -1805,7 +1833,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             "<tr>" + acc_th +
             "<th>Ticker</th><th>Type</th><th>Contract</th><th>Expiry</th><th>Qty</th>"
             "<th>Entry $</th><th>Last $</th><th>Open P&amp;L</th>"
-            "<th>Cost</th><th>Entry Time</th><th>FlowCheck</th><th>Note</th></tr>"
+            "<th>Cost</th><th>Entry Time</th><th>FlowCheck</th><th>Note</th><th></th></tr>"
             + rows_open +
             "</table></div>"
         )
@@ -1820,7 +1848,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             "<th>Entry $</th><th>Exit $</th><th>P&amp;L</th>"
             "<th>Entry Time</th><th>Exit Time</th><th>Held</th>"
             "<th>Peak</th><th>Max DD</th><th>Left on Table</th>"
-            "<th>FlowCheck</th><th>Tags</th><th>Note</th></tr>"
+            "<th>FlowCheck</th><th>Tags</th><th>Note</th><th></th></tr>"
             + rows_closed +
             "</table></div>"
         )
@@ -1959,6 +1987,23 @@ function makeEditable(td, tradeId, field) {{
     if (e.key==='Escape') td.innerText=orig;
   }};
 }}
+async function deleteTrade(tradeId, bucket) {{
+  if (!confirm('Delete this trade?')) return;
+  try {{
+    const r = await fetch('/journal-delete', {{
+      method: 'POST',
+      headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{trade_id: tradeId, bucket: bucket == 'open' ? 'trades' : 'closed'}})
+    }});
+    const data = await r.json();
+    if (data.success) {{
+      location.reload();
+    }} else {{
+      alert('Error: ' + data.error);
+    }}
+  }} catch(e) {{ alert('Delete failed'); }}
+}}
+
 function attachEditors() {{
   document.querySelectorAll('[data-edit]').forEach(function(td) {{
     if (td._hasEditor) return;
