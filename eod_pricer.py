@@ -229,7 +229,9 @@ def update_eod_prices(send_sms_fn=None):
     """
     Fetch current/closing prices for all open positions and update journal.
     Called at 4:02 PM ET on trading days, and on /refresh command.
+    VERSION: v2
     """
+    print("[EOD PRICER] v2 starting...")
     from trade_journal import load_journal, save_journal
     from market_calendar import is_market_open
 

@@ -920,8 +920,34 @@ def edit_trade(ticker: str, field: str, value: str,
             if value.upper() not in ("TRADE","WATCH","SKIP"):
                 return False, "fc_verdict must be TRADE, WATCH, or SKIP", None
             target["fc_verdict"] = value.upper()
+        elif field == "long_strike":
+            target["long_strike"] = str(value)
+        elif field == "short_strike":
+            target["short_strike"] = str(value)
+        elif field == "credit":
+            try:
+                target["credit"] = float(value)
+                # Recalculate max profit/loss
+                width  = float(target.get("spread_width",0) or 0)
+                cred   = abs(float(value))
+                contr  = int(target.get("contracts",1))
+                is_deb = "debit" in (target.get("spread_type","") or "")
+                if width > 0:
+                    if is_deb:
+                        target["max_profit"] = round((width - cred) * contr * 100, 2)
+                        target["max_loss"]   = round(cred * contr * 100, 2)
+                    else:
+                        target["max_profit"] = round(cred * contr * 100, 2)
+                        target["max_loss"]   = round((width - cred) * contr * 100, 2)
+            except:
+                return False, "credit must be a number e.g. 3.50", None
+        elif field == "spread_width":
+            try:
+                target["spread_width"] = float(value)
+            except:
+                return False, "spread_width must be a number e.g. 10", None
         else:
-            valid = "entry_date, entry_time, exit_date, exit_time, entry_price, contracts, expiry, strike, note, option_type, account_id, fc_score, fc_verdict"
+            valid = "entry_date, entry_time, exit_date, exit_time, entry_price, contracts, expiry, strike, note, option_type, account_id, fc_score, fc_verdict, long_strike, short_strike, credit, spread_width"
             return False, "Unknown field: " + field + ". Valid: " + valid, None
 
         save_journal(journal)
