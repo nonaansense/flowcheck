@@ -17,13 +17,17 @@ def build_option_ticker(ticker: str, strike: str, opt_type: str, expiry: str) ->
     """Build Polygon option ticker e.g. O:AAPL251219C00150000"""
     try:
         # Parse expiry
-        expiry = expiry.strip()
+        expiry  = (expiry or "").strip()
+        exp_dt  = None
         for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
             try:
                 exp_dt = datetime.strptime(expiry, fmt)
                 break
             except:
                 continue
+        if not exp_dt:
+            print(f"[EOD] Option ticker build error: cannot parse expiry '{expiry}'")
+            return None
         exp_str  = exp_dt.strftime("%y%m%d")
         call_put = "C" if opt_type.lower() in ("c","call") else "P"
         # Strike as 8-digit integer (strike * 1000, padded)
@@ -109,13 +113,17 @@ def get_option_price_tradier(ticker: str, strike: str, opt_type: str, expiry: st
     try:
         # Normalize expiry to YYYY-MM-DD
         from datetime import datetime as _dt
-        expiry = expiry.strip()
-        for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+        expiry   = (expiry or "").strip()
+        exp_str  = None
+        for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y".replace("y","Y")):
             try:
                 exp_str = _dt.strptime(expiry, fmt).strftime("%Y-%m-%d")
                 break
             except:
                 continue
+        if not exp_str:
+            print(f"[EOD] Tradier: cannot parse expiry '{expiry}'")
+            return None
 
         call_put = "call" if opt_type.lower() in ("c","call") else "put"
         r = requests.get(
@@ -132,24 +140,34 @@ def get_option_price_tradier(ticker: str, strike: str, opt_type: str, expiry: st
             timeout=10
         )
         if r.status_code != 200:
-            print(f"[EOD] Tradier error: {r.status_code} {r.text[:100]}")
+            print(f"[EOD] Tradier HTTP {r.status_code} for {ticker}")
             return None
 
-        options = r.json().get("options",{}).get("option",[]) or []
+        # Handle None options gracefully
+        data     = r.json()
+        opts_raw = data.get("options") or {}
+        options  = opts_raw.get("option") if isinstance(opts_raw, dict) else []
+        if not options:
+            print(f"[EOD] Tradier: no options for {ticker} {exp_str}")
+            return None
+        if isinstance(options, dict):
+            options = [options]  # Single option returned as dict
+
         strike_f = float(strike)
         for opt in options:
-            if (abs(float(opt.get("strike",0)) - strike_f) < 0.01 and
-                opt.get("option_type","").lower() == call_put):
-                # Use mid price (bid+ask/2), fall back to last
-                bid  = float(opt.get("bid",0) or 0)
-                ask  = float(opt.get("ask",0) or 0)
-                last = float(opt.get("last",0) or 0)
-                mid  = round((bid + ask) / 2, 2) if bid > 0 and ask > 0 else 0
+            if not isinstance(opt, dict):
+                continue
+            if (abs(float(opt.get("strike",0) or 0) - strike_f) < 0.01 and
+                (opt.get("option_type") or "").lower() == call_put):
+                bid   = float(opt.get("bid",0) or 0)
+                ask   = float(opt.get("ask",0) or 0)
+                last  = float(opt.get("last",0) or 0)
+                mid   = round((bid + ask) / 2, 2) if bid > 0 and ask > 0 else 0
                 price = mid or last
                 if price > 0:
                     print(f"[EOD] Tradier: {ticker} {strike}{call_put[0].upper()} = ${price} (bid={bid} ask={ask})")
                     return price
-        print(f"[EOD] Tradier: {ticker} {strike} not found in chain")
+        print(f"[EOD] Tradier: {ticker} {strike}{call_put[0].upper()} not found in {exp_str} chain")
         return None
     except Exception as e:
         print(f"[EOD] Tradier error: {e}")
@@ -211,7 +229,9 @@ def update_eod_prices(send_sms_fn=None):
         opt_type  = t.get("option_type","call")
         expiry    = t.get("expiry","")
         remaining = int(t.get("contracts_remaining") or t.get("contracts",1))
-        is_spread = t.get("is_spread", False)
+        is_spread = bool(t.get("is_spread") or t.get("spread_type"))  # check either field
+
+        print(f"[EOD PRICER] {ticker}: is_spread={is_spread} long={t.get('long_strike')} short={t.get('short_strike')} expiry={expiry}")
 
         if is_spread:
             # Fetch both legs separately, calculate net value
