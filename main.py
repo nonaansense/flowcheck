@@ -1512,31 +1512,34 @@ async def journal_page(account: str = None, sort: str = "desc"):
     open_t   = sorted(open_t,   key=_sort_key, reverse=sort_desc)
     closed_t = sorted(closed_t, key=_sort_key, reverse=sort_desc)
 
-    # ── Stats dashboard ──────────────────────────────────────
+    # ── Stats dashboard — use filtered closed_t/open_t for account-specific stats ──
     from datetime import datetime as _dt, date as _date
     now_et    = _dt.now(__import__("zoneinfo").ZoneInfo("America/New_York"))
     today_str = now_et.strftime("%Y-%m-%d")
 
-    # Today's closed P&L
-    closed_today = [t for t in all_closed if t.get("exit_date","") == today_str]
+    # Today's closed P&L (filtered)
+    closed_today = [t for t in closed_t if t.get("exit_date","") == today_str]
     today_pnl    = sum(float(t.get("pnl_total",0) or 0) for t in closed_today)
     today_wins   = sum(1 for t in closed_today if float(t.get("pnl_total",0) or 0) > 0)
     today_losses = len(closed_today) - today_wins
 
-    # Total open exposure per account
+    # Total open exposure (filtered)
     acct_exposure = {}
-    for t in all_open:
+    for t in open_t:
         aid  = t.get("account_id","default")
         cost = float(t.get("total_cost",0) or 0)
         acct_exposure[aid] = acct_exposure.get(aid, 0) + cost
 
-    # Total unrealized P&L
-    total_unreal = sum(float(t.get("unrealized_pnl",0) or 0) for t in all_open)
+    # Total unrealized P&L (filtered)
+    total_unreal = sum(float(t.get("unrealized_pnl",0) or 0) for t in open_t)
 
-    # All-time P&L
-    all_time_pnl  = sum(float(t.get("pnl_total",0) or 0) for t in all_closed)
-    all_time_wins = sum(1 for t in all_closed if float(t.get("pnl_total",0) or 0) > 0)
-    win_rate      = round(all_time_wins / len(all_closed) * 100) if all_closed else 0
+    # All-time P&L (filtered)
+    all_time_pnl  = sum(float(t.get("pnl_total",0) or 0) for t in closed_t)
+    all_time_wins = sum(1 for t in closed_t if float(t.get("pnl_total",0) or 0) > 0)
+    win_rate      = round(all_time_wins / len(closed_t) * 100) if closed_t else 0
+
+    # Account label for title
+    acct_label = (" — " + acc_name(account)) if account and account != "all" else ""
 
     def stat_card(label, value, color=""):
         c = f"color:{color}" if color else ""
@@ -1585,7 +1588,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
 
     stats_dashboard = f"""
 <div style='margin:16px 0;display:flex;flex-wrap:wrap;gap:10px;align-items:stretch'>
-  {stat_card("Today P&L (" + str(len(closed_today)) + " trades)",
+  {stat_card("Today P&L" + acct_label + " (" + str(len(closed_today)) + ")",
              f"<span style='color:{today_color}'>{today_sign}${abs(round(today_pnl,2)):,}</span>")}
   {stat_card("Today W/L", f"{today_wins}W / {today_losses}L") if closed_today else ""}
   {stat_card("Open Unrealized",
