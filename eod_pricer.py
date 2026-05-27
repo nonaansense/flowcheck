@@ -203,42 +203,92 @@ def update_eod_prices(send_sms_fn=None):
     today   = now_et.strftime("%Y-%m-%d")
     updated = []
 
-    single_legs = [t for t in open_t if not t.get("is_spread") and t.get("ticker") and t.get("expiry")]
-    print(f"[EOD PRICER] Fetching prices for {len(single_legs)} positions...")
+    all_positions = [t for t in open_t if t.get("ticker") and t.get("expiry")]
+    print(f"[EOD PRICER] Fetching prices for {len(all_positions)} positions...")
 
-    for t in single_legs:
-        ticker   = t.get("ticker","")
-        strike   = str(t.get("strike",""))
-        opt_type = t.get("option_type","call")
-        expiry   = t.get("expiry","")
-        entry    = float(t.get("entry_price",0) or 0)
-        remaining= int(t.get("contracts_remaining") or t.get("contracts",1))
+    for t in all_positions:
+        ticker    = t.get("ticker","")
+        opt_type  = t.get("option_type","call")
+        expiry    = t.get("expiry","")
+        remaining = int(t.get("contracts_remaining") or t.get("contracts",1))
+        is_spread = t.get("is_spread", False)
 
-        if not strike or not expiry or entry <= 0:
-            continue
+        if is_spread:
+            # Fetch both legs separately, calculate net value
+            long_strike  = str(t.get("long_strike",""))
+            short_strike = str(t.get("short_strike",""))
+            spread_type  = t.get("spread_type","")
+            credit       = float(t.get("credit",0) or 0)
 
-        price, source = get_option_price(ticker, strike, opt_type, expiry)
+            if not long_strike or not short_strike:
+                continue
 
-        if price is not None:
-            pct = round(((price - entry) / entry) * 100, 1)
-            pnl = round((price - entry) * remaining * 100, 2)
-            t["last_price"]      = price
-            t["unrealized_pnl"]  = pnl
-            t["unrealized_pct"]  = pct
-            t["last_price_date"] = today
-            t["last_price_src"]  = source
-            updated.append({
-                "ticker":  ticker,
-                "strike":  strike,
-                "opt":     opt_type[0].upper(),
-                "price":   price,
-                "pct":     pct,
-                "pnl":     pnl,
-                "source":  source,
-                "account": t.get("account_id","default"),
-            })
+            is_debit = "debit" in (spread_type or "")
+
+            long_price,  long_src  = get_option_price(ticker, long_strike,  opt_type, expiry)
+            short_price, short_src = get_option_price(ticker, short_strike, opt_type, expiry)
+
+            if long_price is not None and short_price is not None:
+                # Net spread value = long leg - short leg
+                net_value = round(long_price - short_price, 2)
+                if is_debit:
+                    # Debit spread: paid credit to enter, profit = net_value - credit
+                    pnl = round((net_value - credit) * remaining * 100, 2)
+                    pct = round(((net_value - credit) / credit) * 100, 1) if credit > 0 else 0
+                else:
+                    # Credit spread: received credit, profit = credit - net_value
+                    pnl = round((credit - net_value) * remaining * 100, 2)
+                    pct = round(((credit - net_value) / credit) * 100, 1) if credit > 0 else 0
+
+                t["last_price"]      = net_value
+                t["unrealized_pnl"]  = pnl
+                t["unrealized_pct"]  = pct
+                t["last_price_date"] = today
+                t["last_price_src"]  = long_src or short_src
+                src_label = (long_src or short_src or "unknown")
+                print(f"[EOD PRICER] Spread {ticker}: long=${long_price} short=${short_price} net=${net_value} P&L={pnl:+.2f}")
+                updated.append({
+                    "ticker":  ticker,
+                    "strike":  long_strike + "/" + short_strike,
+                    "opt":     opt_type[0].upper(),
+                    "price":   net_value,
+                    "pct":     pct,
+                    "pnl":     pnl,
+                    "source":  src_label,
+                    "account": t.get("account_id","default"),
+                })
+            else:
+                print(f"[EOD PRICER] Spread {ticker}: could not fetch both legs (long={long_price} short={short_price})")
         else:
-            print(f"[EOD PRICER] No price for {ticker} {strike} — skipped")
+            # Single leg
+            strike = str(t.get("strike",""))
+            entry  = float(t.get("entry_price",0) or 0)
+
+            if not strike or not expiry or entry <= 0:
+                continue
+
+            price, source = get_option_price(ticker, strike, opt_type, expiry)
+
+            if price is not None:
+                pct = round(((price - entry) / entry) * 100, 1)
+                pnl = round((price - entry) * remaining * 100, 2)
+                t["last_price"]      = price
+                t["unrealized_pnl"]  = pnl
+                t["unrealized_pct"]  = pct
+                t["last_price_date"] = today
+                t["last_price_src"]  = source
+                updated.append({
+                    "ticker":  ticker,
+                    "strike":  strike,
+                    "opt":     opt_type[0].upper(),
+                    "price":   price,
+                    "pct":     pct,
+                    "pnl":     pnl,
+                    "source":  source,
+                    "account": t.get("account_id","default"),
+                })
+            else:
+                print(f"[EOD PRICER] No price for {ticker} {strike} — skipped")
 
     if updated:
         save_journal(journal)
