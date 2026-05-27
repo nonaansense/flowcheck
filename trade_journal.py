@@ -26,12 +26,38 @@ def normalize_expiry(expiry: str) -> str:
     if not expiry:
         return expiry
     expiry = expiry.strip()
-    from datetime import datetime as _dt
-    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+    from datetime import datetime as _dt, date as _date
+    
+    # Try standard formats first
+    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y", "%m-%d-%y"):
         try:
             return _dt.strptime(expiry, fmt).strftime("%m/%d/%y")
         except:
             continue
+    
+    # Handle MM/DD without year (e.g. "08/21")
+    import re
+    if re.match(r"^\d{1,2}/\d{1,2}$", expiry):
+        try:
+            month, day = expiry.split("/")
+            today = _date.today()
+            year  = today.year
+            # If the date has already passed this year, use next year
+            candidate = _date(year, int(month), int(day))
+            if candidate < today:
+                year += 1
+            return _dt(year, int(month), int(day)).strftime("%m/%d/%y")
+        except:
+            pass
+    
+    # Handle M/D/YY or M/DD/YY
+    try:
+        parts = expiry.split("/")
+        if len(parts) == 3 and len(parts[2]) == 2:
+            return _dt.strptime(expiry, "%m/%d/%y").strftime("%m/%d/%y")
+    except:
+        pass
+    
     return expiry  # Return as-is if can't parse
 
 # -- Accounts (stored separately in Supabase) -------------------------
