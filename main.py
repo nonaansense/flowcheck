@@ -891,7 +891,7 @@ async def journal_edit_api(request: Request):
                 if str(t.get("id","")) == str(trade_id):
                     # Allowed fields for web editing
                     allowed = {
-                        "account_id", "note", "entry_price", "exit_price",
+                        "account_id", "note", "entry_price", "exit_price", "exit_date", "exit_time",
                         "contracts", "expiry", "strike", "option_type",
                         "entry_date", "entry_time", "exit_date", "exit_time",
                         "fc_score", "fc_verdict", "last_price"
@@ -1538,7 +1538,6 @@ async def journal_page(account: str = None, sort: str = "desc"):
         pct      = t.get("pnl_pct")
         color    = pnl_color(pnl)
         tags     = " ".join(["#"+tg for tg in t.get("tags",[])])
-        acc_cell = f"<td>{acc_name(t.get('account_id','default'))}</td>" if multi_account else ""
         ot_c     = t.get("order_type","BTO") or "BTO"
         if t.get("is_spread") and t.get("spread_type"):
             ss_c    = t.get("short_strike","?")
@@ -1549,16 +1548,18 @@ async def journal_page(account: str = None, sort: str = "desc"):
         else:
             contract_c = f"{t.get('strike','')}{otype}"
             type_c     = ot_c
+        tid_c    = str(t.get("id",""))
+        acc_disp_c = acc_name(t.get("account_id","default"))
         rows_closed += (
             "<tr>"
-            + acc_cell +
+            + (f"<td data-edit='account_id' data-trade-id='{tid_c}'>{acc_disp_c}</td>" if multi_account else "") +
             f"<td>{t.get('ticker','')}</td>"
             f"<td>{type_c}</td>"
             f"<td>{contract_c}</td>"
-            f"<td>{t.get('expiry','')}</td>"
+            f"<td data-edit='expiry' data-trade-id='{tid_c}'>{t.get('expiry','')}</td>"
             f"<td>{t.get('contracts','?')}</td>"
-            f"<td>${t.get('entry_price','')}</td>"
-            f"<td>${t.get('exit_price','')}</td>"
+            f"<td data-edit='entry_price' data-trade-id='{tid_c}'>${t.get('entry_price','')}</td>"
+            f"<td data-edit='exit_price' data-trade-id='{tid_c}'>${t.get('exit_price','')}</td>"
             f"<td style='{color}'>{fmt(pct,'%')} / ${fmt(pnl)}</td>"
             f"<td>{t.get('entry_date','')} {t.get('entry_time','')}</td>"
             f"<td>{t.get('exit_date','')} {t.get('exit_time','')}</td>"
@@ -1566,9 +1567,9 @@ async def journal_page(account: str = None, sort: str = "desc"):
             f"<td>{fmt(t.get('peak_pct'),'%')}</td>"
             f"<td>{fmt(t.get('max_drawdown'),'%')}</td>"
             f"<td>{fmt(t.get('left_on_table'),'%')}</td>"
-            f"<td>{fmt(t.get('fc_score'))}/7 {fmt(t.get('fc_verdict'))}</td>"
+            f"<td data-edit='fc_score' data-trade-id='{tid_c}'>{fmt(t.get('fc_score'))}/7 {fmt(t.get('fc_verdict'))}</td>"
             f"<td>{tags}</td>"
-            f"<td>{t.get('note','')}</td>"
+            f"<td data-edit='note' data-trade-id='{tid_c}'>{t.get('note','')}</td>"
             "</tr>"
         )
 
@@ -1644,6 +1645,9 @@ table{{border-collapse:collapse;width:100%;min-width:700px;font-size:13px}}
 th{{background:#1e3a5f;color:#7dd3fc;padding:8px 10px;text-align:left;white-space:nowrap;position:sticky;top:0}}
 td{{padding:7px 10px;border-bottom:1px solid #1e293b;white-space:nowrap}}
 tr:hover td{{background:#1e293b}}
+[data-edit]{{cursor:pointer}}
+[data-edit]:hover{{outline:1px dashed #6366f1;background:rgba(99,102,241,0.1);border-radius:2px}}
+.edit-input{{border:1.5px solid #6366f1;border-radius:4px;padding:2px 5px;font-size:12px;background:#1e293b;color:#f1f5f9;width:100%}}
 .btn{{display:inline-block;background:#3b82f6;color:#fff;padding:10px 20px;
       border-radius:8px;text-decoration:none;margin:8px 0 16px;
       font-size:14px;cursor:pointer;border:none}}
@@ -1717,8 +1721,62 @@ function attachEditors() {{
     td.addEventListener('click', td._editHandler);
   }});
 }}
-document.addEventListener('DOMContentLoaded', attachEditors);
-document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTimeout(attachEditors, 150)));
+document.addEventListener('DOMContentLoaded', () => {{
+    attachEditors();
+    // Re-run when switching between Open/Closed sections
+    document.querySelectorAll('.section-tab, .tab, [data-section]').forEach(el => {{
+        el.addEventListener('click', () => setTimeout(attachEditors, 200));
+    }});
+    // Also run after any click on the page in case tabs are dynamically rendered
+    setTimeout(attachEditors, 500);
+}});
+</script>
+<script>
+function makeEditable(td, tradeId, field) {{
+  if (td.querySelector('input')) return;
+  var orig = td.innerText.trim();
+  var inp = document.createElement('input');
+  inp.className = 'edit-input';
+  inp.value = orig;
+  td.innerHTML = '';
+  td.appendChild(inp);
+  inp.focus(); inp.select();
+  function save() {{
+    var val = inp.value.trim();
+    if (val === orig) {{ td.innerText = orig; return; }}
+    fetch('/journal-edit', {{method:'POST',headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{trade_id:tradeId,field:field,value:val}})}})
+    .then(r=>r.json()).then(data=>{{
+      if (data.success) {{
+        td.innerText = val;
+        td.style.color='#22c55e';
+        setTimeout(()=>td.style.color='',1500);
+      }} else {{
+        td.innerText = orig;
+        alert('Error: '+data.error);
+      }}
+    }}).catch(()=>{{td.innerText=orig;}});
+  }}
+  inp.onblur = save;
+  inp.onkeydown = function(e) {{
+    if (e.key==='Enter') inp.blur();
+    if (e.key==='Escape') td.innerText=orig;
+  }};
+}}
+function attachEditors() {{
+  document.querySelectorAll('[data-edit]').forEach(function(td) {{
+    if (td._hasEditor) return;
+    td._hasEditor = true;
+    td.addEventListener('click', function() {{
+      makeEditable(td, td.dataset.tradeId, td.dataset.edit);
+    }});
+  }});
+}}
+attachEditors();
+// Re-attach after tab clicks
+document.querySelectorAll('a').forEach(function(a) {{
+  a.addEventListener('click', function() {{ setTimeout(attachEditors, 300); }});
+}});
 </script>
 </body></html>"""
 
