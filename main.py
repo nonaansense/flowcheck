@@ -771,7 +771,9 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
 
         # Build and send SMS
         msg     = build_sms(trade, data, result, tweet_url, analysis_id, pattern, intel, risk)
-        success = send_sms(msg, verdict=result.get("verdict"))
+        verdict_val = (result.get("verdict") or "").strip()
+        print(f"[SMS] Routing: verdict='{verdict_val}' score={result.get('final_score')}")
+        success = send_sms(msg, verdict=verdict_val)
 
         # Send sector rotation alert if detected
         if intel.get("sector_rotation",{}).get("rotation_detected"):

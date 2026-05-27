@@ -14,9 +14,12 @@ def send_sms(message: str, verdict: str = None) -> bool:
         main_ok = send_telegram(message, bot_token, chat_id)
 
     # Send TRADE alerts to separate high-priority channel
-    if verdict == "TRADE" and trade_chat_id and trade_chat_id != chat_id:
-        print(f"[SMS] Sending TRADE alert to priority channel")
+    verdict_clean = (verdict or "").strip().upper()
+    if verdict_clean == "TRADE" and trade_chat_id and trade_chat_id != chat_id:
+        print(f"[SMS] Sending TRADE alert to priority channel ({trade_chat_id})")
         send_telegram(message, bot_token, trade_chat_id)
+    elif verdict_clean == "TRADE" and trade_chat_id == chat_id:
+        print(f"[SMS] TRADE_CHAT_ID same as CHAT_ID — not duplicating")
 
     return main_ok or send_twilio(message)
 
