@@ -246,14 +246,17 @@ def update_eod_prices(send_sms_fn=None):
     all_positions = [t for t in open_t if t.get("ticker") and t.get("expiry")]
     print(f"[EOD PRICER] Fetching prices for {len(all_positions)} positions...")
 
+    # Log all positions being processed
+    print(f"[EOD PRICER] Processing {len(all_positions)} positions:")
+    for _t in all_positions:
+        print(f"  {_t.get('ticker')} expiry={_t.get('expiry')} is_spread={_t.get('is_spread')} spread_type={_t.get('spread_type')} long={_t.get('long_strike')} short={_t.get('short_strike')}")
+
     for t in all_positions:
         ticker    = t.get("ticker","")
         opt_type  = t.get("option_type","call")
         expiry    = t.get("expiry","")
         remaining = int(t.get("contracts_remaining") or t.get("contracts",1))
-        is_spread = bool(t.get("is_spread") or t.get("spread_type"))  # check either field
-
-        print(f"[EOD PRICER] {ticker}: is_spread={is_spread} long={t.get('long_strike')} short={t.get('short_strike')} expiry={expiry}")
+        is_spread = bool(t.get("is_spread") or t.get("spread_type"))
 
         if is_spread:
             # Fetch both legs separately, calculate net value
