@@ -931,13 +931,33 @@ async def fix_spreads_endpoint():
     for bucket in ("trades", "closed"):
         for t in journal.get(bucket, []):
             if t.get("is_spread"):
-                continue  # Already set
+                continue
             if t.get("spread_type") or (t.get("long_strike") and t.get("short_strike")):
                 t["is_spread"] = True
                 fixed += 1
     if fixed:
         save_journal(journal)
     return {"fixed": fixed, "message": f"Set is_spread=True on {fixed} trades"}
+
+@app.get("/debug-spreads")
+async def debug_spreads():
+    """Show all spread trades in journal for debugging."""
+    from trade_journal import load_journal
+    journal  = load_journal()
+    spreads  = []
+    all_open = journal.get("trades", [])
+    for t in all_open:
+        spreads.append({
+            "ticker":       t.get("ticker"),
+            "is_spread":    t.get("is_spread"),
+            "spread_type":  t.get("spread_type"),
+            "long_strike":  t.get("long_strike"),
+            "short_strike": t.get("short_strike"),
+            "expiry":       t.get("expiry"),
+            "credit":       t.get("credit"),
+            "strike":       t.get("strike"),
+        })
+    return {"open_count": len(all_open), "positions": spreads}
 
 @app.get("/normalize-expiry")
 async def normalize_expiry_endpoint():
