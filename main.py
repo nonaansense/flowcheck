@@ -905,7 +905,9 @@ async def journal_edit_api(request: Request):
         if not trade_id or not field:
             return {"success": False, "error": "trade_id and field required"}
         from trade_journal import load_journal, save_journal
-        journal = load_journal()
+        journal  = load_journal()
+        print(f"[EDIT] Loaded journal: {len(journal.get('trades',[]))} open, {len(journal.get('closed',[]))} closed")
+        print(f"[EDIT] Looking for trade_id={trade_id!r} field={field!r}")
         updated = False
         for bucket in ("trades","closed"):
             for t in journal.get(bucket,[]):
@@ -952,13 +954,21 @@ async def journal_edit_api(request: Request):
                 break
         if updated:
             # Save directly to Supabase via storage module
-            from storage import db_set
-            import json as _json
-            journal_str = _json.dumps(journal)
-            db_ok = db_set("journal", journal_str)  # Must match JOURNAL_KEY
-            print(f"[EDIT] Saved to Supabase key='journal': trade {trade_id} {field}={value} db_ok={db_ok} size={len(journal_str)}")
-            if not db_ok:
-                return {"success": False, "error": "Supabase save failed"}
+            save_journal(journal)
+            # Verify by reloading
+            verify = load_journal()
+            found  = False
+            for bkt in ("trades","closed"):
+                for tr in verify.get(bkt,[]):
+                    if str(tr.get("id","")) == str(trade_id):
+                        actual = tr.get(field)
+                        print(f"[EDIT] Verified: trade {trade_id} {field}={actual} (wanted {value})")
+                        found = True
+                        if str(actual) != str(value):
+                            return {"success": False, "error": f"Save verified but value mismatch: {actual} != {value}"}
+                        break
+            if not found:
+                print(f"[EDIT] Warning: trade {trade_id} not found on verify")
             return {"success": True, "trade_id": trade_id, "field": field, "value": value}
         print(f"[EDIT] Trade not found: id={trade_id}")
         return {"success": False, "error": "Trade not found"}
