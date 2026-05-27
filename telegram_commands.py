@@ -723,81 +723,12 @@ def handle_refresh(reply_chat_id: str):
     """Fetch current option prices for all open positions. /refresh"""
     try:
         send_reply("Fetching current prices...", reply_chat_id)
-        from eod_pricer import update_eod_prices, get_option_price
-        from trade_journal import load_journal as _lj, save_journal as _sj
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
+        from eod_pricer import update_eod_prices
 
-        journal = _lj()
-        open_t  = journal.get("trades", [])
-        if not open_t:
-            send_reply("No open positions to refresh.", reply_chat_id)
-            return
+        def send_result(msg):
+            send_reply(msg, reply_chat_id)
 
-        now_et   = datetime.now(ZoneInfo("America/New_York"))
-        today    = now_et.strftime("%Y-%m-%d")
-        updated  = []
-        accounts = journal.get("accounts", {})
-
-        for t in open_t:
-            ticker   = t.get("ticker","")
-            strike   = t.get("strike","")
-            opt_type = t.get("option_type","call")
-            expiry   = t.get("expiry","")
-            if not ticker or not expiry or t.get("is_spread"):
-                continue
-            try:
-                last_price, _src = get_option_price(ticker, strike, opt_type, expiry)
-                if last_price is not None:
-                    entry     = float(t.get("entry_price",0) or 0)
-                    remaining = int(t.get("contracts_remaining") or t.get("contracts",1))
-                    if entry > 0:
-                        pct = round(((last_price - entry) / entry) * 100, 1)
-                        pnl = round((last_price - entry) * remaining * 100, 2)
-                        t["last_price"]      = last_price
-                        t["unrealized_pnl"]  = pnl
-                        t["unrealized_pct"]  = pct
-                        t["last_price_date"] = today
-                        updated.append({
-                            "ticker":  ticker,
-                            "strike":  strike,
-                            "opt":     opt_type[0].upper(),
-                            "price":   last_price,
-                            "pct":     pct,
-                            "pnl":     pnl,
-                            "account": t.get("account_id","default"),
-                        })
-            except Exception as e:
-                print("[REFRESH] Error for " + ticker + ": " + str(e))
-
-        if updated:
-            _sj(journal)
-            lines = [
-                "📊 Prices refreshed — " + now_et.strftime("%b %d %I:%M%p ET"),
-                ""
-            ]
-            total = sum(u["pnl"] for u in updated)
-            for u in updated:
-                sign  = "+" if u["pnl"] >= 0 else ""
-                emoji = "🟢" if u["pnl"] >= 0 else "🔴"
-                acc   = accounts.get(u["account"],{}).get("name","")
-                lines.append(
-                    emoji + " " + u["ticker"] + " " + u["strike"] + u["opt"] +
-                    ": $" + str(u["price"]) +
-                    " " + sign + str(u["pct"]) + "%" +
-                    " (" + sign + "$" + str(u["pnl"]) + ")" +
-                    (" [" + acc + "]" if acc else "")
-                )
-            sign = "+" if total >= 0 else ""
-            lines.append("")
-            lines.append("Total unrealized: " + sign + "$" + str(round(total,2)))
-            send_reply(chr(10).join(lines), reply_chat_id)
-        else:
-            send_reply(
-                "No prices available — market may be closed or options thinly traded." + chr(10) +
-                "Check again after 9:30 AM ET.",
-                reply_chat_id
-            )
+        update_eod_prices(send_sms_fn=send_result)
     except Exception as e:
         send_reply("Error: " + str(e), reply_chat_id)
 
