@@ -747,6 +747,25 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         else:
             print(f"[PROCESS] Skipping watchlist/position — option expired (DTE={dte})")
 
+        # Fetch support/resistance levels
+        if data.get("stock_price") and trade.get("option_type"):
+            try:
+                from fetcher import get_support_resistance
+                sr = get_support_resistance(
+                    trade["ticker"],
+                    float(data["stock_price"]),
+                    trade.get("option_type","call")
+                )
+                if sr:
+                    data["support_resistance"] = sr
+                    print(f"[S/R] {trade['ticker']}: {sr.get('support_levels') or sr.get('resistance_levels')}")
+                else:
+                    print(f"[S/R] No levels for {trade['ticker']}")
+            except Exception as _sre:
+                print(f"[S/R] Error: {_sre}")
+        else:
+            print(f"[S/R] Skipped — stock_price={data.get('stock_price')}")
+
         # Build and send SMS
         msg     = build_sms(trade, data, result, tweet_url, analysis_id, pattern, intel, risk)
         success = send_sms(msg, verdict=result.get("verdict"))
@@ -882,18 +901,25 @@ async def test_alert(request: Request, background_tasks: BackgroundTasks):
     prem_str  = f"${float(premium)/1000:.0f}K" if float(premium) < 1_000_000 else f"${float(premium)/1_000_000:.1f}M"
     fake_tweet = f"${ticker} - {prem_str} {opt_type.title()} sweep expiring {expiry} strike ${strike} [TEST]"
 
-    # Build pre-parsed trade data to skip vision parser
+    # Build pre-parsed trade data using field names fetcher expects
+    vol_oi_val = float(body.get("vol_oi", 5.0))
+    oi_val     = int(body.get("oi", 500))
+    fill_val   = body.get("fill_type","FULL_ASK")
+    # Simulate ask_size so calc_fill_aggression sees FULL_ASK
     fake_trade = {
-        "ticker":      ticker,
-        "strike":      strike,
-        "option_type": opt_type,
-        "expiry":      expiry,
-        "expiry_raw":  expiry,
-        "expiry_short": expiry,
-        "premium":     float(premium),
-        "fill_type":   body.get("fill_type","FULL_ASK"),
-        "vol_oi_ratio": body.get("vol_oi", 5.0),
-        "open_interest": body.get("oi", 500),
+        "ticker":        ticker,
+        "strike":        strike,
+        "option_type":   opt_type,
+        "expiry":        expiry,
+        "expiry_raw":    expiry,
+        "expiry_short":  expiry,
+        "premium":       float(premium),
+        "fill_type":     fill_val,       # Pre-set fill — respected by calc_fill_aggression
+        "open_interest": oi_val,
+        "volume":        int(vol_oi_val * oi_val),
+        "vol_oi_ratio":  vol_oi_val,
+        "ask_size":      100 if "ASK" in fill_val.upper() else 0,
+        "bid_size":      0   if "ASK" in fill_val.upper() else 100,
     }
 
     background_tasks.add_task(process_alert, fake_tweet, None, fake_trade)
