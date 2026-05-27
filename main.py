@@ -305,6 +305,51 @@ async def startup():
         print(f"[SCHEDULER] Warning: {e}")
 
 # ── SMS builder ───────────────────────────────────────────────────────
+def calc_exit_target(final_score: int, data: dict) -> dict:
+    """Calculate exit target and stop strategy based on flow conviction and DTE."""
+    vol_oi    = float(data.get("vol_oi_ratio",0) or 0)
+    premium   = float(data.get("premium",0) or 0)
+    fill_type = (data.get("fill_type","") or "").upper()
+    dte       = int(data.get("days_to_expiry",30) or 30)
+    is_sweep  = bool(data.get("is_sweep"))
+
+    # Base target from score
+    if final_score >= 6:   target_pct = 100
+    elif final_score >= 5: target_pct = 75
+    else:                  target_pct = 51
+
+    # Conviction boosts
+    if vol_oi >= 10:                             target_pct = min(target_pct + 25, 150)
+    elif vol_oi >= 5:                            target_pct = min(target_pct + 15, 125)
+    if fill_type in ("FULL_ASK","ABOVE_ASK"):    target_pct = min(target_pct + 10, 150)
+    if premium >= 1_000_000:                     target_pct = min(target_pct + 25, 200)
+    elif premium >= 500_000:                     target_pct = min(target_pct + 15, 150)
+    if is_sweep:                                 target_pct = min(target_pct + 10, 150)
+
+    # DTE-based stop — short options stop on STOCK level, not option %
+    if dte <= 3:
+        target_pct = min(target_pct, 75)
+        stop_str   = "No % stop — exit if stock breaks support or flat by 2PM ET"
+    elif dte <= 7:
+        target_pct = min(target_pct, 100)
+        stop_str   = "No % stop — exit if stock breaks below entry-day low"
+    elif dte <= 21:
+        stop_str   = "-50% option loss"
+    elif dte <= 45:
+        stop_str   = "-60% option loss"
+    else:
+        stop_str   = "-70% option loss or thesis change"
+
+    # Scale-out
+    if target_pct > 75:
+        scale = "Sell 50% at 51%, hold rest to +" + str(target_pct) + "%"
+    elif target_pct > 51:
+        scale = "Sell 50% at 51%, trail stop on rest"
+    else:
+        scale = "Full exit at +" + str(target_pct) + "%"
+
+    return {"target": target_pct, "stop": stop_str, "scale": scale}
+
 def build_sms(trade: dict, data: dict, result: dict,
               tweet_url: str, analysis_id: int, pattern: dict,
               intel: dict = None, risk: dict = None) -> str:
@@ -535,6 +580,25 @@ def build_sms(trade: dict, data: dict, result: dict,
             sizing_str = format_sizing_for_sms(sizing, op_float)
             if sizing_str:
                 lines.append(sizing_str)
+
+    # Exit target + S/R
+    try:
+        tgt = calc_exit_target(int(final_score), data)
+        lines.append(f"🎯 Target: +{tgt['target']}% | Stop: {tgt['stop']}")
+        lines.append(f"  {tgt['scale']}")
+
+        sr = data.get("support_resistance",{})
+        opt_lower = str(trade.get("option_type","call")).lower()
+        if sr and "call" in opt_lower and sr.get("support_levels"):
+            levels = " → ".join(["$"+str(l) for l in sr["support_levels"]])
+            lines.append(f"📊 Support: {levels}")
+            lines.append(f"  Thesis broken below ${sr['primary_support']}")
+        elif sr and "put" in opt_lower and sr.get("resistance_levels"):
+            levels = " → ".join(["$"+str(l) for l in sr["resistance_levels"]])
+            lines.append(f"📊 Resistance: {levels}")
+            lines.append(f"  Thesis broken above ${sr['primary_resistance']}")
+    except Exception as _te:
+        print(f"[TARGET] {_te}")
 
     # Links
     if tweet_url:
