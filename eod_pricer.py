@@ -115,12 +115,34 @@ def get_option_price_tradier(ticker: str, strike: str, opt_type: str, expiry: st
         from datetime import datetime as _dt
         expiry   = (expiry or "").strip()
         exp_str  = None
-        for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y".replace("y","Y")):
+
+        # Try standard formats
+        for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"):
             try:
                 exp_str = _dt.strptime(expiry, fmt).strftime("%Y-%m-%d")
                 break
             except:
                 continue
+
+        # Handle MM/YY (month/year, assume 3rd Friday or just use last day)
+        if not exp_str:
+            import re
+            if re.match(r"^\d{1,2}/\d{2}$", expiry):
+                try:
+                    parts = expiry.split("/")
+                    month = int(parts[0])
+                    year  = 2000 + int(parts[1]) if int(parts[1]) < 100 else int(parts[1])
+                    # Use 3rd Friday of that month as standard expiry
+                    import calendar
+                    first_day = _dt(year, month, 1)
+                    fridays   = [d for d in range(1,32) if _dt(year,month,1).replace(day=d).weekday()==4
+                                 if d <= calendar.monthrange(year,month)[1]]
+                    third_fri = fridays[2] if len(fridays) >= 3 else fridays[-1]
+                    exp_str   = _dt(year, month, third_fri).strftime("%Y-%m-%d")
+                    print(f"[EOD] Tradier: MM/YY expiry '{expiry}' → {exp_str} (3rd Friday)")
+                except Exception as _e:
+                    print(f"[EOD] Tradier: cannot parse MM/YY expiry '{expiry}': {_e}")
+
         if not exp_str:
             print(f"[EOD] Tradier: cannot parse expiry '{expiry}'")
             return None

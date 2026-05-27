@@ -35,14 +35,31 @@ def normalize_expiry(expiry: str) -> str:
         except:
             continue
     
-    # Handle MM/DD without year (e.g. "08/21")
     import re
+    # Handle MM/YY (e.g. "06/26" = June 2026) — detect by year range
+    if re.match(r"^\d{1,2}/\d{2}$", expiry):
+        parts = expiry.split("/")
+        month_v = int(parts[0])
+        val2    = int(parts[1])
+        if month_v <= 12 and val2 >= 25:
+            # Looks like MM/YY — use 3rd Friday
+            try:
+                import calendar
+                year_v    = 2000 + val2
+                fridays   = [d for d in range(1,32)
+                             if d <= calendar.monthrange(year_v, month_v)[1]
+                             and _dt(year_v, month_v, d).weekday() == 4]
+                third_fri = fridays[2] if len(fridays) >= 3 else fridays[-1]
+                return _dt(year_v, month_v, third_fri).strftime("%m/%d/%y")
+            except:
+                pass
+
+    # Handle MM/DD without year (e.g. "08/21")
     if re.match(r"^\d{1,2}/\d{1,2}$", expiry):
         try:
             month, day = expiry.split("/")
             today = _date.today()
             year  = today.year
-            # If the date has already passed this year, use next year
             candidate = _date(year, int(month), int(day))
             if candidate < today:
                 year += 1

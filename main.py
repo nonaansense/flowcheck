@@ -922,6 +922,23 @@ async def journal_edit_api(request: Request):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.get("/fix-spreads")
+async def fix_spreads_endpoint():
+    """Set is_spread=True on any trade that has spread_type or long_strike/short_strike."""
+    from trade_journal import load_journal, save_journal
+    journal = load_journal()
+    fixed   = 0
+    for bucket in ("trades", "closed"):
+        for t in journal.get(bucket, []):
+            if t.get("is_spread"):
+                continue  # Already set
+            if t.get("spread_type") or (t.get("long_strike") and t.get("short_strike")):
+                t["is_spread"] = True
+                fixed += 1
+    if fixed:
+        save_journal(journal)
+    return {"fixed": fixed, "message": f"Set is_spread=True on {fixed} trades"}
+
 @app.get("/normalize-expiry")
 async def normalize_expiry_endpoint():
     """Normalize all expiry dates in journal to MM/DD/YY format."""
