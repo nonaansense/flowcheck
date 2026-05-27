@@ -88,6 +88,78 @@ def tiingo_history(ticker: str, days: int = 10) -> list:
             return closes
     return []
 
+def get_option_chain_oi(ticker: str, strike: str, opt_type: str, expiry: str) -> int | None:
+    """
+    Fetch current open interest for a specific option.
+    Uses Tradier if token available, otherwise Polygon.
+    """
+    # Try Tradier first (free for account holders, no device auth needed for data)
+    tradier_token = os.environ.get("TRADIER_TOKEN","")
+    if tradier_token:
+        try:
+            from datetime import datetime as _dt
+            for fmt in ("%m/%d/%y","%m/%d/%Y","%Y-%m-%d"):
+                try:
+                    exp_dt  = _dt.strptime(expiry.strip(), fmt)
+                    exp_str = exp_dt.strftime("%Y-%m-%d")
+                    break
+                except:
+                    continue
+            r = requests.get(
+                "https://api.tradier.com/v1/markets/options/chains",
+                params={"symbol": ticker.upper(), "expiration": exp_str, "greeks": "false"},
+                headers={"Authorization": f"Bearer {tradier_token}", "Accept": "application/json"},
+                timeout=8
+            )
+            if r.status_code == 200:
+                data    = r.json()
+                options = data.get("options",{}).get("option",[]) or []
+                strike_f = float(strike)
+                cp       = "call" if opt_type.lower() in ("c","call") else "put"
+                for opt in options:
+                    if (abs(float(opt.get("strike",0)) - strike_f) < 0.01 and
+                        opt.get("option_type","").lower() == cp):
+                        oi = opt.get("open_interest")
+                        if oi is not None:
+                            print(f"[OI] Tradier: {ticker} {strike}{cp[0].upper()} OI={oi}")
+                            return int(oi)
+        except Exception as e:
+            print(f"[OI] Tradier error: {e}")
+
+    # Fallback — Polygon (may 403 on free tier)
+    try:
+        opt_ticker = None
+        try:
+            from datetime import datetime as _dt
+            for fmt in ("%m/%d/%y","%m/%d/%Y","%Y-%m-%d"):
+                try:
+                    exp_dt  = _dt.strptime(expiry.strip(), fmt)
+                    break
+                except:
+                    continue
+            exp_str    = exp_dt.strftime("%y%m%d")
+            call_put   = "C" if opt_type.lower() in ("c","call") else "P"
+            strike_int = int(float(strike) * 1000)
+            opt_ticker = f"O:{ticker.upper()}{exp_str}{call_put}{str(strike_int).zfill(8)}"
+        except:
+            pass
+
+        if opt_ticker and poly_key():
+            r = requests.get(
+                f"https://api.polygon.io/v3/snapshot/options/{opt_ticker}",
+                params={"apiKey": poly_key()},
+                timeout=8
+            )
+            if r.status_code == 200:
+                oi = r.json().get("results",{}).get("open_interest")
+                if oi:
+                    print(f"[OI] Polygon: {opt_ticker} OI={oi}")
+                    return int(oi)
+    except Exception as e:
+        print(f"[OI] Polygon error: {e}")
+
+    return None
+
 def get_support_resistance(ticker: str, current_price: float, opt_type: str) -> dict | None:
     """
     Calculate key support (for calls) or resistance (for puts) levels.
@@ -512,14 +584,44 @@ def fetch_market_conditions() -> dict:
         cond["vix"] = 18.0; cond["vix_label"] = "Est."; cond["vix_emoji"] = "📊"
         print("[FETCHER] VIX unavailable — using 18.0 neutral estimate")
 
-    # SPY 5-day trend
-    spy = fetch_price_history("SPY", days=10)
-    if len(spy) >= 5:
-        pct = round(((spy[-1]-spy[-5])/spy[-5])*100, 1)
+    # SPY trend — use intraday quote for today + 5-day history
+    spy_history = fetch_price_history("SPY", days=10)
+    spy_today   = None
+    try:
+        # Get today's live SPY price from Finnhub
+        r_spy = requests.get(
+            "https://finnhub.io/api/v1/quote",
+            params={"symbol":"SPY","token": fh_key()},
+            timeout=6
+        )
+        if r_spy.status_code == 200:
+            q = r_spy.json()
+            spy_today = float(q.get("c") or q.get("l") or 0)
+            spy_open  = float(q.get("o") or 0)
+            if spy_today > 0 and spy_open > 0:
+                intraday_pct = round(((spy_today - spy_open) / spy_open) * 100, 1)
+                cond["spy_intraday"] = intraday_pct
+    except:
+        pass
+
+    # Combine 5-day trend + intraday for accurate picture
+    if len(spy_history) >= 5:
+        base_price = spy_history[-5]
+        current    = spy_today if spy_today else spy_history[-1]
+        pct        = round(((current - base_price) / base_price) * 100, 1)
         cond["spy_5d_pct"] = pct
-        if pct > 2:    cond["spy_trend"]=f"Uptrend +{pct}%";    cond["spy_emoji"]="✅"
-        elif pct > -2: cond["spy_trend"]=f"Flat {pct:+.1f}%";   cond["spy_emoji"]="⚠️"
-        else:          cond["spy_trend"]=f"Downtrend {pct:+.1f}%"; cond["spy_emoji"]="🔴"; cond["market_score_adjustment"]-=1
+        intra_note = ""
+        if spy_today and cond.get("spy_intraday") is not None:
+            intra = cond["spy_intraday"]
+            intra_note = f" (today {intra:+.1f}%)"
+        if pct > 2:    cond["spy_trend"]=f"Uptrend +{pct}%{intra_note}";    cond["spy_emoji"]="✅"
+        elif pct > -2: cond["spy_trend"]=f"Flat {pct:+.1f}%{intra_note}";   cond["spy_emoji"]="⚠️"
+        else:          cond["spy_trend"]=f"Downtrend {pct:+.1f}%{intra_note}"; cond["spy_emoji"]="🔴"; cond["market_score_adjustment"]-=1
+    elif spy_today and cond.get("spy_intraday") is not None:
+        intra = cond["spy_intraday"]
+        if intra > 0.5:    cond["spy_trend"]=f"Up today +{intra}%";   cond["spy_emoji"]="✅"
+        elif intra > -0.5: cond["spy_trend"]=f"Flat today {intra:+.1f}%"; cond["spy_emoji"]="⚠️"
+        else:              cond["spy_trend"]=f"Down today {intra:+.1f}%";  cond["spy_emoji"]="🔴"; cond["market_score_adjustment"]-=1
 
     adj = cond["market_score_adjustment"]
     if adj >= 0:    cond["market_bias"]="FAVORABLE";   cond["market_summary"]="Market conditions favor buying premium."

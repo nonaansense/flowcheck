@@ -868,6 +868,58 @@ async def clear_test_trades():
     save_analyses()
     return {"removed_analyses": removed_anal, "note": "Watchlist clears on next redeploy"}
 
+@app.post("/journal-edit")
+async def journal_edit_api(request: Request):
+    """
+    API endpoint for inline journal editing from web table.
+    POST body: {"trade_id": "abc123", "field": "account_id", "value": "rh_brok"}
+    """
+    try:
+        body     = await request.json()
+        trade_id = body.get("trade_id","")
+        field    = body.get("field","")
+        value    = body.get("value","")
+        if not trade_id or not field:
+            return {"success": False, "error": "trade_id and field required"}
+        from trade_journal import load_journal, save_journal
+        journal = load_journal()
+        updated = False
+        for bucket in ("trades","closed"):
+            for t in journal.get(bucket,[]):
+                if str(t.get("id","")) == str(trade_id):
+                    # Allowed fields for web editing
+                    allowed = {
+                        "account_id", "note", "entry_price", "exit_price",
+                        "contracts", "expiry", "strike", "option_type",
+                        "entry_date", "entry_time", "exit_date", "exit_time",
+                        "fc_score", "fc_verdict", "last_price"
+                    }
+                    if field not in allowed:
+                        return {"success": False, "error": f"Field '{field}' not editable"}
+                    # Type coercion
+                    if field in ("entry_price","exit_price","contracts","fc_score","last_price"):
+                        try: value = float(value)
+                        except: return {"success": False, "error": "Must be a number"}
+                    if field == "fc_verdict" and value.upper() not in ("TRADE","WATCH","SKIP"):
+                        return {"success": False, "error": "fc_verdict must be TRADE, WATCH, or SKIP"}
+                    if field == "account_id":
+                        # Verify account exists
+                        accounts = journal.get("accounts",{})
+                        if value not in accounts and value != "default":
+                            acct_list = ", ".join(accounts.keys())
+                            return {"success": False, "error": f"Unknown account. Valid: {acct_list}"}
+                    t[field] = value
+                    updated  = True
+                    break
+            if updated:
+                break
+        if updated:
+            save_journal(journal)
+            return {"success": True, "trade_id": trade_id, "field": field, "value": value}
+        return {"success": False, "error": "Trade not found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.get("/normalize-expiry")
 async def normalize_expiry_endpoint():
     """Normalize all expiry dates in journal to MM/DD/YY format."""
@@ -1441,7 +1493,6 @@ async def journal_page(account: str = None, sort: str = "desc"):
     for t in open_t:
         otype     = t.get("option_type","call")[0].upper()
         remaining = t.get("contracts_remaining", t.get("contracts","?"))
-        acc_cell  = f"<td>{acc_name(t.get('account_id','default'))}</td>" if multi_account else ""
         ot        = t.get("order_type","BTO") or "BTO"
         if t.get("is_spread") and t.get("spread_type"):
             ss    = t.get("short_strike","?")
@@ -1453,15 +1504,17 @@ async def journal_page(account: str = None, sort: str = "desc"):
         else:
             contract_str = f"{t.get('strike','')}{otype}"
             type_str     = ot
+        tid = str(t.get("id",""))
+        acc_disp = acc_name(t.get("account_id","default"))
         rows_open += (
             "<tr>"
-            + acc_cell +
+            + (f"<td data-edit='account_id' data-trade-id='{tid}'>{acc_disp}</td>" if multi_account else "") +
             f"<td>{t.get('ticker','')}</td>"
             f"<td>{type_str}</td>"
             f"<td>{contract_str}</td>"
-            f"<td>{t.get('expiry','')}</td>"
+            f"<td data-edit='expiry' data-trade-id='{tid}'>{t.get('expiry','')}</td>"
             f"<td>{remaining}/{t.get('contracts','?')}</td>"
-            f"<td>${t.get('entry_price') or t.get('credit','')}</td>"
+            f"<td data-edit='entry_price' data-trade-id='{tid}'>${t.get('entry_price') or t.get('credit','')}</td>"
             + (lambda lp, pct, pnl: (
                 f"<td>${lp}</td>"
                 f"<td style='{'color:#22c55e' if float(pnl or 0) >= 0 else 'color:#ef4444'}'>"
@@ -1471,8 +1524,8 @@ async def journal_page(account: str = None, sort: str = "desc"):
             ) +
             f"<td>${t.get('total_cost','')}</td>"
             f"<td>{t.get('entry_date','')} {t.get('entry_time','')}</td>"
-            f"<td>{fmt(t.get('fc_score'))}/7 {fmt(t.get('fc_verdict'))}</td>"
-            f"<td>{t.get('note','')}</td>"
+            f"<td data-edit='fc_score' data-trade-id='{tid}'>{fmt(t.get('fc_score'))}/7 {fmt(t.get('fc_verdict'))}</td>"
+            f"<td data-edit='note' data-trade-id='{tid}'>{t.get('note','')}</td>"
             "</tr>"
         )
 
