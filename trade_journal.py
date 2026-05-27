@@ -1630,10 +1630,25 @@ def get_journal_summary(account_id: str = None) -> str:
     lines    = []
 
     if open_t:
-        lines.append("OPEN TRADES (" + str(len(open_t)) + ")")
-        # Group by account if multiple accounts
-        accounts = load_journal().get("accounts",{})
+        accounts     = load_journal().get("accounts",{})
         show_account = len(accounts) > 1
+
+        # Total capital at risk per account
+        total_cost_all = round(sum(float(t.get("total_cost",0) or 0) for t in open_t), 2)
+        if show_account and not account_id:
+            acct_totals = {}
+            for t in open_t:
+                aid  = t.get("account_id","default")
+                cost = float(t.get("total_cost",0) or 0)
+                acct_totals[aid] = acct_totals.get(aid, 0) + cost
+            totals_str = " | ".join(
+                accounts.get(aid,{}).get("name", aid) + ": $" + str(round(v,2))
+                for aid, v in acct_totals.items()
+            )
+            lines.append("OPEN TRADES (" + str(len(open_t)) + ") — $" + str(total_cost_all) + " at risk")
+            lines.append("  " + totals_str)
+        else:
+            lines.append("OPEN TRADES (" + str(len(open_t)) + ") — $" + str(total_cost_all) + " at risk")
         lines.append("")
         for t in open_t:
             otype   = t["option_type"][0].upper()
@@ -1768,6 +1783,48 @@ def get_journal_summary(account_id: str = None) -> str:
                 lines.append("  Adds: " + str(len(t["adds"])) + " — avg entry $" + str(t.get("entry_price","")))
     else:
         lines.append("No open trades")
+
+    # Daily P&L by account
+    from datetime import date as _date
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    closed_today = [t for t in closed_t if t.get("exit_date","") == today_str]
+
+    if closed_today:
+        accounts = accounts if "accounts" in dir() else load_journal().get("accounts",{})
+        day_total = sum(float(t.get("pnl_total",0) or 0) for t in closed_today)
+        sign      = "+" if day_total >= 0 else ""
+        label     = "✅" if day_total >= 0 else "❌"
+        lines.append("")
+        lines.append("TODAY'S P&L " + label + " " + sign + "$" + str(round(day_total,2)))
+
+        if show_account and len(set(t.get("account_id","default") for t in closed_today)) > 1:
+            acct_day = {}
+            for t in closed_today:
+                aid = t.get("account_id","default")
+                acct_day[aid] = acct_day.get(aid,0) + float(t.get("pnl_total",0) or 0)
+            for aid, pnl in acct_day.items():
+                aname = accounts.get(aid,{}).get("name", aid)
+                sign2 = "+" if pnl >= 0 else ""
+                emoji = "✅" if pnl >= 0 else "❌"
+                lines.append("  " + emoji + " " + aname + ": " + sign2 + "$" + str(round(pnl,2)))
+
+        for t in closed_today:
+            pnl   = float(t.get("pnl_total",0) or 0)
+            pct   = float(t.get("pnl_pct",0) or 0)
+            sign2 = "+" if pnl >= 0 else ""
+            emoji = "✅" if pnl >= 0 else "❌"
+            otype = t.get("option_type","call")[0].upper()
+            acc   = ""
+            if show_account:
+                aid   = t.get("account_id","default")
+                aname = accounts.get(aid,{}).get("name", aid)
+                acc   = " [@" + aname + "]"
+            lines.append(
+                "  " + emoji + " " + t.get("ticker","") + " " +
+                str(t.get("strike","")) + otype + ": " +
+                sign2 + "$" + str(round(pnl,2)) +
+                " (" + sign2 + str(round(pct,1)) + "%)" + acc
+            )
 
     recent = closed_t[-5:] if closed_t else []
     if recent:
