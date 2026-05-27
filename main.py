@@ -912,13 +912,15 @@ async def journal_edit_api(request: Request):
                 if str(t.get("id","")) == str(trade_id):
                     # Allowed fields for web editing
                     allowed = {
-                        "account_id", "note", "entry_price", "exit_price", "exit_date", "exit_time",
-                        "contracts", "expiry", "strike", "option_type",
-                        "entry_date", "entry_time", "exit_date", "exit_time",
-                        "fc_score", "fc_verdict", "last_price"
+                        "account_id", "note", "ticker", "order_type",
+                        "entry_price", "exit_price", "credit", "spread_width",
+                        "contracts", "contracts_remaining", "expiry", "strike",
+                        "option_type", "entry_date", "entry_time",
+                        "exit_date", "exit_time", "fc_score", "fc_verdict",
+                        "last_price", "long_strike", "short_strike", "spread_type",
                     }
                     if field not in allowed:
-                        return {"success": False, "error": f"Field '{field}' not editable"}
+                        return {"success": False, "error": f"Field '{field}' not editable. Allowed: {sorted(allowed)}"}
                     # Type coercion — strip any "X/Y" format from contracts display
                     if field == "contracts":
                         try:
@@ -949,10 +951,19 @@ async def journal_edit_api(request: Request):
             if updated:
                 break
         if updated:
-            save_journal(journal)
+            # Save directly to Supabase via storage module
+            from storage import db_set
+            import json as _json
+            journal_str = _json.dumps(journal)
+            db_ok = db_set("flowcheck_journal", journal_str)
+            print(f"[EDIT] Direct save: trade {trade_id} {field}={value} db_ok={db_ok} size={len(journal_str)}")
+            if not db_ok:
+                return {"success": False, "error": "Supabase save failed"}
             return {"success": True, "trade_id": trade_id, "field": field, "value": value}
+        print(f"[EDIT] Trade not found: id={trade_id}")
         return {"success": False, "error": "Trade not found"}
     except Exception as e:
+        print(f"[EDIT] Error: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get("/fix-spreads")
