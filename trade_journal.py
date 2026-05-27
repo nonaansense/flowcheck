@@ -346,22 +346,44 @@ def add_entry(ticker: str, strike: str, opt_type: str, expiry: str,
         auto_filled = True
         print("[JOURNAL] No entry time provided — auto-filling current time")
 
-    # Find matching FlowCheck alert
+    # Find matching FlowCheck alert — check memory first, then Supabase
     fc_score = fc_verdict = None
     try:
-        from main import analyses
-        today   = now_et.strftime("%Y-%m-%d")
+        today = now_et.strftime("%Y-%m-%d")
+
+        # Try in-memory analyses first
+        analyses_list = []
+        try:
+            from main import analyses as _mem_analyses
+            analyses_list = _mem_analyses
+        except:
+            pass
+
+        # Fall back to Supabase if memory is empty
+        if not analyses_list:
+            try:
+                from storage import db_get
+                import json as _json
+                raw = db_get("analyses_today")
+                if raw:
+                    data = _json.loads(raw)
+                    if data.get("date") == today:
+                        analyses_list = data.get("analyses", [])
+            except:
+                pass
+
         matches = [
-            a for a in analyses
+            a for a in analyses_list
             if a.get("trade",{}).get("ticker","").upper() == ticker.upper()
-            and a.get("date") == today
+            and a.get("date","") == today
         ]
         if matches:
             latest     = matches[-1]
             fc_score   = latest.get("result",{}).get("final_score")
             fc_verdict = latest.get("result",{}).get("verdict")
-    except:
-        pass
+            print(f"[JOURNAL] FC score attached: {ticker} {fc_score}/7 {fc_verdict}")
+    except Exception as e:
+        print(f"[JOURNAL] FC score lookup error: {e}")
 
     trade = {
         "id":             len(journal["trades"]) + len(journal["closed"]),

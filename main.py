@@ -722,6 +722,52 @@ async def migrate_storage():
     result = migrate_tmp_to_db()
     return {"result": result}
 
+@app.get("/attach-scores")
+async def attach_scores():
+    """Attach FlowCheck scores to open trades that are missing them."""
+    from trade_journal import load_journal, save_journal
+    from storage import db_get
+    import json as _json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    journal  = load_journal()
+    open_t   = journal.get("trades", [])
+    today    = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+    # Load analyses from Supabase
+    analyses_list = list(analyses)  # in-memory first
+    if not analyses_list:
+        raw = db_get("analyses_today")
+        if raw:
+            data = _json.loads(raw)
+            if data.get("date") == today:
+                analyses_list = data.get("analyses", [])
+
+    if not analyses_list:
+        return {"error": "No analyses found for today"}
+
+    attached = 0
+    for t in open_t:
+        if t.get("fc_score") is not None:
+            continue  # Already has score
+        ticker  = t.get("ticker","").upper()
+        matches = [
+            a for a in analyses_list
+            if a.get("trade",{}).get("ticker","").upper() == ticker
+        ]
+        if matches:
+            latest = matches[-1]
+            t["fc_score"]   = latest.get("result",{}).get("final_score")
+            t["fc_verdict"] = latest.get("result",{}).get("verdict")
+            attached += 1
+            print(f"[ATTACH] {ticker}: {t['fc_score']}/7 {t['fc_verdict']}")
+
+    if attached:
+        save_journal(journal)
+
+    return {"attached": attached, "message": f"Attached scores to {attached} trades"}
+
 @app.get("/normalize-expiry")
 async def normalize_expiry_endpoint():
     """Normalize all expiry dates in journal to MM/DD/YY format."""
