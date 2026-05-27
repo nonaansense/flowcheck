@@ -939,6 +939,54 @@ async def fix_spreads_endpoint():
         save_journal(journal)
     return {"fixed": fixed, "message": f"Set is_spread=True on {fixed} trades"}
 
+@app.get("/merge-positions")
+async def merge_positions():
+    """Merge duplicate open positions into averaged single entries."""
+    from trade_journal import load_journal, save_journal
+    journal  = load_journal()
+    open_t   = journal.get("trades", [])
+    merged   = 0
+    seen     = {}
+    keep     = []
+
+    for t in open_t:
+        key = (
+            t.get("ticker","").upper(),
+            str(t.get("strike","")),
+            t.get("account_id","default"),
+            t.get("expiry",""),
+            str(t.get("is_spread",False)),
+        )
+        if key in seen:
+            # Merge into existing
+            existing   = seen[key]
+            e_contr    = int(existing.get("contracts_remaining") or existing.get("contracts",0))
+            n_contr    = int(t.get("contracts_remaining") or t.get("contracts",0))
+            total      = e_contr + n_contr
+            e_price    = float(existing.get("entry_price",0) or existing.get("credit",0) or 0)
+            n_price    = float(t.get("entry_price",0) or t.get("credit",0) or 0)
+            if total > 0 and e_price > 0 and n_price > 0:
+                avg = round((e_price*e_contr + n_price*n_contr) / total, 2)
+                existing["entry_price"]         = avg
+                existing["credit"]              = avg if existing.get("is_spread") else existing.get("credit")
+                existing["contracts"]           = total
+                existing["contracts_remaining"] = total
+                existing["total_cost"]          = round(avg * total * 100, 2)
+            else:
+                existing["contracts"]           = total
+                existing["contracts_remaining"] = total
+            merged += 1
+        else:
+            seen[key] = t
+            keep.append(t)
+
+    if merged:
+        journal["trades"] = keep
+        save_journal(journal)
+
+    return {"merged": merged, "remaining_positions": len(keep),
+            "message": f"Merged {merged} duplicate positions into averaged entries"}
+
 @app.get("/debug-spreads")
 async def debug_spreads():
     """Show all spread trades in journal for debugging."""
