@@ -1710,7 +1710,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             f"<td>{type_str}</td>"
             f"<td>{contract_str}</td>"
             f"<td data-edit='expiry' data-trade-id='{tid}'>{t.get('expiry','')}</td>"
-            f"<td>{remaining}/{t.get('contracts','?')}</td>"
+            f"<td data-edit='contracts' data-trade-id='{tid}'>{remaining}/{t.get('contracts','?')}</td>"
             f"<td data-edit='entry_price' data-trade-id='{tid}'>${t.get('entry_price') or t.get('credit','')}</td>"
             + (lambda lp, pct, pnl: (
                 f"<td>${lp}</td>"
@@ -1752,7 +1752,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             f"<td>{type_c}</td>"
             f"<td>{contract_c}</td>"
             f"<td data-edit='expiry' data-trade-id='{tid_c}'>{t.get('expiry','')}</td>"
-            f"<td>{t.get('contracts','?')}</td>"
+            f"<td data-edit='contracts' data-trade-id='{tid_c}'>{t.get('contracts','?')}</td>"
             f"<td data-edit='entry_price' data-trade-id='{tid_c}'>${t.get('entry_price','')}</td>"
             f"<td data-edit='exit_price' data-trade-id='{tid_c}'>${t.get('exit_price','')}</td>"
             f"<td style='{color}'>{fmt(pct,'%')} / ${fmt(pnl)}</td>"
