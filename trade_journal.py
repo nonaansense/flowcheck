@@ -868,8 +868,17 @@ def edit_trade(ticker: str, field: str, value: str,
                 return False, "Unknown account: " + value + ". Valid: " + ", ".join(accounts.keys()), None
             target["account_id"] = value
 
+        elif field == "fc_score":
+            try:
+                target["fc_score"] = float(value)
+            except:
+                return False, "fc_score must be a number e.g. 6", None
+        elif field == "fc_verdict":
+            if value.upper() not in ("TRADE","WATCH","SKIP"):
+                return False, "fc_verdict must be TRADE, WATCH, or SKIP", None
+            target["fc_verdict"] = value.upper()
         else:
-            valid = "entry_date, entry_time, exit_date, exit_time, entry_price, contracts, expiry, strike, note, option_type, account_id"
+            valid = "entry_date, entry_time, exit_date, exit_time, entry_price, contracts, expiry, strike, note, option_type, account_id, fc_score, fc_verdict"
             return False, "Unknown field: " + field + ". Valid: " + valid, None
 
         save_journal(journal)
