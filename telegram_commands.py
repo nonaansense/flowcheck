@@ -1168,6 +1168,8 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
         "  strike appears near the option description e.g. DELL $105 Call or 105C.",
         "  fees appear near bottom of screen as Commission, Fee, or Regulatory Fee.",
         "  If two different strikes visible = spread.",
+        "  expiry year: if year appears to be in the past (before 2026), correct it to 2026 or 2027.",
+        "  expiry format must be MM/DD/YY e.g. 09/18/26 not 09/18/25 or 09/18/2025.",
     ])
 
     try:
@@ -1302,7 +1304,21 @@ def handle_trade_photo(photo_list: list, caption: str, reply_chat_id: str):
     expiry_raw = data.get("expiry","")
     try:
         from trade_journal import normalize_expiry
+        from datetime import date as _date, datetime as _dt
         expiry = normalize_expiry(expiry_raw)
+        # Sanity check — if expiry is in the past, add 1 year
+        if expiry:
+            for fmt in ("%m/%d/%y", "%m/%d/%Y"):
+                try:
+                    exp_dt = _dt.strptime(expiry, fmt).date()
+                    if exp_dt < _date.today():
+                        # Add 1 year
+                        corrected = exp_dt.replace(year=exp_dt.year + 1)
+                        expiry    = corrected.strftime("%m/%d/%y")
+                        print(f"[PHOTO] Expiry year corrected: {expiry_raw} → {expiry}")
+                    break
+                except:
+                    continue
     except:
         expiry = expiry_raw
     contracts  = data.get("contracts")
