@@ -339,7 +339,7 @@ def update_eod_prices(send_sms_fn=None):
 
     if updated:
         save_journal(journal)
-        print(f"[EOD PRICER] Updated {len(updated)}/{len(single_legs)} positions")
+        print(f"[EOD PRICER] Updated {len(updated)}/{len(all_positions)} positions")
 
         if send_sms_fn:
             accounts = journal.get("accounts",{})
