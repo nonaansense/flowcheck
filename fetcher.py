@@ -88,6 +88,113 @@ def tiingo_history(ticker: str, days: int = 10) -> list:
             return closes
     return []
 
+def get_support_resistance(ticker: str, current_price: float, opt_type: str) -> dict | None:
+    """
+    Calculate key support (for calls) or resistance (for puts) levels.
+    Uses 30 days of Tiingo daily OHLC data.
+    Returns dict with levels and stop recommendation.
+    """
+    try:
+        start = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d")
+        data  = tiingo_get(f"/tiingo/daily/{ticker.upper()}/prices", {"startDate": start})
+        if not data or not isinstance(data, list) or len(data) < 10:
+            return None
+
+        closes = [float(d.get("adjClose") or d.get("close",0)) for d in data]
+        highs  = [float(d.get("adjHigh")  or d.get("high",0))  for d in data]
+        lows   = [float(d.get("adjLow")   or d.get("low",0))   for d in data]
+
+        if not closes or current_price <= 0:
+            return None
+
+        # SMAs
+        def sma(lst, n):
+            if len(lst) < n: return None
+            return round(sum(lst[-n:]) / n, 2)
+
+        ma10 = sma(closes, 10)
+        ma20 = sma(closes, 20)
+        ma50 = sma(closes, min(50, len(closes)))
+
+        # Recent range
+        hi_20 = round(max(highs[-20:]), 2)
+        lo_20 = round(min(lows[-20:]),  2)
+        hi_10 = round(max(highs[-10:]), 2)
+        lo_10 = round(min(lows[-10:]),  2)
+
+        # Pivot points from last 10 days
+        # Find swing lows (support) and swing highs (resistance)
+        swing_lows  = []
+        swing_highs = []
+        for i in range(1, len(lows)-1):
+            if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
+                swing_lows.append(round(lows[i], 2))
+            if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
+                swing_highs.append(round(highs[i], 2))
+
+        result = {
+            "current":   round(current_price, 2),
+            "ma10":      ma10,
+            "ma20":      ma20,
+            "ma50":      ma50,
+            "hi_20d":    hi_20,
+            "lo_20d":    lo_20,
+            "hi_10d":    hi_10,
+            "lo_10d":    lo_10,
+        }
+
+        is_call = opt_type.lower() in ("c","call")
+
+        if is_call:
+            # For calls: find nearest support levels below current price
+            supports = []
+            for level in [ma10, ma20, ma50, lo_10, lo_20]:
+                if level and level < current_price:
+                    supports.append(level)
+            # Add swing lows below current price
+            for sl in swing_lows[-5:]:
+                if sl < current_price:
+                    supports.append(sl)
+
+            supports = sorted(set(supports), reverse=True)[:3]  # Top 3 nearest
+
+            if supports:
+                primary_support = supports[0]  # Nearest support
+                pct_to_support  = round(((current_price - primary_support) / current_price) * 100, 1)
+                result["support_levels"]   = supports
+                result["primary_support"]  = primary_support
+                result["pct_to_support"]   = pct_to_support
+                result["stop_note"]        = f"Stock stop: ${primary_support} ({pct_to_support}% below current)"
+                result["thesis_broken"]    = f"Exit if stock closes below ${primary_support}"
+
+        else:
+            # For puts: find nearest resistance levels above current price
+            resistances = []
+            for level in [ma10, ma20, ma50, hi_10, hi_20]:
+                if level and level > current_price:
+                    resistances.append(level)
+            for sh in swing_highs[-5:]:
+                if sh > current_price:
+                    resistances.append(sh)
+
+            resistances = sorted(set(resistances))[:3]  # 3 nearest above
+
+            if resistances:
+                primary_resist  = resistances[0]
+                pct_to_resist   = round(((primary_resist - current_price) / current_price) * 100, 1)
+                result["resistance_levels"]  = resistances
+                result["primary_resistance"] = primary_resist
+                result["pct_to_resist"]      = pct_to_resist
+                result["stop_note"]          = f"Stock stop: ${primary_resist} ({pct_to_resist}% above current)"
+                result["thesis_broken"]      = f"Exit if stock closes above ${primary_resist}"
+
+        print(f"[FETCHER] S/R for {ticker}: {result.get('stop_note','')}")
+        return result
+
+    except Exception as e:
+        print(f"[FETCHER] S/R error for {ticker}: {e}")
+        return None
+
 # ── VIX ────────────────────────────────────────────────────────────────
 def fetch_vix() -> float | None:
     # Source 1: Stooq
