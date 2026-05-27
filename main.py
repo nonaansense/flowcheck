@@ -558,24 +558,28 @@ def build_sms(trade: dict, data: dict, result: dict,
     return body + footer
 
 # ── Process alert ─────────────────────────────────────────────────────
-async def process_alert(tweet: str, tweet_url: str):
+async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = None):
     try:
         import asyncio, concurrent.futures
         loop = asyncio.get_event_loop()
 
-        # Run blocking IO in thread pool with timeout
-        def _process():
-            return extract_trade_from_tweet(tweet, tweet_url)
+        # Use pre-parsed trade if provided (test mode or Bullflow)
+        if pre_parsed_trade:
+            trade = pre_parsed_trade
+        else:
+            # Run blocking IO in thread pool with timeout
+            def _process():
+                return extract_trade_from_tweet(tweet, tweet_url)
 
-        try:
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                trade = await asyncio.wait_for(
-                    loop.run_in_executor(pool, _process),
-                    timeout=30.0  # 30s max for vision/parse
-                )
-        except asyncio.TimeoutError:
-            print(f"[PROCESS] Vision parse timeout for {tweet[:50]}")
-            trade = None
+            try:
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    trade = await asyncio.wait_for(
+                        loop.run_in_executor(pool, _process),
+                        timeout=30.0  # 30s max for vision/parse
+                    )
+            except asyncio.TimeoutError:
+                print(f"[PROCESS] Vision parse timeout for {tweet[:50]}")
+                trade = None
         if not trade or not trade.get("ticker"):
             print("[WEBHOOK] Could not extract trade from text or image — skipping")
             return
@@ -792,6 +796,44 @@ async def setup_storage():
     from storage import ensure_table, storage_status
     result = ensure_table()
     return {"result": result, "status": storage_status()}
+
+@app.post("/test-alert")
+async def test_alert(request: Request, background_tasks: BackgroundTasks):
+    """
+    Test endpoint — processes a flow alert without needing a tweet URL.
+    POST body: {"ticker": "NVDA", "strike": "140", "opt_type": "call", "expiry": "06/20/26", "premium": 500000}
+    """
+    try:
+        body    = await request.json()
+    except:
+        body    = {}
+
+    ticker   = body.get("ticker","NVDA").upper()
+    strike   = body.get("strike","140")
+    opt_type = body.get("opt_type","call")
+    expiry   = body.get("expiry","06/20/26")
+    premium  = body.get("premium",500000)
+
+    # Build a fake tweet text
+    prem_str  = f"${float(premium)/1000:.0f}K" if float(premium) < 1_000_000 else f"${float(premium)/1_000_000:.1f}M"
+    fake_tweet = f"${ticker} - {prem_str} {opt_type.title()} sweep expiring {expiry} strike ${strike} [TEST]"
+
+    # Build pre-parsed trade data to skip vision parser
+    fake_trade = {
+        "ticker":      ticker,
+        "strike":      strike,
+        "option_type": opt_type,
+        "expiry":      expiry,
+        "expiry_raw":  expiry,
+        "expiry_short": expiry,
+        "premium":     float(premium),
+        "fill_type":   body.get("fill_type","FULL_ASK"),
+        "vol_oi_ratio": body.get("vol_oi", 5.0),
+        "open_interest": body.get("oi", 500),
+    }
+
+    background_tasks.add_task(process_alert, fake_tweet, None, fake_trade)
+    return {"status": "queued", "ticker": ticker, "tweet": fake_tweet}
 
 @app.get("/test-storage")
 async def test_storage():
