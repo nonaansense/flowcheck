@@ -1900,42 +1900,6 @@ function downloadCSV(){{
 }}
 
 // ── Inline editing ──────────────────────────────────────────
-function makeEditable(td, tradeId, field) {{
-  if (td.querySelector('input')) return;
-  const original = td.innerText.trim();
-  const input = document.createElement('input');
-  input.style.cssText = 'border:1.5px solid #6366f1;border-radius:4px;padding:2px 6px;font-size:13px;width:100%;background:#1e293b;color:#f1f5f9;';
-  input.value = original;
-  td.innerHTML = '';
-  td.appendChild(input);
-  input.focus(); input.select();
-  async function save() {{
-    const val = input.value.trim();
-    if (val === original) {{ td.innerText = original; return; }}
-    try {{
-      const r = await fetch('/journal-edit', {{
-        method: 'POST',
-        headers: {{'Content-Type':'application/json'}},
-        body: JSON.stringify({{trade_id: tradeId, field: field, value: val}})
-      }});
-      const data = await r.json();
-      if (data.success) {{
-        td.innerText = val;
-        td.style.color = '#22c55e';
-        setTimeout(() => td.style.color = '', 1500);
-      }} else {{
-        td.innerText = original;
-        alert('Error: ' + data.error);
-      }}
-    }} catch(e) {{ td.innerText = original; }}
-  }}
-  input.addEventListener('blur', save);
-  input.addEventListener('keydown', e => {{
-    if (e.key === 'Enter') input.blur();
-    if (e.key === 'Escape') {{ td.innerText = original; }}
-  }});
-}}
-
 function attachEditors() {{
   document.querySelectorAll('[data-edit]').forEach(td => {{
     td.style.cursor = 'pointer';
@@ -1959,32 +1923,48 @@ document.addEventListener('DOMContentLoaded', () => {{
 function makeEditable(td, tradeId, field) {{
   if (td.querySelector('input')) return;
   var orig = td.innerText.trim();
+  var wrapper = document.createElement('div');
+  wrapper.style.cssText = 'display:flex;gap:4px;align-items:center';
   var inp = document.createElement('input');
-  inp.className = 'edit-input';
+  inp.style.cssText = 'border:1.5px solid #6366f1;border-radius:4px;padding:2px 5px;font-size:12px;background:#1e293b;color:#f1f5f9;flex:1;min-width:60px';
   inp.value = orig;
+  var btn = document.createElement('button');
+  btn.innerText = '✓';
+  btn.style.cssText = 'background:#22c55e;color:white;border:none;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:14px;font-weight:bold';
+  var cancel = document.createElement('button');
+  cancel.innerText = '✗';
+  cancel.style.cssText = 'background:#64748b;color:white;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:14px';
+  wrapper.appendChild(inp);
+  wrapper.appendChild(btn);
+  wrapper.appendChild(cancel);
   td.innerHTML = '';
-  td.appendChild(inp);
+  td.appendChild(wrapper);
   inp.focus(); inp.select();
   function save() {{
     var val = inp.value.trim();
     if (val === orig) {{ td.innerText = orig; return; }}
-    fetch('/journal-edit', {{method:'POST',headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{trade_id:tradeId,field:field,value:val}})}})
+    btn.disabled = true; btn.innerText = '...';
+    fetch('/journal-edit', {{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{trade_id:tradeId,field:field,value:val}})
+    }})
     .then(r=>r.json()).then(data=>{{
       if (data.success) {{
         td.innerText = val;
-        td.style.color='#22c55e';
-        setTimeout(()=>td.style.color='',1500);
+        td.style.background='rgba(34,197,94,0.15)';
+        setTimeout(()=>{{td.style.background='';attachEditors();}},1000);
       }} else {{
         td.innerText = orig;
-        alert('Error: '+data.error);
+        alert('Error: '+(data.error||'Unknown error'));
       }}
-    }}).catch(()=>{{td.innerText=orig;}});
+    }}).catch(()=>{{td.innerText=orig;alert('Save failed');}});
   }}
-  inp.onblur = save;
-  inp.onkeydown = function(e) {{
-    if (e.key==='Enter') inp.blur();
-    if (e.key==='Escape') td.innerText=orig;
+  btn.onclick    = save;
+  cancel.onclick = function() {{ td.innerText = orig; attachEditors(); }};
+  inp.onkeydown  = function(e) {{
+    if (e.key==='Enter') save();
+    if (e.key==='Escape') {{ td.innerText = orig; attachEditors(); }}
   }};
 }}
 async function deleteTrade(tradeId, bucket) {{
