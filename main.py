@@ -919,10 +919,22 @@ async def journal_edit_api(request: Request):
                     }
                     if field not in allowed:
                         return {"success": False, "error": f"Field '{field}' not editable"}
-                    # Type coercion
-                    if field in ("entry_price","exit_price","contracts","fc_score","last_price"):
-                        try: value = float(value)
-                        except: return {"success": False, "error": "Must be a number"}
+                    # Type coercion — strip any "X/Y" format from contracts display
+                    if field == "contracts":
+                        try:
+                            value = int(float(str(value).split("/")[0].strip()))
+                        except:
+                            return {"success": False, "error": "Must be a number (e.g. 3)"}
+                    elif field == "contracts_remaining":
+                        try:
+                            value = int(float(str(value).split("/")[0].strip()))
+                        except:
+                            return {"success": False, "error": "Must be a number (e.g. 3)"}
+                    elif field in ("entry_price","exit_price","fc_score","last_price","credit","spread_width"):
+                        try:
+                            value = float(str(value).replace("$","").replace(",","").strip())
+                        except:
+                            return {"success": False, "error": "Must be a number (e.g. 13.20)"}
                     if field == "fc_verdict" and value.upper() not in ("TRADE","WATCH","SKIP"):
                         return {"success": False, "error": "fc_verdict must be TRADE, WATCH, or SKIP"}
                     if field == "account_id":
