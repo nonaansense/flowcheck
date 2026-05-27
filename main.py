@@ -955,8 +955,8 @@ async def journal_edit_api(request: Request):
             from storage import db_set
             import json as _json
             journal_str = _json.dumps(journal)
-            db_ok = db_set("flowcheck_journal", journal_str)
-            print(f"[EDIT] Direct save: trade {trade_id} {field}={value} db_ok={db_ok} size={len(journal_str)}")
+            db_ok = db_set("journal", journal_str)  # Must match JOURNAL_KEY
+            print(f"[EDIT] Saved to Supabase key='journal': trade {trade_id} {field}={value} db_ok={db_ok} size={len(journal_str)}")
             if not db_ok:
                 return {"success": False, "error": "Supabase save failed"}
             return {"success": True, "trade_id": trade_id, "field": field, "value": value}
