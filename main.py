@@ -1670,6 +1670,55 @@ function downloadCSV(){{
   a.download='{csv_filename}';
   a.click();
 }}
+
+// ── Inline editing ──────────────────────────────────────────
+function makeEditable(td, tradeId, field) {{
+  if (td.querySelector('input')) return;
+  const original = td.innerText.trim();
+  const input = document.createElement('input');
+  input.style.cssText = 'border:1.5px solid #6366f1;border-radius:4px;padding:2px 6px;font-size:13px;width:100%;background:#1e293b;color:#f1f5f9;';
+  input.value = original;
+  td.innerHTML = '';
+  td.appendChild(input);
+  input.focus(); input.select();
+  async function save() {{
+    const val = input.value.trim();
+    if (val === original) {{ td.innerText = original; return; }}
+    try {{
+      const r = await fetch('/journal-edit', {{
+        method: 'POST',
+        headers: {{'Content-Type':'application/json'}},
+        body: JSON.stringify({{trade_id: tradeId, field: field, value: val}})
+      }});
+      const data = await r.json();
+      if (data.success) {{
+        td.innerText = val;
+        td.style.color = '#22c55e';
+        setTimeout(() => td.style.color = '', 1500);
+      }} else {{
+        td.innerText = original;
+        alert('Error: ' + data.error);
+      }}
+    }} catch(e) {{ td.innerText = original; }}
+  }}
+  input.addEventListener('blur', save);
+  input.addEventListener('keydown', e => {{
+    if (e.key === 'Enter') input.blur();
+    if (e.key === 'Escape') {{ td.innerText = original; }}
+  }});
+}}
+
+function attachEditors() {{
+  document.querySelectorAll('[data-edit]').forEach(td => {{
+    td.style.cursor = 'pointer';
+    td.title = 'Click to edit';
+    td.removeEventListener('click', td._editHandler);
+    td._editHandler = () => makeEditable(td, td.dataset.tradeId, td.dataset.edit);
+    td.addEventListener('click', td._editHandler);
+  }});
+}}
+document.addEventListener('DOMContentLoaded', attachEditors);
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTimeout(attachEditors, 150)));
 </script>
 </body></html>"""
 
