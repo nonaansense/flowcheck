@@ -101,21 +101,71 @@ def estimate_intrinsic(stock: float, strike: float, opt_type: str, expiry: str) 
     except:
         return None
 
+def get_option_price_tradier(ticker: str, strike: str, opt_type: str, expiry: str) -> float | None:
+    """Fetch option price from Tradier brokerage API."""
+    token = os.environ.get("TRADIER_TOKEN","")
+    if not token:
+        return None
+    try:
+        # Normalize expiry to YYYY-MM-DD
+        from datetime import datetime as _dt
+        expiry = expiry.strip()
+        for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                exp_str = _dt.strptime(expiry, fmt).strftime("%Y-%m-%d")
+                break
+            except:
+                continue
+
+        call_put = "call" if opt_type.lower() in ("c","call") else "put"
+        r = requests.get(
+            "https://api.tradier.com/v1/markets/options/chains",
+            params={
+                "symbol":     ticker.upper(),
+                "expiration": exp_str,
+                "greeks":     "false",
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept":        "application/json",
+            },
+            timeout=10
+        )
+        if r.status_code != 200:
+            print(f"[EOD] Tradier error: {r.status_code} {r.text[:100]}")
+            return None
+
+        options = r.json().get("options",{}).get("option",[]) or []
+        strike_f = float(strike)
+        for opt in options:
+            if (abs(float(opt.get("strike",0)) - strike_f) < 0.01 and
+                opt.get("option_type","").lower() == call_put):
+                # Use mid price (bid+ask/2), fall back to last
+                bid  = float(opt.get("bid",0) or 0)
+                ask  = float(opt.get("ask",0) or 0)
+                last = float(opt.get("last",0) or 0)
+                mid  = round((bid + ask) / 2, 2) if bid > 0 and ask > 0 else 0
+                price = mid or last
+                if price > 0:
+                    print(f"[EOD] Tradier: {ticker} {strike}{call_put[0].upper()} = ${price} (bid={bid} ask={ask})")
+                    return price
+        print(f"[EOD] Tradier: {ticker} {strike} not found in chain")
+        return None
+    except Exception as e:
+        print(f"[EOD] Tradier error: {e}")
+        return None
+
 def get_option_price(ticker: str, strike: str, opt_type: str, expiry: str) -> tuple:
     """
     Get option price using best available source.
-    Priority: Tastytrade → Polygon → Intrinsic estimate
-    Returns (price, source) where source is 'tasty', 'polygon', 'intrinsic', or None.
+    Priority: Tradier → Polygon → Intrinsic estimate
+    Returns (price, source) where source is 'tradier', 'polygon', 'intrinsic', or None.
     """
-    # 1. Try Tastytrade (best source — free for account holders)
-    try:
-        from tasty_pricer import get_option_price_tasty, has_credentials
-        if has_credentials():
-            price = get_option_price_tasty(ticker, strike, opt_type, expiry)
-            if price:
-                return price, "tasty"
-    except Exception as e:
-        print(f"[EOD] Tastytrade error: {e}")
+    # 1. Try Tradier (brokerage API — most accurate, real bid/ask)
+    if os.environ.get("TRADIER_TOKEN"):
+        price = get_option_price_tradier(ticker, strike, opt_type, expiry)
+        if price:
+            return price, "tradier"
 
     # 2. Try Polygon option snapshot
     opt_ticker = build_option_ticker(ticker, strike, opt_type, expiry)

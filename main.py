@@ -1014,6 +1014,27 @@ async def test_tasty():
     from tasty_pricer import test_connection
     return {"status": test_connection()}
 
+@app.get("/test-tradier")
+async def test_tradier():
+    """Test Tradier API connection and option pricing."""
+    import os, requests
+    token = os.environ.get("TRADIER_TOKEN","")
+    if not token:
+        return {"status": "❌ TRADIER_TOKEN not set"}
+    try:
+        r = requests.get(
+            "https://api.tradier.com/v1/user/profile",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=8
+        )
+        if r.status_code == 200:
+            profile = r.json().get("profile",{})
+            name    = profile.get("name","unknown")
+            return {"status": "✅ Connected", "account": name}
+        return {"status": f"❌ HTTP {r.status_code}: {r.text[:100]}"}
+    except Exception as e:
+        return {"status": f"❌ Error: {str(e)}"}
+
 @app.get("/setup-robinhood")
 async def setup_robinhood():
     """
