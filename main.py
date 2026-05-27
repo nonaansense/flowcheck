@@ -1935,50 +1935,70 @@ document.addEventListener('DOMContentLoaded', () => {{
 function makeEditable(td, tradeId, field) {{
   if (td.querySelector('input')) return;
   var orig = td.innerText.trim();
+
   var wrapper = document.createElement('div');
-  wrapper.style.cssText = 'display:flex;gap:4px;align-items:center';
+  wrapper.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:nowrap';
+
   var inp = document.createElement('input');
-  inp.style.cssText = 'border:1.5px solid #6366f1;border-radius:4px;padding:2px 5px;font-size:12px;background:#1e293b;color:#f1f5f9;flex:1;min-width:60px';
+  inp.style.cssText = 'border:1.5px solid #6366f1;border-radius:4px;padding:3px 6px;font-size:12px;background:#0f172a;color:#f1f5f9;flex:1;min-width:50px;max-width:150px';
   inp.value = orig;
+
   var btn = document.createElement('button');
-  btn.innerText = '✓';
-  btn.style.cssText = 'background:#22c55e;color:white;border:none;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:14px;font-weight:bold';
-  var cancel = document.createElement('button');
-  cancel.innerText = '✗';
-  cancel.style.cssText = 'background:#64748b;color:white;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:14px';
+  btn.textContent = '✓ Save';
+  btn.style.cssText = 'background:#22c55e;color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;font-weight:bold;white-space:nowrap';
+
+  var cancel = document.createElement('span');
+  cancel.textContent = '✗';
+  cancel.style.cssText = 'color:#94a3b8;cursor:pointer;font-size:16px;padding:0 4px';
+  cancel.title = 'Cancel';
+
   wrapper.appendChild(inp);
   wrapper.appendChild(btn);
   wrapper.appendChild(cancel);
   td.innerHTML = '';
   td.appendChild(wrapper);
   inp.focus(); inp.select();
+
   function save() {{
     var val = inp.value.trim();
-    if (val === orig) {{ td.innerText = orig; return; }}
-    btn.disabled = true; btn.innerText = '...';
+    if (val === orig) {{ td.innerText = orig; attachEditors(); return; }}
+    btn.disabled = true;
+    btn.textContent = '...';
+    console.log('Saving:', field, '=', val, 'for trade', tradeId);
     fetch('/journal-edit', {{
-      method:'POST',
-      headers:{{'Content-Type':'application/json'}},
-      body:JSON.stringify({{trade_id:tradeId,field:field,value:val}})
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{trade_id: tradeId, field: field, value: val}})
     }})
-    .then(r=>r.json()).then(data=>{{
+    .then(function(r) {{ return r.json(); }})
+    .then(function(data) {{
+      console.log('Save result:', data);
       if (data.success) {{
         td.innerText = val;
-        td.style.background='rgba(34,197,94,0.15)';
-        setTimeout(()=>{{td.style.background='';attachEditors();}},1000);
+        td.style.background = 'rgba(34,197,94,0.2)';
+        setTimeout(function() {{ td.style.background = ''; attachEditors(); }}, 1500);
       }} else {{
         td.innerText = orig;
-        alert('Error: '+(data.error||'Unknown error'));
+        attachEditors();
+        alert('Save error: ' + (data.error || 'Unknown error'));
       }}
-    }}).catch(()=>{{td.innerText=orig;alert('Save failed');}});
+    }})
+    .catch(function(err) {{
+      console.error('Save failed:', err);
+      td.innerText = orig;
+      attachEditors();
+      alert('Save failed: ' + err.message);
+    }});
   }}
-  btn.onclick    = save;
-  cancel.onclick = function() {{ td.innerText = orig; attachEditors(); }};
-  inp.onkeydown  = function(e) {{
-    if (e.key==='Enter') save();
-    if (e.key==='Escape') {{ td.innerText = orig; attachEditors(); }}
-  }};
+
+  btn.addEventListener('click', save);
+  cancel.addEventListener('click', function() {{ td.innerText = orig; attachEditors(); }});
+  inp.addEventListener('keydown', function(e) {{
+    if (e.key === 'Enter') {{ e.preventDefault(); save(); }}
+    if (e.key === 'Escape') {{ td.innerText = orig; attachEditors(); }}
+  }});
 }}
+
 async function deleteTrade(tradeId, bucket) {{
   if (!confirm('Delete this trade?')) return;
   try {{
