@@ -861,31 +861,12 @@ async def attach_scores():
 @app.get("/clear-test-trades")
 async def clear_test_trades():
     """Remove test trades from watchlist and positions."""
-    removed_watch = 0
-    removed_pos   = 0
-    # Clear watchlist entries for NVDA 140C test
-    test_tickers = ["NVDA"]  # Add others if needed
-    new_watchlist_items = []
-    for t in list(watchlist):
-        if t.get("ticker","") in test_tickers and t.get("_test"):
-            removed_watch += 1
-        else:
-            new_watchlist_items.append(t)
-    watchlist.clear()
-    watchlist.extend(new_watchlist_items)
-
-    # Clear from positions too
-    for tk in test_tickers:
-        if tk in positions:
-            del positions[tk]
-            removed_pos += 1
-
     # Clear test analyses
     before = len(analyses)
     analyses[:] = [a for a in analyses if not a.get("trade",{}).get("_test")]
     removed_anal = before - len(analyses)
-
-    return {"removed_watchlist": removed_watch, "removed_positions": removed_pos, "removed_analyses": removed_anal}
+    save_analyses()
+    return {"removed_analyses": removed_anal, "note": "Watchlist clears on next redeploy"}
 
 @app.get("/normalize-expiry")
 async def normalize_expiry_endpoint():
