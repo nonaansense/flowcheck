@@ -906,8 +906,6 @@ async def journal_edit_api(request: Request):
             return {"success": False, "error": "trade_id and field required"}
         from trade_journal import load_journal, save_journal
         journal  = load_journal()
-        print(f"[EDIT] Loaded journal: {len(journal.get('trades',[]))} open, {len(journal.get('closed',[]))} closed")
-        print(f"[EDIT] Looking for trade_id={trade_id!r} field={field!r}")
         updated = False
         for bucket in ("trades","closed"):
             for t in journal.get(bucket,[]):
@@ -1049,17 +1047,19 @@ async def debug_spreads():
     spreads  = []
     all_open = journal.get("trades", [])
     for t in all_open:
-        spreads.append({
-            "ticker":       t.get("ticker"),
-            "is_spread":    t.get("is_spread"),
-            "spread_type":  t.get("spread_type"),
-            "long_strike":  t.get("long_strike"),
-            "short_strike": t.get("short_strike"),
-            "expiry":       t.get("expiry"),
-            "credit":       t.get("credit"),
-            "strike":       t.get("strike"),
-        })
-    return {"open_count": len(all_open), "positions": spreads}
+        if t.get("is_spread") or t.get("spread_type"):
+            spreads.append({
+                "id":           t.get("id"),
+                "ticker":       t.get("ticker"),
+                "is_spread":    t.get("is_spread"),
+                "spread_type":  t.get("spread_type"),
+                "long_strike":  t.get("long_strike"),
+                "short_strike": t.get("short_strike"),
+                "expiry":       t.get("expiry"),
+                "credit":       t.get("credit"),
+                "strike":       t.get("strike"),
+            })
+    return {"spread_count": len(spreads), "spreads": spreads}
 
 @app.get("/normalize-expiry")
 async def normalize_expiry_endpoint():
