@@ -604,24 +604,45 @@ def fetch_market_conditions() -> dict:
     except:
         pass
 
-    # Combine 5-day trend + intraday for accurate picture
-    if len(spy_history) >= 5:
+    # SPY trend — today's intraday move takes priority over 5-day
+    intraday = cond.get("spy_intraday")  # today's % from open
+
+    if intraday is not None:
+        # Use today's move as primary signal — most relevant for current session
+        intra_note = f"{intraday:+.1f}% today"
+        if len(spy_history) >= 5:
+            base_price = spy_history[-5]
+            current    = spy_today if spy_today else spy_history[-1]
+            pct_5d     = round(((current - base_price) / base_price) * 100, 1)
+            cond["spy_5d_pct"] = pct_5d
+            trend_note = f"{intra_note} / 5d {pct_5d:+.1f}%"
+        else:
+            trend_note = intra_note
+
+        # Today's move determines emoji/label
+        if intraday <= -1.0:
+            cond["spy_trend"] = f"Downtrend {trend_note}"
+            cond["spy_emoji"] = "🔴"
+            cond["market_score_adjustment"] -= 1
+        elif intraday <= -0.3:
+            cond["spy_trend"] = f"Weak {trend_note}"
+            cond["spy_emoji"] = "⚠️"
+        elif intraday >= 0.5:
+            cond["spy_trend"] = f"Uptrend {trend_note}"
+            cond["spy_emoji"] = "✅"
+        else:
+            cond["spy_trend"] = f"Flat {trend_note}"
+            cond["spy_emoji"] = "⚠️"
+
+    elif len(spy_history) >= 5:
+        # No live quote — fall back to 5-day close-to-close
         base_price = spy_history[-5]
-        current    = spy_today if spy_today else spy_history[-1]
+        current    = spy_history[-1]
         pct        = round(((current - base_price) / base_price) * 100, 1)
         cond["spy_5d_pct"] = pct
-        intra_note = ""
-        if spy_today and cond.get("spy_intraday") is not None:
-            intra = cond["spy_intraday"]
-            intra_note = f" (today {intra:+.1f}%)"
-        if pct > 2:    cond["spy_trend"]=f"Uptrend +{pct}%{intra_note}";    cond["spy_emoji"]="✅"
-        elif pct > -2: cond["spy_trend"]=f"Flat {pct:+.1f}%{intra_note}";   cond["spy_emoji"]="⚠️"
-        else:          cond["spy_trend"]=f"Downtrend {pct:+.1f}%{intra_note}"; cond["spy_emoji"]="🔴"; cond["market_score_adjustment"]-=1
-    elif spy_today and cond.get("spy_intraday") is not None:
-        intra = cond["spy_intraday"]
-        if intra > 0.5:    cond["spy_trend"]=f"Up today +{intra}%";   cond["spy_emoji"]="✅"
-        elif intra > -0.5: cond["spy_trend"]=f"Flat today {intra:+.1f}%"; cond["spy_emoji"]="⚠️"
-        else:              cond["spy_trend"]=f"Down today {intra:+.1f}%";  cond["spy_emoji"]="🔴"; cond["market_score_adjustment"]-=1
+        if pct > 2:    cond["spy_trend"]=f"Uptrend +{pct}% (5d)";    cond["spy_emoji"]="✅"
+        elif pct > -2: cond["spy_trend"]=f"Flat {pct:+.1f}% (5d)";   cond["spy_emoji"]="⚠️"
+        else:          cond["spy_trend"]=f"Downtrend {pct:+.1f}% (5d)"; cond["spy_emoji"]="🔴"; cond["market_score_adjustment"]-=1
 
     adj = cond["market_score_adjustment"]
     if adj >= 0:    cond["market_bias"]="FAVORABLE";   cond["market_summary"]="Market conditions favor buying premium."
