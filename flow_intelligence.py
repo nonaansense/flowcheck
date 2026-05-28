@@ -367,7 +367,8 @@ def track_sector_flow(trade: dict, result: dict) -> dict | None:
             "flow_count":        flow_count,
             "tickers":           tickers,
             "total_premium":     total_premium,
-            "alert":             (f"📊 SECTOR ROTATION: {flow_count} {sector} flows today — "
+            "alert":             (f"📊 SECTOR ROTATION: {flow_count} flows in "
+                                  f"{SECTOR_NAMES.get(sector, sector)} ({sector}) today — "
                                   f"{', '.join(tickers[:4])} — {prem_str} total premium"),
         }
     return None

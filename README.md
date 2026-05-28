@@ -1,4 +1,4 @@
-# FlowCheck v16.0
+# FlowCheck v17.0
 
 Automated options flow analysis system. Monitors @FL0WG0D on X via IFTTT,
 analyzes Bullflow screenshots with Claude vision, scores against a multi-factor
@@ -351,6 +351,10 @@ Daily P&L summary sent automatically at 4:10 PM ET.
 EOD option prices fetched automatically at 4:02 PM ET — use `/refresh` for on-demand updates.
 Web table shows Last $ and Open P&L columns with green/red coloring.
 Daily position check-in at 4:05 PM ET — compare journal vs broker, sync any missing trades with `/sync`.
+EOD pricing via Tradier at 4:02 PM — real bid/ask midpoint prices for single legs and both spread legs.
+Web journal table fully editable inline — click any cell, ✓ Save / ✗ Cancel. Delete rows with red ✕ button.
+Sector rotation alerts show full sector name (Technology/XLK) not just ETF ticker.
+`/sectors` command shows full sector ETF reference list.
 
 ---
 
