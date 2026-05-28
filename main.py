@@ -872,21 +872,10 @@ async def clear_test_trades():
 
 @app.get("/close.js")
 async def serve_close_js():
-    from fastapi.responses import FileResponse
     import os
-    js_path = os.path.join(os.path.dirname(__file__), "close.js")
-    if os.path.exists(js_path):
-        return FileResponse(js_path, media_type="application/javascript")
-    return Response("// close.js not found", media_type="application/javascript")
-
-@app.get("/close.js")
-async def serve_close_js():
-    from fastapi.responses import FileResponse, Response
-    import os
+    from fastapi.responses import FileResponse, Response as _Resp
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "close.js")
-    if os.path.exists(p):
-        return FileResponse(p, media_type="application/javascript")
-    return Response("", media_type="application/javascript")
+    return FileResponse(p, media_type="application/javascript") if os.path.exists(p) else _Resp("", media_type="application/javascript")
 
 @app.post("/journal-close")
 async def journal_close_api(request: Request):
@@ -1995,7 +1984,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
 
     html = f"""<!DOCTYPE html>
 <html>
-<head>
+<head><script src='/close.js'></script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlowCheck Journal</title>
 <style>
