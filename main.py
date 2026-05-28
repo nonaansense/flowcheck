@@ -1831,7 +1831,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             f"<td data-edit='entry_date' data-trade-id='{tid}'>{t.get('entry_date','')} {t.get('entry_time','')}</td>"
             f"<td data-edit='fc_score' data-trade-id='{tid}'>{fmt(t.get('fc_score'))}/7 {fmt(t.get('fc_verdict'))}</td>"
             f"<td data-edit='note' data-trade-id='{tid}'>{t.get('note','')}</td>"
-            "<td><button onclick='deleteTrade(\"" + tid + "\",\"open\")' style='background:#ef4444;color:white;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px'>✕</button></td>"
+            "<td style='white-space:nowrap'><button onclick='closeTrade(\"" + tid + "\")' style='background:#6366f1;color:white;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px;margin-right:4px'>Close</button><button onclick='deleteTrade(\"" + tid + "\",\"open\")' style='background:#ef4444;color:white;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px'>✕</button></td>"
             "</tr>"
         )
 
