@@ -870,6 +870,38 @@ async def clear_test_trades():
     save_analyses()
     return {"removed_analyses": removed_anal, "note": "Watchlist clears on next redeploy"}
 
+@app.post("/journal-close")
+async def journal_close_api(request: Request):
+    """Close a trade from web table. POST: {trade_id, exit_price, contracts, exit_date, exit_time}"""
+    try:
+        body       = await request.json()
+        trade_id   = str(body.get("trade_id",""))
+        exit_price = float(body.get("exit_price",0))
+        contracts  = body.get("contracts")
+        exit_date  = body.get("exit_date","")
+        exit_time  = body.get("exit_time","")
+        if not trade_id or exit_price <= 0:
+            return {"success": False, "error": "trade_id and exit_price required"}
+        from trade_journal import load_journal, add_exit
+        journal = load_journal()
+        # Find ticker for this trade_id
+        ticker = None
+        for t in journal.get("trades",[]):
+            if str(t.get("id","")) == trade_id:
+                ticker = t.get("ticker","")
+                break
+        if not ticker:
+            return {"success": False, "error": "Trade not found"}
+        result = add_exit(ticker, exit_price, exit_date or None, exit_time or None, contracts)
+        if result:
+            pnl  = result.get("pnl_total",0) or 0
+            sign = "+" if pnl >= 0 else ""
+            return {"success": True, "ticker": ticker, "pnl": pnl,
+                    "pnl_str": sign + "$" + str(round(pnl,2))}
+        return {"success": False, "error": "Exit failed — check ticker"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.post("/journal-delete")
 async def journal_delete_api(request: Request):
     """Delete a trade by ID from web table. POST body: {"trade_id": "abc", "bucket": "trades"}"""
@@ -1883,7 +1915,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             "<tr>" + acc_th +
             "<th>Ticker</th><th>Type</th><th>Contract</th><th>Expiry</th><th>Qty</th>"
             "<th>Entry $</th><th>Last $</th><th>Open P&amp;L</th>"
-            "<th>Cost</th><th>Entry Time</th><th>FlowCheck</th><th>Note</th><th></th></tr>"
+            "<th>Cost</th><th>Entry Time</th><th>FlowCheck</th><th>Note</th><th>Actions</th></tr>"
             + rows_open +
             "</table></div>"
         )
@@ -2035,6 +2067,35 @@ function makeEditable(td, tradeId, field) {{
     if (e.key === 'Enter') {{ e.preventDefault(); save(); }}
     if (e.key === 'Escape') {{ td.innerText = orig; attachEditors(); }}
   }});
+}}
+
+async function closeTrade(tradeId) {{
+  var price = prompt('Exit price per contract:');
+  if (!price || isNaN(parseFloat(price))) return;
+  var contracts = prompt('Contracts to close (leave blank for all):');
+  var body = {{trade_id: tradeId, exit_price: parseFloat(price)}};
+  if (contracts && !isNaN(parseInt(contracts))) body.contracts = parseInt(contracts);
+  // Use today's date/time
+  var now = new Date();
+  var pad = n => n.toString().padStart(2,'0');
+  body.exit_date = now.getFullYear() + '-' + pad(now.getMonth()+1) + '-' + pad(now.getDate());
+  var h = now.getHours(), ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  body.exit_time = h + ':' + pad(now.getMinutes()) + ampm;
+  try {{
+    const r = await fetch('/journal-close', {{
+      method: 'POST',
+      headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify(body)
+    }});
+    const data = await r.json();
+    if (data.success) {{
+      alert(data.ticker + ' closed: ' + data.pnl_str);
+      location.reload();
+    }} else {{
+      alert('Error: ' + data.error);
+    }}
+  }} catch(e) {{ alert('Close failed'); }}
 }}
 
 async function deleteTrade(tradeId, bucket) {{
