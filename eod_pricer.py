@@ -245,8 +245,25 @@ def update_eod_prices(send_sms_fn=None):
     today   = now_et.strftime("%Y-%m-%d")
     updated = []
 
+    # Include closed trades that haven't expired yet — track through expiry
+    from datetime import datetime as _dt
+    today_dt = _dt.now()
+    def not_expired(t):
+        exp = t.get("expiry","")
+        if not exp: return False
+        for fmt in ("%m/%d/%y","%m/%d/%Y","%Y-%m-%d"):
+            try:
+                return _dt.strptime(exp, fmt) >= today_dt
+            except: continue
+        return False
+
+    closed_tracking = [t for t in journal.get("closed",[])
+                       if t.get("ticker") and not_expired(t)
+                       and not t.get("expiry_tracking_done")]
+
     all_positions = [t for t in open_t if t.get("ticker") and t.get("expiry")]
-    print(f"[EOD PRICER] Fetching prices for {len(all_positions)} positions...")
+    print(f"[EOD PRICER] Fetching prices for {len(all_positions)} open + {len(closed_tracking)} closed-still-tracking positions...")
+    all_positions = all_positions + closed_tracking
 
     # Log all positions being processed
     print(f"[EOD PRICER] Processing {len(all_positions)} positions:")
@@ -337,7 +354,7 @@ def update_eod_prices(send_sms_fn=None):
             else:
                 print(f"[EOD PRICER] No price for {ticker} {strike} — skipped")
 
-    if updated:
+    if updated or closed_tracking:
         save_journal(journal)
         print(f"[EOD PRICER] Updated {len(updated)}/{len(all_positions)} positions")
 
