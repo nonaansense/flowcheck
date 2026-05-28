@@ -123,27 +123,46 @@ def get_watchlist() -> dict:
     return _watch_list
 
 def save_watchlist():
-    """Persist watchlist to disk so it survives Railway restarts and EOD."""
+    """Persist watchlist to Supabase AND disk."""
     import json
     try:
-        # Serialize — convert timestamps to strings
         serializable = {}
         for ticker, entry in _watch_list.items():
             serializable[ticker] = {k: v for k, v in entry.items()
                                     if k != "alerted"}
-            serializable[ticker]["alerted"] = {}  # Reset alert timestamps on reload
+            serializable[ticker]["alerted"] = {}
+        payload = {"watchlist": serializable, "saved": time.time()}
+        # Save to Supabase
+        try:
+            from storage import db_set
+            db_set("watchlist", json.dumps(payload))
+        except Exception as e:
+            print(f"[TECHNICAL] Supabase watchlist save error: {e}")
+        # Also save to /tmp as backup
         with open(WATCHLIST_FILE, "w") as f:
-            json.dump({"watchlist": serializable, "saved": time.time()}, f)
+            json.dump(payload, f)
     except Exception as e:
         print(f"[TECHNICAL] Watchlist save error: {e}")
 
 def load_watchlist():
-    """Load persisted watchlist on startup. Skip expired entries."""
+    """Load persisted watchlist from Supabase on startup. Skip expired entries."""
     import json
     from datetime import datetime
     try:
-        with open(WATCHLIST_FILE) as f:
-            data = json.load(f)
+        # Try Supabase first
+        data = None
+        try:
+            from storage import db_get
+            raw = db_get("watchlist")
+            if raw:
+                data = json.loads(raw)
+                print("[TECHNICAL] Loaded watchlist from Supabase")
+        except:
+            pass
+        # Fall back to /tmp
+        if not data:
+            with open(WATCHLIST_FILE) as f:
+                data = json.load(f)
         loaded = 0
         for ticker, entry in data.get("watchlist", {}).items():
             # Check DTE — skip if option expires in < MIN_DTE days

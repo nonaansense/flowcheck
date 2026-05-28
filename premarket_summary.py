@@ -53,17 +53,48 @@ def send_premarket_summary(analyses: list):
     else:
         lines.append("✅ No major macro events today — clean trading day.")
 
-    # Carryover
+    # Carryover + OI confirmation
     today_all = load_all_today(analyses)
-    watches   = [a for a in today_all if a.get("result",{}).get("verdict")=="WATCH"]
+    watches   = [a for a in today_all if a.get("result",{}).get("verdict") in ("WATCH","TRADE")]
     lines.append("")
     lines.append(f"🔄 CARRYOVER FROM YESTERDAY ({len(watches)})")
+
     if watches:
-        for a in watches[:3]:
-            t = a["trade"]
-            lines.append(f"  👀 {t.get('ticker')} {t.get('strike')}{t.get('option_type','C')[0].upper()} {t.get('expiry_short','?')}")
+        # Check OI for each carryover via Tradier
+        oi_lines = []
+        for a in watches[:5]:
+            t          = a.get("trade",{})
+            ticker     = t.get("ticker","")
+            strike     = str(t.get("strike",""))
+            opt_type   = t.get("option_type","call")
+            expiry     = t.get("expiry_raw","") or t.get("expiry","")
+            orig_oi    = int(a.get("data",{}).get("open_interest",0) or 0)
+            verdict    = a.get("result",{}).get("verdict","")
+            emoji      = "✅" if verdict == "TRADE" else "👀"
+
+            oi_str = ""
+            if ticker and strike and expiry and orig_oi > 0:
+                try:
+                    from fetcher import get_option_chain_oi
+                    current_oi = get_option_chain_oi(ticker, strike, opt_type, expiry)
+                    if current_oi is not None:
+                        oi_change = current_oi - orig_oi
+                        oi_pct    = round((oi_change / orig_oi) * 100, 1) if orig_oi > 0 else 0
+                        if oi_change < -orig_oi * 0.20:
+                            oi_str = f" ⚠️ OI -{abs(oi_pct)}% ({orig_oi}→{current_oi}) likely day trade"
+                        elif oi_change > 0:
+                            oi_str = f" ✅ OI +{oi_pct}% ({orig_oi}→{current_oi}) held overnight"
+                        else:
+                            oi_str = f" OI unchanged ({current_oi})"
+                except Exception as e:
+                    print(f"[PREMARKET] OI check error for {ticker}: {e}")
+
+            lines.append(
+                f"  {emoji} {ticker} {strike}{opt_type[0].upper()} "
+                f"{t.get('expiry_short','?')}{oi_str}"
+            )
     else:
-        lines.append("  No open positions from yesterday")
+        lines.append("  No carryover from yesterday")
 
     # Week ahead
     if week:
