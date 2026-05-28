@@ -820,9 +820,8 @@ def handle_sync_position(args: list, reply_chat_id: str):
 
 def handle_sectors(reply_chat_id: str):
     """Show sector ETF reference list. /sectors"""
-    from flow_intelligence import SECTOR_NAMES
-    lines = [
-        "📊 Sector ETF Reference",
+    msg = chr(10).join([
+        "│ Sector ETF Reference",
         "",
         "MAJOR SECTORS",
         "  XLK  — Technology",
@@ -858,9 +857,9 @@ def handle_sectors(reply_chat_id: str):
         "  MSOS — Cannabis",
         "",
         "Sector rotation alert fires when 3+ flows",
-        "hit same sector on same day.",
-    ]
-    send_reply(chr(10).join(lines), reply_chat_id)
+        "hit the same sector on the same day.",
+    ])
+    send_reply(msg, reply_chat_id)
 
 def handle_help(reply_chat_id: str):
     msg = chr(10).join([
