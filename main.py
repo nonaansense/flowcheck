@@ -2110,32 +2110,68 @@ function makeEditable(td, tradeId, field) {{
 }}
 
 async function closeTrade(tradeId) {{
-  var price = prompt('Exit price per contract:');
-  if (!price || isNaN(parseFloat(price))) return;
-  var contracts = prompt('Contracts to close (leave blank for all):');
-  var body = {{trade_id: tradeId, exit_price: parseFloat(price)}};
-  if (contracts && !isNaN(parseInt(contracts))) body.contracts = parseInt(contracts);
-  // Use today's date/time
-  var now = new Date();
-  var pad = n => n.toString().padStart(2,'0');
-  body.exit_date = now.getFullYear() + '-' + pad(now.getMonth()+1) + '-' + pad(now.getDate());
-  var h = now.getHours(), ampm = h >= 12 ? 'PM' : 'AM';
-  h = h % 12 || 12;
-  body.exit_time = h + ':' + pad(now.getMinutes()) + ampm;
-  try {{
-    const r = await fetch('/journal-close', {{
-      method: 'POST',
-      headers: {{'Content-Type':'application/json'}},
-      body: JSON.stringify(body)
-    }});
-    const data = await r.json();
-    if (data.success) {{
-      alert(data.ticker + ' closed\nP&L: ' + data.pnl_str + ' (' + data.pnl_pct + ')');
-      location.reload();
-    }} else {{
-      alert('Error: ' + data.error);
+  // Create modal overlay
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center';
+
+  var modal = document.createElement('div');
+  modal.style.cssText = 'background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;width:300px;max-width:90vw';
+  modal.innerHTML = '<h3 style="color:#f1f5f9;margin:0 0 16px">Close Position</h3>' +
+    '<label style="color:#94a3b8;font-size:13px">Exit Price per Contract</label>' +
+    '<input id="closePrice" type="number" step="0.01" placeholder="e.g. 2.40" style="width:100%;margin:6px 0 12px;padding:8px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#f1f5f9;font-size:15px;box-sizing:border-box">' +
+    '<label style="color:#94a3b8;font-size:13px">Contracts (blank = all)</label>' +
+    '<input id="closeContracts" type="number" step="1" placeholder="Leave blank for full exit" style="width:100%;margin:6px 0 16px;padding:8px;background:#0f172a;border:1px solid #334155;border-radius:6px;color:#f1f5f9;font-size:15px;box-sizing:border-box">' +
+    '<div style="display:flex;gap:8px">' +
+    '<button id="closeConfirm" style="flex:1;background:#22c55e;color:white;border:none;border-radius:6px;padding:10px;font-size:15px;font-weight:bold;cursor:pointer">Confirm Close</button>' +
+    '<button id="closeCancel" style="flex:1;background:#64748b;color:white;border:none;border-radius:6px;padding:10px;font-size:15px;cursor:pointer">Cancel</button>' +
+    '</div>';
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  document.getElementById('closePrice').focus();
+
+  document.getElementById('closeCancel').onclick = function() {{ document.body.removeChild(overlay); }};
+  overlay.onclick = function(e) {{ if (e.target === overlay) document.body.removeChild(overlay); }};
+
+  document.getElementById('closeConfirm').onclick = async function() {{
+    var price = parseFloat(document.getElementById('closePrice').value);
+    var contracts = parseInt(document.getElementById('closeContracts').value) || null;
+    if (!price || isNaN(price) || price <= 0) {{
+      document.getElementById('closePrice').style.border = '1px solid #ef4444';
+      return;
     }}
-  }} catch(e) {{ alert('Close failed'); }}
+    var now = new Date();
+    var pad = function(n) {{ return n.toString().padStart(2,'0'); }};
+    var h = now.getHours(), ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    var body = {{
+      trade_id:   tradeId,
+      exit_price: price,
+      exit_date:  now.getFullYear() + '-' + pad(now.getMonth()+1) + '-' + pad(now.getDate()),
+      exit_time:  h + ':' + pad(now.getMinutes()) + ampm,
+    }};
+    if (contracts) body.contracts = contracts;
+    document.getElementById('closeConfirm').textContent = 'Saving...';
+    document.getElementById('closeConfirm').disabled = true;
+    try {{
+      var r = await fetch('/journal-close', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify(body)
+      }});
+      var data = await r.json();
+      document.body.removeChild(overlay);
+      if (data.success) {{
+        alert(data.ticker + ' closed\nP&L: ' + data.pnl_str + ' (' + data.pnl_pct + ')');
+        location.reload();
+      }} else {{
+        alert('Error: ' + data.error);
+      }}
+    }} catch(e) {{
+      document.body.removeChild(overlay);
+      alert('Close failed: ' + e.message);
+    }}
+  }};
 }}
 
 async function deleteTrade(tradeId, bucket) {{
