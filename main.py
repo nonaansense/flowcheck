@@ -870,6 +870,24 @@ async def clear_test_trades():
     save_analyses()
     return {"removed_analyses": removed_anal, "note": "Watchlist clears on next redeploy"}
 
+@app.get("/close.js")
+async def serve_close_js():
+    from fastapi.responses import FileResponse
+    import os
+    js_path = os.path.join(os.path.dirname(__file__), "close.js")
+    if os.path.exists(js_path):
+        return FileResponse(js_path, media_type="application/javascript")
+    return Response("// close.js not found", media_type="application/javascript")
+
+@app.get("/close.js")
+async def serve_close_js():
+    from fastapi.responses import FileResponse, Response
+    import os
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "close.js")
+    if os.path.exists(p):
+        return FileResponse(p, media_type="application/javascript")
+    return Response("", media_type="application/javascript")
+
 @app.post("/journal-close")
 async def journal_close_api(request: Request):
     """Close a trade from web table. POST: {trade_id, exit_price, contracts, exit_date, exit_time}"""
@@ -988,7 +1006,7 @@ async def journal_edit_api(request: Request):
                         "entry_price", "exit_price", "credit", "spread_width",
                         "contracts", "contracts_remaining", "expiry", "strike",
                         "option_type", "entry_date", "entry_time",
-                        "exit_date", "exit_time", "fc_score", "fc_verdict",
+                        "exit_date", "exit_time", "exit_price", "pnl_total", "pnl_pct", "fc_score", "fc_verdict",
                         "last_price", "long_strike", "short_strike", "spread_type",
                     }
                     if field not in allowed:
@@ -1904,7 +1922,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             f"<td data-edit='contracts' data-trade-id='{tid_c}'>{t.get('contracts','?')}</td>"
             f"<td data-edit='entry_price' data-trade-id='{tid_c}'>${t.get('entry_price','')}</td>"
             f"<td data-edit='exit_price' data-trade-id='{tid_c}'>${t.get('exit_price','')}</td>"
-            f"<td style='{color}'>{fmt(pct,'%')} / ${fmt(pnl)}</td>"
+            f"<td data-edit='pnl_total' data-trade-id='{tid_c}' style='{color}'>{fmt(pct,'%')} / ${fmt(pnl)}</td>"
             f"<td>{t.get('entry_date','')} {t.get('entry_time','')}</td>"
             f"<td>{t.get('exit_date','')} {t.get('exit_time','')}</td>"
             f"<td>{fmt(t.get('holding_hours'),'h')}</td>"
