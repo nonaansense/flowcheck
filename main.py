@@ -1164,6 +1164,35 @@ async def debug_spreads():
             })
     return {"spread_count": len(spreads), "spreads": spreads}
 
+@app.get("/backfill-price-history")
+async def backfill_price_history():
+    """Backfill price_history from existing last_price data on all trades."""
+    from trade_journal import load_journal, save_journal
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    journal = load_journal()
+    today   = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    updated = 0
+    for bucket in ("trades", "closed"):
+        for t in journal.get(bucket, []):
+            last_price = t.get("last_price")
+            entry      = float(t.get("entry_price", 0) or 0)
+            if not last_price or not entry:
+                continue
+            # Only backfill if no history yet
+            if t.get("price_history"):
+                continue
+            pct = round(((float(last_price) - entry) / entry) * 100, 1)
+            is_closed = bucket == "closed" or bool(t.get("exit_price"))
+            t["price_history"] = [{"date": today, "price": float(last_price), "pct": pct, "post_exit": is_closed}]
+            # Set peak from last_price
+            t["peak_price"] = float(last_price)
+            t["peak_pct"]   = pct
+            updated += 1
+    if updated:
+        save_journal(journal)
+    return {"backfilled": updated, "note": "Full analytics will populate after 4:02 PM ET daily"}
+
 @app.get("/normalize-expiry")
 async def normalize_expiry_endpoint():
     """Normalize all expiry dates in journal to MM/DD/YY format."""
