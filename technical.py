@@ -543,6 +543,7 @@ def check_all_timeframes(ticker: str, flow_stock_price: float = None,
 
         triggered = [note for ok, note in checks if ok]
 
+        print(f"[TECHNICAL] {ticker} {tf_label}: {len(triggered)} signals — {triggered[:2]}")
         if len(triggered) >= 2:
             if len(triggered) >= 4:   strength = "STRONG 🚨"
             elif len(triggered) >= 3: strength = "MODERATE ✅"
@@ -652,7 +653,7 @@ def run_technical_scan(send_sms_fn):
     if not _watch_list:
         return
 
-    print(f"[TECHNICAL] Scanning {len(_watch_list)} tickers — {now_et.strftime('%H:%M ET')}")
+    print(f"[TECHNICAL] Scanning {len(_watch_list)} tickers — {now_et.strftime('%H:%M ET')}: {list(_watch_list.keys())}")
 
     for ticker, watch_entry in list(_watch_list.items()):
         try:
