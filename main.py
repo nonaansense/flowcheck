@@ -877,6 +877,13 @@ async def serve_close_js():
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "close.js")
     return FileResponse(p, media_type="application/javascript") if os.path.exists(p) else _Resp("", media_type="application/javascript")
 
+@app.get("/journal.js")
+async def serve_journal_js():
+    import os
+    from fastapi.responses import FileResponse, Response as _Resp
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "journal.js")
+    return FileResponse(p, media_type="application/javascript") if os.path.exists(p) else _Resp("", media_type="application/javascript")
+
 @app.post("/journal-close")
 async def journal_close_api(request: Request):
     """Close a trade from web table. POST: {trade_id, exit_price, contracts, exit_date, exit_time}"""
@@ -1984,7 +1991,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
 
     html = f"""<!DOCTYPE html>
 <html>
-<head><script src='/close.js'></script>
+<head><script src='/close.js'></script><script src='/journal.js'></script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlowCheck Journal</title>
 <style>
@@ -2018,36 +2025,7 @@ tr:hover td{{background:#1e293b}}
 </div>
 {open_section}
 {closed_section}
-<script>
-const csv={repr(csv_data)};
-function downloadCSV(){{
-  const b=new Blob([csv],{{type:'text/csv'}});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(b);
-  a.download='{csv_filename}';
-  a.click();
-}}
-
-// ── Inline editing ──────────────────────────────────────────
-function attachEditors() {{
-  document.querySelectorAll('[data-edit]').forEach(td => {{
-    td.style.cursor = 'pointer';
-    td.title = 'Click to edit';
-    td.removeEventListener('click', td._editHandler);
-    td._editHandler = () => makeEditable(td, td.dataset.tradeId, td.dataset.edit);
-    td.addEventListener('click', td._editHandler);
-  }});
-}}
-document.addEventListener('DOMContentLoaded', () => {{
-    attachEditors();
-    // Re-run when switching between Open/Closed sections
-    document.querySelectorAll('.section-tab, .tab, [data-section]').forEach(el => {{
-        el.addEventListener('click', () => setTimeout(attachEditors, 200));
-    }});
-    // Also run after any click on the page in case tabs are dynamically rendered
-    setTimeout(attachEditors, 500);
-}});
-</script>
+<!-- JS moved to /journal.js -->
 <script>
 function makeEditable(td, tradeId, field) {{
   if (td.querySelector('input')) return;
@@ -2119,22 +2097,7 @@ function makeEditable(td, tradeId, field) {{
 
 }}
 
-async function deleteTrade(tradeId, bucket) {{
-  if (!confirm('Delete this trade?')) return;
-  try {{
-    const r = await fetch('/journal-delete', {{
-      method: 'POST',
-      headers: {{'Content-Type':'application/json'}},
-      body: JSON.stringify({{trade_id: tradeId, bucket: bucket == 'open' ? 'trades' : 'closed'}})
-    }});
-    const data = await r.json();
-    if (data.success) {{
-      location.reload();
-    }} else {{
-      alert('Error: ' + data.error);
-    }}
-  }} catch(e) {{ alert('Delete failed'); }}
-}}
+// deleteTrade moved to /journal.js
 
 function attachEditors() {{
   document.querySelectorAll('[data-edit]').forEach(function(td) {{
