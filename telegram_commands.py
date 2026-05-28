@@ -79,6 +79,23 @@ def handle_command(text: str, from_chat_id: str):
         handle_find(args[0].upper(), from_chat_id)
     elif cmd == "sectors":
         handle_sectors(from_chat_id)
+    elif cmd == "oi" and args:
+        # /oi TICKER STRIKE C/P EXPIRY  — single option OI check
+        # /oi all                        — OI check for all yesterday's alerts
+        if args[0].lower() == "all":
+            handle_oi_all(from_chat_id)
+        elif len(args) >= 4:
+            handle_oi_single(args[0].upper(), args[1], args[2], args[3], from_chat_id)
+        else:
+            send_reply(
+                "Usage:" + chr(10) +
+                "  /oi TICKER STRIKE C/P EXPIRY" + chr(10) +
+                "  /oi NVDA 140 C 06/20/26" + chr(10) +
+                "  /oi all  (checks all yesterday alerts)",
+                from_chat_id
+            )
+    elif cmd == "oi" and not args:
+        handle_oi_all(from_chat_id)
     elif cmd == "sentiment" and args:
         handle_sentiment(args[0].upper(), from_chat_id)
     elif cmd == "entry" and len(args) >= 6:
@@ -861,6 +878,114 @@ def handle_sectors(reply_chat_id: str):
     ])
     send_reply(msg, reply_chat_id)
 
+def handle_oi_single(ticker: str, strike: str, opt_type_raw: str, expiry: str, reply_chat_id: str):
+    """Check OI for a single option. /oi TICKER STRIKE C/P EXPIRY"""
+    try:
+        opt_type = "call" if opt_type_raw.upper() in ("C","CALL") else "put"
+        send_reply("Fetching OI for " + ticker + " " + strike + opt_type[0].upper() + "...", reply_chat_id)
+        from fetcher import get_option_chain_oi
+        from trade_journal import normalize_expiry
+        expiry = normalize_expiry(expiry)
+        oi = get_option_chain_oi(ticker, strike, opt_type, expiry)
+        if oi is not None:
+            send_reply(
+                "📊 Open Interest: " + ticker + " " + strike + opt_type[0].upper() + " " + expiry + chr(10) +
+                "OI: " + str(oi) + " contracts",
+                reply_chat_id
+            )
+        else:
+            send_reply("No OI data available for " + ticker + " " + strike + " — Tradier may not have this chain.", reply_chat_id)
+    except Exception as e:
+        send_reply("Error: " + str(e), reply_chat_id)
+
+def handle_oi_all(reply_chat_id: str):
+    """Check OI for all flow alerts from yesterday's watchlist. /oi all"""
+    try:
+        from storage import db_get
+        from fetcher import get_option_chain_oi
+        from trade_journal import normalize_expiry
+        import json, os
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        send_reply("Checking OI for all recent flow alerts...", reply_chat_id)
+
+        # Load analyses from Supabase
+        raw = db_get("analyses_today")
+        if not raw:
+            send_reply("No flow analyses found. Run during or after market hours.", reply_chat_id)
+            return
+
+        data      = json.loads(raw)
+        analyses  = data.get("analyses", []) if isinstance(data, dict) else data
+        now_et    = datetime.now(ZoneInfo("America/New_York"))
+
+        # Filter TRADE and WATCH only
+        candidates = [
+            a for a in analyses
+            if a.get("result",{}).get("verdict") in ("TRADE","WATCH")
+        ]
+
+        if not candidates:
+            send_reply("No TRADE/WATCH alerts found in today' analyses.", reply_chat_id)
+            return
+
+        lines = ["📊 OI Confirmation — " + now_et.strftime("%b %d"), ""]
+        total = 0
+
+        for a in candidates:
+            t        = a.get("trade",{})
+            ticker   = t.get("ticker","")
+            strike   = str(t.get("strike",""))
+            opt_type = t.get("option_type","call")
+            expiry   = normalize_expiry(t.get("expiry_raw","") or t.get("expiry",""))
+            orig_oi  = int(a.get("data",{}).get("open_interest",0) or 0)
+            verdict  = a.get("result",{}).get("verdict","")
+            score    = a.get("result",{}).get("final_score","?")
+
+            if not ticker or not strike or not expiry:
+                continue
+
+            try:
+                current_oi = get_option_chain_oi(ticker, strike, opt_type, expiry)
+            except:
+                current_oi = None
+
+            v_emoji = "✅" if verdict == "TRADE" else "👀"
+
+            if current_oi is not None and orig_oi > 0:
+                oi_change = current_oi - orig_oi
+                oi_pct    = round((oi_change / orig_oi) * 100, 1)
+                if oi_change < -orig_oi * 0.20:
+                    status = "⚠️ OI -" + str(abs(oi_pct)) + "% — likely day trade/closed"
+                elif oi_change > orig_oi * 0.05:
+                    status = "✅ OI +" + str(oi_pct) + "% — held/accumulated"
+                else:
+                    status = "➡️ OI unchanged (" + str(current_oi) + ")"
+            elif current_oi is not None:
+                status = "OI: " + str(current_oi) + " (no baseline)"
+            else:
+                status = "No data"
+
+            orig_str = " (was " + str(orig_oi) + ")" if orig_oi > 0 else ""
+            lines.append(
+                v_emoji + " " + ticker + " " + strike + opt_type[0].upper() +
+                " " + expiry + " [" + str(score) + "/7]" + chr(10) +
+                "  " + status + orig_str
+            )
+            total += 1
+
+        if total == 0:
+            lines.append("No options found with sufficient data.")
+        else:
+            lines.append("")
+            lines.append(str(total) + " alerts checked")
+
+        send_reply(chr(10).join(lines), reply_chat_id)
+
+    except Exception as e:
+        send_reply("Error: " + str(e), reply_chat_id)
+
 def handle_help(reply_chat_id: str):
     msg = chr(10).join([
         'FlowCheck Commands',
@@ -876,6 +1001,8 @@ def handle_help(reply_chat_id: str):
         'RESEARCH',
         '/sentiment TICKER — price, SMAs, RSI, news, flow, insiders',
         '/sectors — sector ETF reference list',
+        '/oi all — OI confirmation for all yesterday' + chr(39) + 's TRADE/WATCH alerts',
+        '/oi TICKER STRIKE C/P EXPIRY — OI for specific option',
         '/backtest URL TIME — backtest a historical tweet',
         '  /backtest https://x.com/i/status/123 2026-05-19T10:30:00',
         '',
