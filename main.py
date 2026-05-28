@@ -1039,6 +1039,23 @@ async def merge_positions():
     return {"merged": merged, "remaining_positions": len(keep),
             "message": f"Merged {merged} duplicate positions into averaged entries"}
 
+@app.get("/test-edit-spread")
+async def test_edit_spread():
+    """Directly edit spread trade 42 credit to 99.99 to test saving."""
+    from trade_journal import load_journal, save_journal
+    journal = load_journal()
+    for t in journal.get("trades", []):
+        if str(t.get("id","")) == "42":
+            old_val = t.get("credit")
+            t["credit"] = 99.99
+            save_journal(journal)
+            # Verify
+            j2 = load_journal()
+            for t2 in j2.get("trades",[]):
+                if str(t2.get("id","")) == "42":
+                    return {"old": old_val, "new": t2.get("credit"), "saved": t2.get("credit") == 99.99}
+    return {"error": "trade 42 not found"}
+
 @app.get("/debug-spreads")
 async def debug_spreads():
     """Show all spread trades in journal for debugging."""
