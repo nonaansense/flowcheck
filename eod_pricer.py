@@ -354,6 +354,39 @@ def update_eod_prices(send_sms_fn=None):
             else:
                 print(f"[EOD PRICER] No price for {ticker} {strike} — skipped")
 
+    # Recalculate peak/max_dd/left_on_table for all trades with price history
+    for bucket in ("trades", "closed"):
+        for t in journal.get(bucket, []):
+            history = t.get("price_history", [])
+            entry   = float(t.get("entry_price", 0) or 0)
+            if not history or entry <= 0:
+                continue
+            is_closed      = bucket == "closed" or bool(t.get("exit_price"))
+            pre_exit       = [h["price"] for h in history if h.get("price") and not h.get("post_exit")]
+            all_prices     = [h["price"] for h in history if h.get("price")]
+            prices_for_dd  = pre_exit if pre_exit else (all_prices if not is_closed else [])
+
+            # Peak = max of all prices (entry → expiry)
+            if all_prices:
+                peak_p = max(all_prices)
+                t["peak_price"] = round(peak_p, 2)
+                t["peak_pct"]   = round(((peak_p - entry) / entry) * 100, 1)
+
+            # Max DD = entry → exit only
+            if prices_for_dd:
+                rp = entry; max_dd = 0.0
+                for p in prices_for_dd:
+                    rp = max(rp, p)
+                    dd = ((rp - p) / rp) * 100
+                    max_dd = max(max_dd, dd)
+                t["max_drawdown"] = round(max_dd, 1)
+
+            # Left on table = peak% - exit%
+            exit_p = t.get("exit_price")
+            if exit_p and t.get("peak_pct") is not None:
+                exit_pct = ((float(exit_p) - entry) / entry) * 100
+                t["left_on_table"] = round(t["peak_pct"] - exit_pct, 1)
+
     if updated or closed_tracking:
         save_journal(journal)
         print(f"[EOD PRICER] Updated {len(updated)}/{len(all_positions)} positions")
