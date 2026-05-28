@@ -32,6 +32,7 @@ function makeEditable(td, tradeId, field) {
   td.innerHTML = '';
   td.appendChild(wrapper);
   inp.focus(); inp.select();
+
   function save() {
     var val = inp.value.trim();
     if (val === orig) { td.innerText = orig; attachEditors(); return; }
@@ -46,6 +47,20 @@ function makeEditable(td, tradeId, field) {
       if (data.success) {
         td.innerText = val;
         td.style.background = 'rgba(34,197,94,0.2)';
+        // If P&L was recalculated, update the P&L cell in same row
+        if (data.pnl_str) {
+          var row = td.closest('tr');
+          if (row) {
+            var pnlCell = row.querySelector('[data-edit="pnl_total"]');
+            if (pnlCell) {
+              pnlCell.innerText = data.pnl_str;
+              pnlCell.style.background = 'rgba(34,197,94,0.2)';
+              var col = data.pnl_total >= 0 ? '#22c55e' : '#ef4444';
+              pnlCell.style.color = col;
+              setTimeout(function() { pnlCell.style.background = ''; }, 1500);
+            }
+          }
+        }
         setTimeout(function() { td.style.background = ''; attachEditors(); }, 1500);
       } else {
         td.innerText = orig; attachEditors();
@@ -54,6 +69,7 @@ function makeEditable(td, tradeId, field) {
     })
     .catch(function(err) { td.innerText = orig; attachEditors(); alert('Save failed: ' + err.message); });
   }
+
   btn.addEventListener('click', save);
   cancel.addEventListener('click', function() { td.innerText = orig; attachEditors(); });
   inp.addEventListener('keydown', function(e) {
