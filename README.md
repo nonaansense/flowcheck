@@ -1,4 +1,4 @@
-# FlowCheck v17.0
+# FlowCheck v18.0
 
 Automated options flow analysis system. Monitors @FL0WG0D on X via IFTTT,
 analyzes Bullflow screenshots with Claude vision, scores against a multi-factor
