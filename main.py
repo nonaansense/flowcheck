@@ -882,23 +882,63 @@ async def journal_close_api(request: Request):
         exit_time  = body.get("exit_time","")
         if not trade_id or exit_price <= 0:
             return {"success": False, "error": "trade_id and exit_price required"}
-        from trade_journal import load_journal, add_exit
-        journal = load_journal()
-        # Find ticker for this trade_id
-        ticker = None
-        for t in journal.get("trades",[]):
+        from trade_journal import load_journal, save_journal
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        journal  = load_journal()
+        open_t   = journal.get("trades", [])
+        closed_t = journal.get("closed", [])
+
+        # Find trade by ID
+        target = None
+        for t in open_t:
             if str(t.get("id","")) == trade_id:
-                ticker = t.get("ticker","")
+                target = t
                 break
-        if not ticker:
+        if not target:
             return {"success": False, "error": "Trade not found"}
-        result = add_exit(ticker, exit_price, exit_date or None, exit_time or None, contracts)
-        if result:
-            pnl  = result.get("pnl_total",0) or 0
-            sign = "+" if pnl >= 0 else ""
-            return {"success": True, "ticker": ticker, "pnl": pnl,
-                    "pnl_str": sign + "$" + str(round(pnl,2))}
-        return {"success": False, "error": "Exit failed — check ticker"}
+
+        ticker     = target.get("ticker","")
+        remaining  = int(target.get("contracts_remaining") or target.get("contracts",1))
+        close_qty  = int(contracts) if contracts else remaining
+        entry_price= float(target.get("entry_price",0) or target.get("credit",0) or 0)
+
+        # Calculate P&L
+        pnl_per    = round(exit_price - entry_price, 2)
+        pnl_total  = round(pnl_per * close_qty * 100, 2)
+        pnl_pct    = round((pnl_per / entry_price * 100), 1) if entry_price > 0 else 0
+
+        now_et     = datetime.now(ZoneInfo("America/New_York"))
+        exit_d     = exit_date or now_et.strftime("%Y-%m-%d")
+        exit_t     = exit_time or now_et.strftime("%I:%M%p")
+
+        if close_qty >= remaining:
+            # Full exit — move to closed
+            target["exit_price"]        = exit_price
+            target["exit_date"]         = exit_d
+            target["exit_time"]         = exit_t
+            target["pnl_total"]         = pnl_total
+            target["pnl_pct"]           = pnl_pct
+            target["contracts_remaining"] = 0
+            closed_t.append(target)
+            journal["trades"] = [t for t in open_t if str(t.get("id","")) != trade_id]
+        else:
+            # Partial exit — reduce contracts
+            target["contracts_remaining"] = remaining - close_qty
+            partial = dict(target)
+            partial["contracts"]          = close_qty
+            partial["exit_price"]         = exit_price
+            partial["exit_date"]          = exit_d
+            partial["exit_time"]          = exit_t
+            partial["pnl_total"]          = pnl_total
+            partial["pnl_pct"]            = pnl_pct
+            closed_t.append(partial)
+
+        journal["closed"] = closed_t
+        save_journal(journal)
+        sign = "+" if pnl_total >= 0 else ""
+        return {"success": True, "ticker": ticker,
+                "pnl": pnl_total, "pnl_str": sign + "$" + str(round(pnl_total,2))}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -2090,7 +2130,7 @@ async function closeTrade(tradeId) {{
     }});
     const data = await r.json();
     if (data.success) {{
-      alert(data.ticker + ' closed: ' + data.pnl_str);
+      alert(data.ticker + ' closed\nP&L: ' + data.pnl_str + ' (' + data.pnl_pct + ')');
       location.reload();
     }} else {{
       alert('Error: ' + data.error);
