@@ -7,50 +7,35 @@ async function deleteTrade(tradeId, bucket) {
       body: JSON.stringify({trade_id: tradeId, bucket: bucket === 'open' ? 'trades' : 'closed'})
     });
     var d = await r.json();
-    if (d.success) {
-      location.reload();
-    } else {
-      alert('Error: ' + d.error);
-    }
-  } catch(e) {
-    alert('Delete failed: ' + e.message);
-  }
+    if (d.success) { location.reload(); }
+    else { alert('Error: ' + d.error); }
+  } catch(e) { alert('Delete failed: ' + e.message); }
 }
-
 
 function makeEditable(td, tradeId, field) {
   if (td.querySelector('input')) return;
   var orig = td.innerText.trim();
-
   var wrapper = document.createElement('div');
   wrapper.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:nowrap';
-
   var inp = document.createElement('input');
   inp.style.cssText = 'border:1.5px solid #6366f1;border-radius:4px;padding:3px 6px;font-size:12px;background:#0f172a;color:#f1f5f9;flex:1;min-width:50px;max-width:150px';
   inp.value = orig;
-
   var btn = document.createElement('button');
-  btn.textContent = '✓ Save';
+  btn.textContent = 'Save';
   btn.style.cssText = 'background:#22c55e;color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;font-weight:bold;white-space:nowrap';
-
   var cancel = document.createElement('span');
-  cancel.textContent = '✗';
+  cancel.textContent = 'x';
   cancel.style.cssText = 'color:#94a3b8;cursor:pointer;font-size:16px;padding:0 4px';
-  cancel.title = 'Cancel';
-
   wrapper.appendChild(inp);
   wrapper.appendChild(btn);
   wrapper.appendChild(cancel);
   td.innerHTML = '';
   td.appendChild(wrapper);
   inp.focus(); inp.select();
-
   function save() {
     var val = inp.value.trim();
     if (val === orig) { td.innerText = orig; attachEditors(); return; }
-    btn.disabled = true;
-    btn.textContent = '...';
-    console.log('Saving:', field, '=', val, 'for trade', tradeId);
+    btn.disabled = true; btn.textContent = '...';
     fetch('/journal-edit', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -58,25 +43,17 @@ function makeEditable(td, tradeId, field) {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      console.log('Save result:', data);
       if (data.success) {
         td.innerText = val;
         td.style.background = 'rgba(34,197,94,0.2)';
         setTimeout(function() { td.style.background = ''; attachEditors(); }, 1500);
       } else {
-        td.innerText = orig;
-        attachEditors();
+        td.innerText = orig; attachEditors();
         alert('Save error: ' + (data.error || 'Unknown error'));
       }
     })
-    .catch(function(err) {
-      console.error('Save failed:', err);
-      td.innerText = orig;
-      attachEditors();
-      alert('Save failed: ' + err.message);
-    });
+    .catch(function(err) { td.innerText = orig; attachEditors(); alert('Save failed: ' + err.message); });
   }
-
   btn.addEventListener('click', save);
   cancel.addEventListener('click', function() { td.innerText = orig; attachEditors(); });
   inp.addEventListener('keydown', function(e) {
@@ -84,11 +61,6 @@ function makeEditable(td, tradeId, field) {
     if (e.key === 'Escape') { td.innerText = orig; attachEditors(); }
   });
 }
-
-
-}
-
-// deleteTrade moved to /journal.js
 
 function attachEditors() {
   document.querySelectorAll('[data-edit]').forEach(function(td) {
@@ -99,8 +71,7 @@ function attachEditors() {
     });
   });
 }
-attachEditors();
-// Re-attach after tab clicks
+document.addEventListener('DOMContentLoaded', attachEditors);
 document.querySelectorAll('a').forEach(function(a) {
   a.addEventListener('click', function() { setTimeout(attachEditors, 300); });
 });
