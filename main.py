@@ -1422,18 +1422,29 @@ async def test_tasty():
 
 @app.get("/sync-bullflow-filters")
 async def sync_bullflow_filters():
-    """Custom alerts removed — all filtering now done by FlowCheck locally."""
-    return {
-        "status": "Custom alerts disabled",
-        "note": "FlowCheck filters all Bullflow algo alerts locally",
-        "filters": {
-            "min_premium": os.environ.get("FILTER_MIN_PREMIUM","500000"),
-            "min_dte":     os.environ.get("FILTER_MIN_DTE","7"),
-            "max_dte":     os.environ.get("FILTER_MAX_DTE","90"),
-            "max_otm":     os.environ.get("FILTER_MAX_OTM","20"),
-            "min_vol_oi":  os.environ.get("FILTER_MIN_VOL_OI","3.0"),
+    """Recreate Bullflow custom alert with current Railway filter settings."""
+    try:
+        import os as _os
+        _os.environ["BULLFLOW_FORCE_RECREATE"] = "true"
+        from bullflow_stream import setup_flowcheck_filters
+        setup_flowcheck_filters()
+        _os.environ.pop("BULLFLOW_FORCE_RECREATE", None)
+        key = _os.environ.get("BULLFLOW_API_KEY","")
+        import requests as _req
+        r = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
+        alerts = r.json().get("alerts",[]) if r.status_code == 200 else []
+        return {
+            "status": "✅ Done",
+            "custom_alerts": len(alerts),
+            "alerts": [a.get("alertName") for a in alerts],
+            "filters": {
+                "min_premium": _os.environ.get("FILTER_MIN_PREMIUM","500000"),
+                "min_dte":     _os.environ.get("FILTER_MIN_DTE","7"),
+                "max_dte":     _os.environ.get("FILTER_MAX_DTE","90"),
+            }
         }
-    }
+    except Exception as e:
+        return {"status": f"❌ Error: {str(e)}"}
 
 @app.get("/test-bullflow")
 async def test_bullflow():
