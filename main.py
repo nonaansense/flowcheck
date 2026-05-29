@@ -305,13 +305,18 @@ async def startup():
     except Exception as _sch_e:
         print(f'[SCHEDULER] Warning: {_sch_e}')
 
-    # Start Bullflow SSE stream if configured
+    # Start Bullflow SSE stream if configured (only once)
     try:
         flow_source = os.environ.get("FLOW_SOURCE","flowgod").lower()
         if flow_source == "bullflow":
-            from bullflow_stream import start_stream_thread
-            start_stream_thread(process_alert, send_sms)
-            print("[STARTUP] Bullflow SSE stream started")
+            import threading
+            already_running = any(t.name == "bullflow-stream" for t in threading.enumerate())
+            if not already_running:
+                from bullflow_stream import start_stream_thread
+                start_stream_thread(process_alert, send_sms)
+                print("[STARTUP] Bullflow SSE stream started")
+            else:
+                print("[STARTUP] Bullflow stream already running — skipping duplicate")
         else:
             print(f"[STARTUP] Flow source: {flow_source} (FlowGod/IFTTT mode)")
     except Exception as _be:
@@ -804,9 +809,10 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
 
         # For Bullflow: only send TRADE to Telegram — WATCH/SKIP stored silently
         # For FlowGod: send all verdicts (curated feed, low volume)
-        bullflow_mode    = source == "bullflow" or os.environ.get("FLOW_SOURCE","").lower() == "bullflow"
+        force_send       = bool(trade.get("_force_send"))
+        bullflow_mode    = (source == "bullflow" or os.environ.get("FLOW_SOURCE","").lower() == "bullflow") and not force_send
         min_score_alert  = float(os.environ.get("BULLFLOW_MIN_SCORE","6.0")) if bullflow_mode else 0
-        should_send      = verdict_val == "TRADE" or (not bullflow_mode) or final_score >= min_score_alert
+        should_send      = force_send or verdict_val == "TRADE" or (not bullflow_mode) or final_score >= min_score_alert
 
         print(f"[SMS] Routing: verdict='{verdict_val}' score={final_score} source={source} send={should_send}")
         success = False
@@ -1300,7 +1306,8 @@ async def test_alert(request: Request, background_tasks: BackgroundTasks):
         "bid_size":      0   if "ASK" in fill_val.upper() else 100,
     }
 
-    fake_trade["_test"] = True  # Flag to skip watchlist/journal
+    fake_trade["_test"]   = True   # Flag to skip watchlist/journal
+    fake_trade["_force_send"] = True  # Always send Telegram regardless of mode
     background_tasks.add_task(process_alert, fake_tweet, None, fake_trade)
     return {"status": "queued", "ticker": ticker, "tweet": fake_tweet}
 

@@ -175,8 +175,12 @@ def setup_flowcheck_filters():
             existing = r.json().get("alerts",[])
             names    = [a.get("alertName","") for a in existing]
             if any("FlowCheck" in n for n in names):
-                print(f"[BULLFLOW] FlowCheck custom alerts already exist: {names}")
-                return
+                # Check if filters need updating
+                force_recreate = os.environ.get("BULLFLOW_FORCE_RECREATE","").lower() == "true"
+                if not force_recreate:
+                    print(f"[BULLFLOW] FlowCheck custom alerts already exist: {names}")
+                    return
+                print(f"[BULLFLOW] Force recreating custom alerts...")
     except:
         pass
 
