@@ -420,6 +420,11 @@ def start_stream_thread(process_fn, send_sms_fn=None):
         print(f"[BULLFLOW] FLOW_SOURCE={flow_source} and DUAL_FLOW_MODE not set — stream disabled")
         return None
     print(f"[BULLFLOW] Starting stream (flow_source={flow_source} dual_mode={dual_mode})")
+    # Check again for running thread before starting
+    existing = [t for t in threading.enumerate() if t.name == "bullflow-stream" and t.is_alive()]
+    if existing:
+        print("[BULLFLOW] Stream thread already running — not starting duplicate")
+        return existing[0]
     t = threading.Thread(
         target=stream_alerts,
         args=(process_fn, send_sms_fn),
