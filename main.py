@@ -606,12 +606,14 @@ def build_sms(trade: dict, data: dict, result: dict,
         lines.append(f"  {tgt['scale']}")
 
         sr = data.get("support_resistance",{})
-        opt_lower = str(trade.get("option_type","call")).lower()
-        if sr and "call" in opt_lower and sr.get("support_levels"):
+        opt_lower   = str(trade.get("option_type","call")).lower()
+        is_put_sell = data.get("fill_type","") == "PUT_SELL_BID"
+        is_bullish  = "call" in opt_lower or is_put_sell
+        if sr and is_bullish and sr.get("support_levels"):
             levels = " → ".join(["$"+str(l) for l in sr["support_levels"]])
             lines.append(f"📊 Support: {levels}")
             lines.append(f"  Thesis broken below ${sr['primary_support']}")
-        elif sr and "put" in opt_lower and sr.get("resistance_levels"):
+        elif sr and not is_bullish and sr.get("resistance_levels"):
             levels = " → ".join(["$"+str(l) for l in sr["resistance_levels"]])
             lines.append(f"📊 Resistance: {levels}")
             lines.append(f"  Thesis broken above ${sr['primary_resistance']}")
@@ -803,8 +805,21 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
 
         # Build and send SMS
         msg         = build_sms(trade, data, result, tweet_url, analysis_id, pattern, intel, risk)
+        # Boost put sell score — selling puts is bullish conviction, treat like call buy
+        if data.get("fill_type","") == "PUT_SELL_BID":
+            old_score = float(result.get("final_score", 0) or 0)
+            new_score = min(old_score + 1.0, 7.0)
+            result["final_score"] = new_score
+            result["market_adjustment"] = result.get("market_adjustment", 0) + 1.0
+            print(f"[PUT SELL BOOST] {ticker}: {old_score}→{new_score}")
+
         verdict_val = (result.get("verdict") or "").strip()
         final_score = float(result.get("final_score", 0) or 0)
+        # Recalculate verdict after boost
+        if final_score >= 6.0:   verdict_val = "TRADE"
+        elif final_score >= 4.0: verdict_val = "WATCH"
+        else:                     verdict_val = "SKIP"
+        result["verdict"] = verdict_val
         source      = trade.get("source","")
 
         # For Bullflow: only send TRADE to Telegram — WATCH/SKIP stored silently
