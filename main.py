@@ -501,6 +501,16 @@ def build_sms(trade: dict, data: dict, result: dict,
         lines.append(f"⚠️ {ticker} alerted {pattern['count']}x today")
 
     # Analysis lines
+    # Cross-source confirmation badge
+    bf_conf = data.get("bullflow_confirmation")
+    if bf_conf:
+        bf_v = bf_conf.get("verdict","")
+        bf_s = bf_conf.get("score","?")
+        bf_t = bf_conf.get("time","")
+        conf_emoji = "🔥" if bf_v == "TRADE" else "✅"
+        time_note  = f" at {bf_t}" if bf_t else ""
+        lines.append(f"{conf_emoji} CONFIRMED by Bullflow{time_note} — scored {bf_s}/7 {bf_v}")
+
     if one_liner:
         lines.append(f"→ {one_liner}")
     if top_imp:
@@ -797,6 +807,41 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
             if oi_val > 0 and oi_val < min_oi:
                 print(f"[FILTER] {ticker} OI {oi_val} < {min_oi} minimum — skipping")
                 return
+
+        # Cross-source confirmation — check both directions
+        if trade.get("source") in ("flowgod", "bullflow"):
+            try:
+                ticker_key  = trade.get("ticker","").upper()
+                strike_key  = str(trade.get("strike",""))
+                expiry_key  = trade.get("expiry","")
+                opt_key     = (trade.get("option_type","") or "")[:1].upper()
+                now_ts      = time.time()
+                cutoff      = now_ts - 86400  # Last 24 hours
+
+                # Search recent analyses for matching Bullflow alert
+                bf_match = None
+                for prev in analyses:
+                    prev_trade = prev.get("trade",{})
+                    opposite = "bullflow" if trade.get("source") == "flowgod" else "flowgod"
+                if (prev_trade.get("source") == opposite and
+                        prev_trade.get("ticker","").upper() == ticker_key and
+                        str(prev_trade.get("strike","")) == strike_key and
+                        float(prev.get("timestamp", 0) or 0) > cutoff):
+                        bf_match = prev
+                        break
+
+                if bf_match:
+                    bf_score   = bf_match.get("result",{}).get("final_score","?")
+                    bf_verdict = bf_match.get("result",{}).get("verdict","?")
+                    bf_time    = bf_match.get("data",{}).get("flow_time","")
+                    data["bullflow_confirmation"] = {
+                        "score":   bf_score,
+                        "verdict": bf_verdict,
+                        "time":    bf_time,
+                    }
+                    print(f"[CONFIRM] FlowGod {ticker_key} {strike_key} matches Bullflow alert (score={bf_score})")
+            except Exception as _ce:
+                print(f"[CONFIRM] Error: {_ce}")
 
         # Fetch support/resistance levels
         if data.get("stock_price") and trade.get("option_type"):
@@ -1377,58 +1422,18 @@ async def test_tasty():
 
 @app.get("/sync-bullflow-filters")
 async def sync_bullflow_filters():
-    """Delete existing FlowCheck custom alerts on Bullflow and recreate with current Railway filter settings."""
-    key = os.environ.get("BULLFLOW_API_KEY","")
-    if not key:
-        return {"status": "❌ BULLFLOW_API_KEY not set"}
-    try:
-        import requests as _req
-
-        # 1. Get existing alerts
-        r = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
-        if r.status_code != 200:
-            return {"status": f"❌ Could not fetch alerts: {r.status_code}"}
-        existing = r.json().get("alerts", [])
-
-        # 2. Delete FlowCheck alerts
-        deleted = []
-        for alert in existing:
-            if "FlowCheck" in alert.get("alertName",""):
-                alert_id = alert.get("id")
-                dr = _req.delete(
-                    f"https://api.bullflow.io/v1/alerts/{alert_id}?key={key}",
-                    timeout=8
-                )
-                if dr.status_code in (200, 204):
-                    deleted.append(alert.get("alertName"))
-                    print(f"[BULLFLOW] Deleted alert: {alert.get('alertName')}")
-                else:
-                    # Try POST delete if DELETE not supported
-                    print(f"[BULLFLOW] DELETE {dr.status_code} — trying via create-alert")
-
-        # 3. Recreate with current settings
-        from bullflow_stream import setup_flowcheck_filters
-        # Reset so it recreates
-        setup_flowcheck_filters()
-
-        # 4. Verify
-        r2 = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
-        new_alerts = r2.json().get("alerts",[]) if r2.status_code == 200 else []
-        names = [a.get("alertName") for a in new_alerts]
-
-        return {
-            "deleted": deleted,
-            "current_alerts": names,
-            "filters": {
-                "min_premium": os.environ.get("FILTER_MIN_PREMIUM","150000"),
-                "min_dte":     os.environ.get("FILTER_MIN_DTE","7"),
-                "max_dte":     os.environ.get("FILTER_MAX_DTE","90"),
-                "max_otm":     os.environ.get("FILTER_MAX_OTM","20"),
-                "exclude_etf": os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","false"),
-            }
+    """Custom alerts removed — all filtering now done by FlowCheck locally."""
+    return {
+        "status": "Custom alerts disabled",
+        "note": "FlowCheck filters all Bullflow algo alerts locally",
+        "filters": {
+            "min_premium": os.environ.get("FILTER_MIN_PREMIUM","500000"),
+            "min_dte":     os.environ.get("FILTER_MIN_DTE","7"),
+            "max_dte":     os.environ.get("FILTER_MAX_DTE","90"),
+            "max_otm":     os.environ.get("FILTER_MAX_OTM","20"),
+            "min_vol_oi":  os.environ.get("FILTER_MIN_VOL_OI","3.0"),
         }
-    except Exception as e:
-        return {"status": f"❌ Error: {str(e)}"}
+    }
 
 @app.get("/test-bullflow")
 async def test_bullflow():
