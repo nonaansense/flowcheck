@@ -763,6 +763,20 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         else:
             print(f"[PROCESS] Skipping watchlist/position — option expired (DTE={dte})")
 
+        # Hard Vol/OI filter for Bullflow mode — skip low conviction before scoring
+        bullflow_src = trade.get("source","") == "bullflow" or os.environ.get("FLOW_SOURCE","").lower() == "bullflow"
+        if bullflow_src:
+            vol_oi_ratio = float(data.get("vol_oi_ratio", 0) or 0)
+            min_vol_oi   = float(os.environ.get("FILTER_MIN_VOL_OI", "3.0"))
+            oi_val       = int(data.get("open_interest", 0) or 0)
+            min_oi       = int(os.environ.get("FILTER_MIN_OI", "500"))
+            if vol_oi_ratio > 0 and vol_oi_ratio < min_vol_oi:
+                print(f"[FILTER] {ticker} Vol/OI {vol_oi_ratio}x < {min_vol_oi}x minimum — skipping")
+                return
+            if oi_val > 0 and oi_val < min_oi:
+                print(f"[FILTER] {ticker} OI {oi_val} < {min_oi} minimum — skipping")
+                return
+
         # Fetch support/resistance levels
         if data.get("stock_price") and trade.get("option_type"):
             try:
@@ -783,10 +797,23 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
             print(f"[S/R] Skipped — stock_price={data.get('stock_price')}")
 
         # Build and send SMS
-        msg     = build_sms(trade, data, result, tweet_url, analysis_id, pattern, intel, risk)
+        msg         = build_sms(trade, data, result, tweet_url, analysis_id, pattern, intel, risk)
         verdict_val = (result.get("verdict") or "").strip()
-        print(f"[SMS] Routing: verdict='{verdict_val}' score={result.get('final_score')}")
-        success = send_sms(msg, verdict=verdict_val)
+        final_score = float(result.get("final_score", 0) or 0)
+        source      = trade.get("source","")
+
+        # For Bullflow: only send TRADE to Telegram — WATCH/SKIP stored silently
+        # For FlowGod: send all verdicts (curated feed, low volume)
+        bullflow_mode    = source == "bullflow" or os.environ.get("FLOW_SOURCE","").lower() == "bullflow"
+        min_score_alert  = float(os.environ.get("BULLFLOW_MIN_SCORE","6.0")) if bullflow_mode else 0
+        should_send      = verdict_val == "TRADE" or (not bullflow_mode) or final_score >= min_score_alert
+
+        print(f"[SMS] Routing: verdict='{verdict_val}' score={final_score} source={source} send={should_send}")
+        success = False
+        if should_send:
+            success = send_sms(msg, verdict=verdict_val)
+        else:
+            print(f"[SMS] Suppressed (Bullflow {verdict_val}) — stored in analyses only")
 
         # Send sector rotation alert if detected
         if intel.get("sector_rotation",{}).get("rotation_detected"):
