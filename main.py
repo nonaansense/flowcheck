@@ -537,7 +537,10 @@ def build_sms(trade: dict, data: dict, result: dict,
             lines.append(f"{dp.get('dark_pool_emoji','')} {dp.get('dark_pool_label','')}")
         if intel.get("earnings_season",{}).get("in_earnings_season"):
             es = intel["earnings_season"]
-            lines.append(f"{es.get('season_emoji','')} {es.get('season_note','')}")
+            # Suppress earnings season note for put sells — they benefit from theta, not catalysts
+            is_put_sell_es = data.get("fill_type","") == "PUT_SELL_BID"
+            if not is_put_sell_es:
+                lines.append(f"{es.get('season_emoji','')} {es.get('season_note','')}")
 
     # Risk warnings
     if risk and risk.get("warnings"):
