@@ -1311,7 +1311,8 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
             }]
         )
         raw = resp.content[0].text.strip() if resp.content else ""
-        print("[PHOTO] Raw: " + raw[:200])
+        response_text = raw  # Save full text for post-parse correction
+        print("[PHOTO] Raw: " + raw[:300])
         if not raw:
             return {"error": "empty_response"}
         raw  = raw.replace("", "").strip()
@@ -1322,13 +1323,12 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
         data = json.loads(raw)
 
         # Post-parse: fix order_type using raw response text (more reliable than JSON field)
-        raw_lower = raw.lower()
-        full_lower = (response_text or "").lower()
-        # Check for Position effect indicators in full response
-        has_close   = "position effect: close" in full_lower or "position effect\": \"close" in full_lower or '"position_effect": "close"' in full_lower
-        has_open    = "position effect: open" in full_lower or "position effect\": \"open" in full_lower or '"position_effect": "open"' in full_lower
-        has_buy     = full_lower.strip().startswith("buy ") or '"action_word": "buy"' in full_lower or full_lower.count('"buy"') > 0
-        has_sell    = full_lower.strip().startswith("sell ") or '"action_word": "sell"' in full_lower
+        full_lower = raw.lower()
+        # Check for Position effect indicators — Robinhood always shows this
+        has_close = ("close" in full_lower and "position" in full_lower)
+        has_open  = ("open" in full_lower and "position" in full_lower)
+        has_buy   = '"action_word": "buy"' in full_lower or '"buy"' in full_lower[:100]
+        has_sell  = '"action_word": "sell"' in full_lower or '"sell"' in full_lower[:100]
 
         ot = data.get("order_type","").upper()
         if has_close and ot in ("BTO",""):
@@ -1348,6 +1348,12 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
         return data
     except Exception as e:
         print("[PHOTO] Vision error: " + str(e))
+        # Try to return partial data if we have raw text
+        try:
+            if raw:
+                print("[PHOTO] Raw response was: " + raw[:500])
+        except:
+            pass
         return None
 
 def handle_trade_photo(photo_list: list, caption: str, reply_chat_id: str):

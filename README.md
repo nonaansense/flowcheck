@@ -444,4 +444,4 @@ Sector rotation alerts show full sector name (Technology/XLK) not just ETF ticke
 9. After-hours flow (DTE <30): expect overnight move — enter at open
 10. QQQ puts as hedge when correlation risk warning fires
 11. Log all trades immediately with /entry — use AM/PM times for clarity
-12. Log exits with exact date+time for accurate analytics 
+12. Log exits with exact date+time for accurate analytics
