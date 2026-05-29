@@ -205,14 +205,18 @@ def setup_flowcheck_filters():
         "dteMax":        max_dte,
         "otmPercentMin": -max_otm,
         "otmPercentMax": max_otm,
-        # Match FlowGod quality — sweeps, unusual, sizable
-        # Keep bid side ON — put selling (bullish) appears as bid side
-        "quickFilters":  ["Sweeps", "Unusual", "Vol>OI", "Sizable"],
+        # Match FlowGod quality — most restrictive filters
+        # Urgent = rapid repeating sweeps (highest conviction)
+        # Bullflow = aggressive repeating (high conviction)
+        # Sizable = large unusual (>$500K)
+        # Vol>OI = abnormal volume vs open interest
+        "quickFilters":  ["Sweeps", "Unusual", "Vol>OI", "Urgent", "Bullflow"],
         "includeBidSide":  True,   # Keep — put sells at bid = bullish signal
-        "includeAskSide":  True,   # Keep — call buys at ask = bullish signal
+        "includeAskSide":  True,
         "includeMid":      False,
         "includeSingles":  False,
-        "includeMultiLeg": False
+        "includeMultiLeg": False,
+        "includeSplits":   False
     }
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
@@ -326,7 +330,7 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                 continue
 
                             # Premium sanity check against Railway variable
-                            min_prem = float(os.environ.get("FILTER_MIN_PREMIUM","300000"))
+                            min_prem = float(os.environ.get("FILTER_MIN_PREMIUM","500000"))
                             if premium < min_prem:
                                 print(f"[BULLFLOW] Premium ${premium:,.0f} < ${min_prem:,.0f} skip")
                                 continue
