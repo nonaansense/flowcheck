@@ -463,8 +463,17 @@ def build_sms(trade: dict, data: dict, result: dict,
     if mkt.get("regime") and mkt.get("regime") not in ("NEUTRAL","UNKNOWN"):
         regime_str = f" · {mkt.get('regime_emoji','')} {mkt.get('regime','')}"
 
+    # Source badge
+    src = trade.get("source","")
+    if src == "bullflow":
+        src_badge = " 🅱"
+    elif src == "flowgod":
+        src_badge = " 🐦"
+    else:
+        src_badge = ""
+
     lines = [
-        f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}",
+        f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}",
         f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict}",
         f"VIX {vix_str} · SPY {spy_str}{regime_str}",
     ]
@@ -1646,7 +1655,7 @@ async def webhook(request: Request):
         print(f"[WEBHOOK] Tweet URL: {tweet_url}")
 
     import asyncio
-    asyncio.create_task(process_alert(tweet, tweet_url))
+    asyncio.create_task(process_alert(tweet, tweet_url, {"source": "flowgod"}))
     ticker = "?"
     try: ticker = re.search(r'\$([A-Z]{1,5})',tweet).group(1)
     except: pass

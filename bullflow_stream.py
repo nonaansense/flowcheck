@@ -232,13 +232,19 @@ def setup_flowcheck_filters():
     ]
     exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","true").lower() != "false"
 
-    # Single quickFilter — Unusual = single trade size > OI (strongest signal)
-    # AND logic is fine with ONE filter — just premium + unusual
+    # Stocks only + DTE range + OTM filter
+    # Don't raise premium — low-price stocks have lower absolute premiums
+    # Instead filter by: stocks only, reasonable DTE, not deep ITM
     filters = {
-        "premiumMin":  min_premium,
-        "quickFilters": ["Unusual"],
+        "premiumMin":    min_premium,
+        "dteMin":        min_dte,        # No same-week lotto tickets
+        "dteMax":        max_dte,        # No multi-year LEAPs
+        "otmPercentMax": max_otm,        # No deep OTM lotto tickets
+        "quickFilters":  ["Stocks"],     # Stocks only — excludes SPX/SPXW/RUT/NDX
     }
-    print(f"[BULLFLOW] Filter: premiumMin=${min_premium:,} + Unusual")
+    if exclude_etf:
+        filters["tickerBlocklist"] = etf_blocklist
+    print(f"[BULLFLOW] Filter: ${min_premium:,} + Stocks + DTE {min_dte}-{max_dte} + OTM≤{max_otm}%")
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
 
@@ -269,6 +275,7 @@ def stream_alerts(process_fn, send_sms_fn=None):
 
     retry_delay   = 5
     _seen_symbols = set()
+    _seen_tickers = set()
     while True:
         try:
             print(f"[BULLFLOW] Connecting to SSE stream...")
@@ -321,15 +328,22 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             if not trade:
                                 continue
 
-                            # Deduplicate — same symbol processed within 60 seconds = skip
-                            dedup_key = f"{symbol}_{int(float(alert_data.get('timestamp',0)) // 60)}"
-                            if dedup_key in _seen_symbols:
-                                print(f"[BULLFLOW] Dedup skip: {symbol}")
+                            # Deduplicate — same TICKER within 2 hours = skip
+                            # Prevents SNOW 180C, SNOW 185C, SNOW 190C all firing
+                            ticker_dedup_key = f"{trade['ticker']}_{int(float(alert_data.get('timestamp',0)) // 7200)}"
+                            symbol_dedup_key = f"{symbol}_{int(float(alert_data.get('timestamp',0)) // 60)}"
+                            if ticker_dedup_key in _seen_tickers:
+                                print(f"[BULLFLOW] Ticker dedup skip: {trade['ticker']} (already processed in last 2h)")
                                 continue
-                            _seen_symbols.add(dedup_key)
-                            # Keep set small
+                            if symbol_dedup_key in _seen_symbols:
+                                print(f"[BULLFLOW] Symbol dedup skip: {symbol}")
+                                continue
+                            _seen_symbols.add(symbol_dedup_key)
+                            _seen_tickers.add(ticker_dedup_key)
                             if len(_seen_symbols) > 500:
                                 _seen_symbols.clear()
+                            if len(_seen_tickers) > 200:
+                                _seen_tickers.clear()
 
                             # Filter out ETF hedges if configured
                             exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","").lower() == "true"
@@ -337,7 +351,9 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                           "SQQQ","SPXS","SDOW","SPXU",
                                           "TLT","IEF","SHY","TBT","TMF","TMV",
                                           "GLD","SLV","GDX","GDXJ",
-                                          "USO","UCO","SCO"}
+                                          "USO","UCO","SCO",
+                                          # Index options — always hedges/institutional
+                                          "SPX","SPXW","NDX","RUT","VIX"}
                             if exclude_etf and trade["ticker"] in hedge_etfs:
                                 print(f"[BULLFLOW] Hedge instrument skip: {symbol}")
                                 continue
