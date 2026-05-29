@@ -66,7 +66,22 @@ def build_trade_from_alert(alert: dict) -> dict | None:
         print(f"[BULLFLOW] Could not parse symbol: {sym}")
         return None
 
-    premium  = float(alert.get("alertPremium", 0) or 0)
+    # alertPremium can be float or formatted string like "1091.31K"
+    raw_prem = alert.get("alertPremium", 0) or 0
+    try:
+        premium = float(raw_prem)
+    except (ValueError, TypeError):
+        raw_str = str(raw_prem).strip().upper().replace(",","")
+        if raw_str.endswith("K"):
+            premium = float(raw_str[:-1]) * 1_000
+        elif raw_str.endswith("M"):
+            premium = float(raw_str[:-1]) * 1_000_000
+        elif raw_str.endswith("B"):
+            premium = float(raw_str[:-1]) * 1_000_000_000
+        else:
+            try: premium = float(raw_str)
+            except: premium = 0
+        print(f"[BULLFLOW] Parsed premium string '{raw_prem}' → ${premium:,.0f}")
     fill_px  = float(alert.get("averageFillPrice", 0) or 0)
     ts       = alert.get("timestamp", time.time())
     alert_nm = alert.get("alertName","")

@@ -69,7 +69,7 @@ def add_position(trade: dict, data: dict, result: dict):
         "expiry_raw":    trade.get("expiry_raw",""),
         "dte_at_entry":  data.get("days_to_expiry"),
         "entry_stock":   float(stock_price),
-        "entry_option":  float(option_price) if option_price else None,
+        "entry_option":  _safe_float(option_price),
         "stop_price":    stop_price,
         "target_price":  target_price,
         "score":         result.get("final_score"),
