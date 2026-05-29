@@ -239,7 +239,8 @@ Apply hard rules:
             vol_oi    = data.get("vol_oi_ratio") or 0
             premium_v = trade.get("premium") or 0
 
-            is_full_ask   = fill_type in ("FULL_ASK","MOSTLY_ASK")
+            is_full_ask   = fill_type in ("FULL_ASK","MOSTLY_ASK","PUT_SELL_BID")
+            is_put_sell   = fill_type == "PUT_SELL_BID"
             is_large      = premium_v >= 500000
             is_mega_vol   = float(vol_oi) >= 10 if vol_oi else False
             is_breakout   = data.get("is_breakout_bet", False)
@@ -251,9 +252,10 @@ Apply hard rules:
             is_short_dte   = (data.get("days_to_expiry") or 99) <= 5
             is_pre_earnings = bool(data.get("earnings_date") and not data.get("earnings_is_past"))
 
-            # Rule 1: FULL_ASK + large premium = minimum WATCH
+            # Rule 1: FULL_ASK/PUT_SELL + large premium = minimum WATCH
             # Rule 2: Vol/OI >10x alone = minimum WATCH
             # Rule 3: Large premium + Vol/OI >5x = minimum WATCH
+            # Rule 4: PUT_SELL_BID + large premium + good Vol/OI = minimum WATCH
             # Rule 4: FULL_ASK + near-ATM + short DTE = TRADE signal
             #   (urgent buyer with 2-5 DTE is making a very specific directional bet)
             should_be_trade = (
