@@ -89,15 +89,27 @@ def build_trade_from_alert(alert: dict) -> dict | None:
     is_sweep = any(w in nm_lower for w in ["sweep","urgent","sizable"])
 
     # Build trade dict compatible with FlowCheck pipeline
+    # Map Bullflow alert names to Vol/OI signals for scorer
+    vol_oi_signal = 0.0
+    nm_up = alert_nm.upper()
+    if "UNUSUAL" in nm_up:     vol_oi_signal = 15.0  # Single trade > OI = massive
+    elif "RISING VOL" in nm_up: vol_oi_signal = 8.0   # First vol>OI crossing
+    elif "VOL>OI" in nm_up:    vol_oi_signal = 5.0   # Cumulative vol > OI
+    elif "URGENT" in nm_up:    vol_oi_signal = 6.0   # Rapid repeats
+    elif "BULLFLOW" in nm_up:  vol_oi_signal = 4.0   # Aggressive repeats
+    elif "SIZABLE" in nm_up:   vol_oi_signal = 3.0   # Large size
+
     trade = {
         **parsed,
-        "premium":     premium,
-        "fill_type":   fill_type,
-        "is_sweep":    is_sweep,
-        "alert_name":  alert_nm,
-        "alert_type":  alert_tp,
-        "source":      "bullflow",
-        "timestamp":   ts,
+        "premium":       premium,
+        "fill_type":     fill_type,
+        "is_sweep":      is_sweep,
+        "alert_name":    alert_nm,
+        "alert_type":    alert_tp,
+        "source":        "bullflow",
+        "timestamp":     ts,
+        "vol_oi_ratio":  vol_oi_signal,  # Estimated from alert type
+        "open_interest": int(premium / fill_px / 100) if fill_px > 0 else 0,
     }
 
     # Estimate contracts from premium and fill price
@@ -214,11 +226,17 @@ def setup_flowcheck_filters():
         # Bullflow = aggressive repeating (high conviction)
         # Sizable = large unusual (>$500K)
         # Vol>OI = abnormal volume vs open interest
-        "quickFilters":  ["Sweeps", "Unusual", "Vol>OI", "Urgent", "Bullflow"],
+        # Vol/OI filters — use Bullflow's built-in detection
+        # "Unusual"     = single trade size > OI (strongest single-trade signal)
+        # "Vol>OI"      = cumulative volume crossed above OI today
+        # "Rising Vol"  = first trade where vol > OI (early detection)
+        # "Urgent"      = rapid repeat sweeps (high conviction)
+        # "Bullflow"    = aggressive repeat trades (proprietary criteria)
+        "quickFilters":  ["Unusual", "Vol>OI", "Rising Vol", "Urgent", "Bullflow"],
         "includeBidSide":  True,   # Keep — put sells at bid = bullish signal
         "includeAskSide":  True,
         "includeMid":      False,
-        "includeSingles":  False,
+        "includeSingles":  True,   # Keep singles — "Unusual" requires them
         "includeMultiLeg": False,
         "includeSplits":   False
     }
