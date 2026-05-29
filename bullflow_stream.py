@@ -80,7 +80,10 @@ def build_trade_from_alert(alert: dict) -> dict | None:
     elif "bullflow" in nm_lower or "sizable" in nm_lower or "repeater" in nm_lower:
         fill_type = "MOSTLY_ASK"
     elif "bid" in nm_lower:
-        fill_type = "MOSTLY_BID"
+        # Bid side put = put SELLING = bullish conviction
+        # Bid side call = call selling = bearish, less interesting
+        opt = "put" if parsed and parsed.get("option_type") == "put" else "call"
+        fill_type = "PUT_SELL_BID" if opt == "put" else "MOSTLY_BID"
 
     # Is sweep?
     is_sweep = any(w in nm_lower for w in ["sweep","urgent","sizable"])
@@ -183,12 +186,16 @@ def setup_flowcheck_filters():
     max_dte     = int(os.environ.get("FILTER_MAX_DTE", 90))
     max_otm     = float(os.environ.get("FILTER_MAX_OTM", 20.0))
 
-    # ETF blocklist — exclude common hedge ETFs
+    # Blocklist — only exclude instruments that are almost always hedges/protection
+    # NOT excluding SPY/QQQ calls — those can be genuine directional
+    # NOT excluding sector ETFs — unusual flow there is worth seeing
     etf_blocklist = [
-        "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS",
-        "SOXL","SOXS","TLT","GLD","SLV","USO",
-        "XLK","XLF","XLE","XLV","XLI","XLC","XLY","XLU",
-        "XME","XOP","GDX","SMH","SOXX"
+        # Pure hedge/protection instruments
+        "VIX","VIXY","UVXY","SVXY",          # Volatility
+        "SQQQ","SPXS","SDOW","SPXU",         # Leveraged inverse
+        "TLT","IEF","SHY","TBT","TMF","TMV", # Bonds
+        "GLD","SLV","GDX","GDXJ",            # Gold/silver
+        "USO","UCO","SCO",                   # Oil ETFs
     ]
     exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","true").lower() != "false"
 
@@ -198,9 +205,14 @@ def setup_flowcheck_filters():
         "dteMax":        max_dte,
         "otmPercentMin": -max_otm,
         "otmPercentMax": max_otm,
-        "quickFilters":  ["Ask", "Sweeps", "Unusual", "Vol>OI"],
-        "includeBidSide": False,
-        "includeMid":     False,
+        # Match FlowGod quality — sweeps, unusual, sizable
+        # Keep bid side ON — put selling (bullish) appears as bid side
+        "quickFilters":  ["Sweeps", "Unusual", "Vol>OI", "Sizable"],
+        "includeBidSide":  True,   # Keep — put sells at bid = bullish signal
+        "includeAskSide":  True,   # Keep — call buys at ask = bullish signal
+        "includeMid":      False,
+        "includeSingles":  False,
+        "includeMultiLeg": False
     }
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
@@ -294,17 +306,29 @@ def stream_alerts(process_fn, send_sms_fn=None):
 
                             # Filter out ETF hedges if configured
                             exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","").lower() == "true"
-                            hedge_etfs  = {"SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS",
-                                          "SOXL","SOXS","TLT","GLD","SLV","USO","XLK",
-                                          "XLF","XLE","XLV","XLI","XLC","XLY","XLU",
-                                          "XME","XOP","GDX","SMH","SOXX"}
+                            hedge_etfs  = {"VIX","VIXY","UVXY","SVXY",
+                                          "SQQQ","SPXS","SDOW","SPXU",
+                                          "TLT","IEF","SHY","TBT","TMF","TMV",
+                                          "GLD","SLV","GDX","GDXJ",
+                                          "USO","UCO","SCO"}
                             if exclude_etf and trade["ticker"] in hedge_etfs:
-                                print(f"[BULLFLOW] ETF hedge skip: {symbol}")
+                                print(f"[BULLFLOW] Hedge instrument skip: {symbol}")
                                 continue
 
                             # Skip Grenade trades (very short DTE lottery tickets)
                             if "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
                                 print(f"[BULLFLOW] Grenade skip (DTE≤7): {symbol}")
+                                continue
+
+                            # Skip splits (multi-exchange non-sweep orders)
+                            if "split" in alert_name.lower() and "sweep" not in alert_name.lower():
+                                print(f"[BULLFLOW] Split order skip: {symbol}")
+                                continue
+
+                            # Premium sanity check against Railway variable
+                            min_prem = float(os.environ.get("FILTER_MIN_PREMIUM","300000"))
+                            if premium < min_prem:
+                                print(f"[BULLFLOW] Premium ${premium:,.0f} < ${min_prem:,.0f} skip")
                                 continue
 
                             # Build a synthetic tweet text for the pipeline
