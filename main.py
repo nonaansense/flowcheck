@@ -624,6 +624,14 @@ def build_sms(trade: dict, data: dict, result: dict,
             op_float = None
 
         if op_float and op_float > 0:
+            # Show flow entry price and suggested entry limit
+            opt_type_str = (trade.get("option_type","call") or "call").lower()
+            source_str   = trade.get("source","")
+            if source_str == "bullflow":
+                # Entry limit: within 2-5% of flow fill price
+                entry_limit = round(op_float * 1.03, 2)  # 3% above flow fill
+                lines.append(f"💰 Flow filled @ ${op_float:.2f} | Entry limit: ${entry_limit:.2f}")
+
             from outcomes import get_stats
             stats      = get_stats()
             win_rate   = stats.get("win_rate") if stats.get("total",0) >= 5 else None

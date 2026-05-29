@@ -116,15 +116,18 @@ def build_trade_from_alert(alert: dict) -> dict | None:
 
     trade = {
         **parsed,
-        "premium":       premium,
-        "fill_type":     fill_type,
-        "is_sweep":      is_sweep,
-        "alert_name":    alert_nm,
-        "alert_type":    alert_tp,
-        "source":        "bullflow",
-        "timestamp":     ts,
-        "vol_oi_ratio":  vol_oi_signal,  # Estimated from alert type
-        "open_interest": int(premium / fill_px / 100) if fill_px > 0 else 0,
+        "premium":        premium,
+        "fill_type":      fill_type,
+        "is_sweep":       is_sweep,
+        "alert_name":     alert_nm,
+        "alert_type":     alert_tp,
+        "source":         "bullflow",
+        "timestamp":      ts,
+        "flow_timestamp": ts,
+        "vol_oi_ratio":   vol_oi_signal,
+        "open_interest":  int(premium / fill_px / 100) if fill_px > 0 else 0,
+        "option_price":   fill_px,        # averageFillPrice = entry price for the flow
+        "avg_fill_price": fill_px,
     }
 
     # Estimate contracts from premium and fill price
