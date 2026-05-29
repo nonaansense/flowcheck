@@ -183,16 +183,27 @@ def setup_flowcheck_filters():
     max_dte     = int(os.environ.get("FILTER_MAX_DTE", 90))
     max_otm     = float(os.environ.get("FILTER_MAX_OTM", 20.0))
 
+    # ETF blocklist — exclude common hedge ETFs
+    etf_blocklist = [
+        "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS",
+        "SOXL","SOXS","TLT","GLD","SLV","USO",
+        "XLK","XLF","XLE","XLV","XLI","XLC","XLY","XLU",
+        "XME","XOP","GDX","SMH","SOXX"
+    ]
+    exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","true").lower() != "false"
+
     filters = {
-        "premiumMin": min_premium,
-        "dteMin":     min_dte,
-        "dteMax":     max_dte,
-        "otmPercentMin": -max_otm,  # negative = ITM side
+        "premiumMin":    min_premium,
+        "dteMin":        min_dte,
+        "dteMax":        max_dte,
+        "otmPercentMin": -max_otm,
         "otmPercentMax": max_otm,
-        "quickFilters": ["Ask", "Sweeps", "Unusual"],
+        "quickFilters":  ["Ask", "Sweeps", "Unusual", "Vol>OI"],
         "includeBidSide": False,
         "includeMid":     False,
     }
+    if exclude_etf:
+        filters["tickerBlocklist"] = etf_blocklist
 
     result = create_custom_alert("FlowCheck High Conviction", filters)
     if result:
@@ -217,7 +228,8 @@ def stream_alerts(process_fn, send_sms_fn=None):
     except Exception as e:
         print(f"[BULLFLOW] Filter setup error: {e}")
 
-    retry_delay = 5
+    retry_delay   = 5
+    _seen_symbols = set()
     while True:
         try:
             print(f"[BULLFLOW] Connecting to SSE stream...")
@@ -268,6 +280,31 @@ def stream_alerts(process_fn, send_sms_fn=None):
 
                             trade = build_trade_from_alert(alert_data)
                             if not trade:
+                                continue
+
+                            # Deduplicate — same symbol processed within 60 seconds = skip
+                            dedup_key = f"{symbol}_{int(float(alert_data.get('timestamp',0)) // 60)}"
+                            if dedup_key in _seen_symbols:
+                                print(f"[BULLFLOW] Dedup skip: {symbol}")
+                                continue
+                            _seen_symbols.add(dedup_key)
+                            # Keep set small
+                            if len(_seen_symbols) > 500:
+                                _seen_symbols.clear()
+
+                            # Filter out ETF hedges if configured
+                            exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","").lower() == "true"
+                            hedge_etfs  = {"SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS",
+                                          "SOXL","SOXS","TLT","GLD","SLV","USO","XLK",
+                                          "XLF","XLE","XLV","XLI","XLC","XLY","XLU",
+                                          "XME","XOP","GDX","SMH","SOXX"}
+                            if exclude_etf and trade["ticker"] in hedge_etfs:
+                                print(f"[BULLFLOW] ETF hedge skip: {symbol}")
+                                continue
+
+                            # Skip Grenade trades (very short DTE lottery tickets)
+                            if "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
+                                print(f"[BULLFLOW] Grenade skip (DTE≤7): {symbol}")
                                 continue
 
                             # Build a synthetic tweet text for the pipeline
