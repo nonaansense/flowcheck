@@ -367,14 +367,13 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                     f"{trade['option_type'].title()} "
                                     f"{trade['strike']} [{alert_name}] via Bullflow")
 
-                            # Feed into FlowCheck pipeline
+                            # Feed into FlowCheck pipeline from background thread
                             import asyncio
                             try:
-                                loop = asyncio.get_event_loop()
-                                if loop.is_running():
-                                    asyncio.ensure_future(process_fn(tweet, None, trade))
-                                else:
-                                    loop.run_until_complete(process_fn(tweet, None, trade))
+                                # Create new event loop for this thread call
+                                loop = asyncio.new_event_loop()
+                                loop.run_until_complete(process_fn(tweet, None, trade))
+                                loop.close()
                             except Exception as pe:
                                 print(f"[BULLFLOW] process_alert error: {pe}")
 
