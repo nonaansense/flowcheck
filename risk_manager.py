@@ -93,11 +93,26 @@ def check_max_positions() -> dict:
 # ── 3. Smart Stop Loss ─────────────────────────────────────────────────
 
 def calc_smart_stop(ticker: str, current_price: float,
-                     option_type: str = "call") -> dict:
+                     option_type: str = "call",
+                     strike: float = None,
+                     fill_type: str = "") -> dict:
     """
     Calculate stop loss based on technical levels instead of fixed %.
-    Uses: previous day low, recent swing low, VWAP.
+    For put sells: stop is stock dropping BELOW the strike price.
+    For calls: stop is stock dropping below key support.
     """
+    is_put_sell = fill_type == "PUT_SELL_BID"
+
+    # Put sell stop: stock breaks below strike = assignment risk
+    if is_put_sell and strike and current_price:
+        pct_to_strike = round(((current_price - strike) / current_price) * 100, 1)
+        return {
+            "stop_price":  strike,
+            "stop_reason": f"Stock breaks below ${strike} strike (assignment risk)",
+            "stop_type":   "PUT_SELL_STRIKE",
+            "pct_away":    pct_to_strike,
+        }
+
     key = poly_key()
     if not key or not current_price:
         # Fallback to fixed %
@@ -275,7 +290,11 @@ def run_risk_checks(trade: dict, data: dict, result: dict) -> dict:
     # Smart stop loss
     stock_price = data.get("stock_price")
     if stock_price:
-        smart_stop = calc_smart_stop(ticker, float(stock_price), opt_type)
+        smart_stop = calc_smart_stop(
+            ticker, float(stock_price), opt_type,
+            strike=float(trade.get("strike",0) or 0),
+            fill_type=data.get("fill_type","")
+        )
         risk["smart_stop"] = smart_stop
 
     return risk
