@@ -305,20 +305,21 @@ async def startup():
     except Exception as _sch_e:
         print(f'[SCHEDULER] Warning: {_sch_e}')
 
-    # Start Bullflow SSE stream if configured (only once)
+    # Start Bullflow stream if API key present (runs alongside FlowGod if both configured)
     try:
-        flow_source = os.environ.get("FLOW_SOURCE","flowgod").lower()
-        if flow_source == "bullflow":
-            import threading
-            already_running = any(t.name == "bullflow-stream" for t in threading.enumerate())
-            if not already_running:
-                from bullflow_stream import start_stream_thread
-                start_stream_thread(process_alert, send_sms)
-                print("[STARTUP] Bullflow SSE stream started")
-            else:
-                print("[STARTUP] Bullflow stream already running — skipping duplicate")
-        else:
-            print(f"[STARTUP] Flow source: {flow_source} (FlowGod/IFTTT mode)")
+        import threading
+        bf_key       = os.environ.get("BULLFLOW_API_KEY","")
+        flow_source  = os.environ.get("FLOW_SOURCE","flowgod").lower()
+        dual_mode    = os.environ.get("DUAL_FLOW_MODE","").lower() == "true"
+        bf_enabled   = bf_key and (flow_source == "bullflow" or dual_mode)
+        already_running = any(t.name == "bullflow-stream" for t in threading.enumerate())
+        if bf_enabled and not already_running:
+            from bullflow_stream import start_stream_thread
+            start_stream_thread(process_alert, send_sms)
+            mode_label = "DUAL MODE (FlowGod + Bullflow)" if dual_mode else "Bullflow only"
+            print(f"[STARTUP] {mode_label} — Bullflow SSE stream started")
+        elif not bf_enabled:
+            print(f"[STARTUP] FlowGod/IFTTT mode only")
     except Exception as _be:
         print(f"[STARTUP] Bullflow stream error: {_be}")
 
@@ -844,10 +845,17 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
 
         # For Bullflow: only send TRADE to Telegram — WATCH/SKIP stored silently
         # For FlowGod: send all verdicts (curated feed, low volume)
-        force_send       = bool(trade.get("_force_send"))
-        bullflow_mode    = (source == "bullflow" or os.environ.get("FLOW_SOURCE","").lower() == "bullflow") and not force_send
-        min_score_alert  = float(os.environ.get("BULLFLOW_MIN_SCORE","6.0")) if bullflow_mode else 0
-        should_send      = force_send or verdict_val == "TRADE" or (not bullflow_mode) or final_score >= min_score_alert
+        force_send    = bool(trade.get("_force_send"))
+        dual_mode     = os.environ.get("DUAL_FLOW_MODE","").lower() == "true"
+        # Bullflow mode: only send TRADE to avoid Telegram flood
+        # FlowGod mode: send all verdicts (curated feed, already filtered)
+        is_bullflow   = source == "bullflow"
+        bullflow_mode = is_bullflow and not force_send
+        min_score_alert = float(os.environ.get("BULLFLOW_MIN_SCORE","6.0")) if bullflow_mode else 0
+        should_send   = (force_send or
+                        not is_bullflow or           # FlowGod always sends
+                        verdict_val == "TRADE" or    # TRADE always sends
+                        final_score >= min_score_alert)
 
         print(f"[SMS] Routing: verdict='{verdict_val}' score={final_score} source={source} send={should_send}")
         success = False
