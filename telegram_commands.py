@@ -1276,8 +1276,9 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
         "  The filled price comes from 'Filled quantity: X contracts at $Y.YY' — use Y.YY as the price",
         "  'Est credit' = premium received (selling). 'Est debit' or 'Total cost' = premium paid (buying).",
         "  BTC example: 'Buy NVDA $250 Call 6/5' + 'Position effect: Close' + 'Total cost' + 'Realized profit' = BTC, action=exit, order_type=BTC",
-        "  If 'Realized profit' appears, extract it as realized_pnl (e.g. +374.00 or -150.00)",
-        "  realized_pnl should be a number — positive for profit, negative for loss.",
+        "  If 'Realized profit' appears AND action is exit (STC/BTC), extract it as realized_pnl (e.g. 374.00 for profit, -150.00 for loss).",
+        "  NEVER set realized_pnl for BTO or STO orders — those are entries, not exits.",
+        "  realized_pnl should be a positive number for profit, negative for loss, omit entirely for entries.",
         "  date and time must come from Filled timestamp on screen.",
         "  time format must be 10:34AM or 2:30PM with no space before AM/PM.",
         "  strike is critical — look carefully for the strike price number (e.g. 105, 460, 130).",
@@ -1608,13 +1609,17 @@ def handle_trade_photo(photo_list: list, caption: str, reply_chat_id: str):
                     reply_chat_id
                 )
                 return
-            # Use realized_pnl from screenshot if available (more accurate than calculated)
-            rh_pnl = data.get("realized_pnl")
-            pnl    = float(rh_pnl) if rh_pnl else (result.get("pnl_total", 0) or 0)
-            pct    = result.get("pnl_pct", 0) or 0
-            if rh_pnl:
-                # Update stored P&L with Robinhood's figure
+            # Use realized_pnl from screenshot only for STC/BTC exits
+            # Never use it for BTO entries (Total cost is not a loss)
+            rh_pnl     = data.get("realized_pnl")
+            order_type = data.get("order_type","").upper()
+            is_exit_order = order_type in ("STC","BTC") or action == "exit"
+            if rh_pnl and is_exit_order and float(rh_pnl) != 0:
+                pnl = float(rh_pnl)
                 result["pnl_total"] = pnl
+            else:
+                pnl = result.get("pnl_total", 0) or 0
+            pct = result.get("pnl_pct", 0) or 0
             closing   = result.get("contracts", contracts)
             remaining = result.get("remaining", 0)
             label     = "WIN" if pnl > 0 else "LOSS"

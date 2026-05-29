@@ -636,9 +636,17 @@ def add_exit(ticker: str, exit_price: float,
         exit_dt = now_et
 
     # P&L for this exit
-    pnl_per   = round((ep - entry) * 100, 2)
+    # For put/call sells (STO): entry = credit received, exit = debit paid to close
+    # Profit = entry - exit (premium collected minus premium paid back)
+    order_type = trade.get("order_type","BTO").upper()
+    is_sell_open = order_type in ("STO",) or trade.get("fill_type","") == "PUT_SELL_BID"
+    if is_sell_open:
+        pnl_per   = round((entry - ep) * 100, 2)   # Profit when option decays
+        pnl_pct   = round(((entry - ep) / entry) * 100, 1)
+    else:
+        pnl_per   = round((ep - entry) * 100, 2)   # Profit when option rises
+        pnl_pct   = round(((ep - entry) / entry) * 100, 1)
     pnl_total = round(pnl_per * closing, 2)
-    pnl_pct   = round(((ep - entry) / entry) * 100, 1)
 
     # Holding period
     entry_dt    = datetime.fromisoformat(trade["entry_datetime"])
