@@ -177,9 +177,26 @@ def setup_flowcheck_filters():
     if not key:
         return
 
-    # Create a simple premium-only custom alert — let FlowCheck do quality filtering
-    # Avoid complex quickFilters combinations that may not match anything
-    print("[BULLFLOW] Setting up custom alert filters...")
+    # Check existing — only create if none exist
+    try:
+        r = requests.get(
+            f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}",
+            timeout=10
+        )
+        if r.status_code == 200:
+            existing = r.json().get("alerts",[])
+            fc_alerts = [a for a in existing if "FlowCheck" in a.get("alertName","")]
+            force_recreate = os.environ.get("BULLFLOW_FORCE_RECREATE","").lower() == "true"
+            if fc_alerts and not force_recreate:
+                print(f"[BULLFLOW] Custom alert already exists ({len(fc_alerts)}) — skipping creation")
+                return
+            if len(fc_alerts) > 1:
+                print(f"[BULLFLOW] Warning: {len(fc_alerts)} duplicate alerts found — delete extras in Bullflow dashboard")
+                return
+    except Exception as e:
+        print(f"[BULLFLOW] Could not check existing alerts: {e}")
+
+    print("[BULLFLOW] Creating custom alert filter...")
 
     # Get filter thresholds from env
     min_premium = int(os.environ.get("FILTER_MIN_PREMIUM", 150000))
@@ -228,7 +245,9 @@ def setup_flowcheck_filters():
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
 
-    result = create_custom_alert("FlowCheck High Conviction", filters)
+    # Remove name from filters dict if present to avoid duplicate
+    alert_name = filters.pop("name", "FlowCheck High Conviction")
+    result = create_custom_alert(alert_name, filters)
     if result:
         print(f"[BULLFLOW] Created custom alert: {result}")
     else:
