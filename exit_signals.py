@@ -13,6 +13,22 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from sms import send_sms
 
+def _safe_float(val):
+    """Convert value to float, handling formatted strings like '1091.31K'."""
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        s = str(val).strip().upper().replace(",","")
+        try:
+            if s.endswith("K"): return float(s[:-1]) * 1_000
+            if s.endswith("M"): return float(s[:-1]) * 1_000_000
+            if s.endswith("B"): return float(s[:-1]) * 1_000_000_000
+            return float(s)
+        except:
+            return None
+
 POSITIONS_FILE = "/tmp/flowcheck_positions.json"
 
 def poly_key():
