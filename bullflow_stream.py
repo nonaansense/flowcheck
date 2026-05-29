@@ -232,12 +232,13 @@ def setup_flowcheck_filters():
     ]
     exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","true").lower() != "false"
 
-    # PREMIUM ONLY — no quickFilters (AND logic kills matches per Bullflow support)
-    # FlowCheck handles all quality filtering locally
+    # Single quickFilter — Unusual = single trade size > OI (strongest signal)
+    # AND logic is fine with ONE filter — just premium + unusual
     filters = {
-        "premiumMin": min_premium,
+        "premiumMin":  min_premium,
+        "quickFilters": ["Unusual"],
     }
-    print(f"[BULLFLOW] Filter payload: premiumMin={min_premium}")
+    print(f"[BULLFLOW] Filter: premiumMin=${min_premium:,} + Unusual")
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
 

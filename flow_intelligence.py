@@ -10,6 +10,19 @@ Handles:
 """
 import os, json, requests, time
 from datetime import datetime, timedelta
+
+_SECTOR_NAMES_MAP = {
+    "XLK":"Technology","XLF":"Financials","XLV":"Healthcare",
+    "XLE":"Energy","XLI":"Industrials","XLC":"Communications",
+    "XLY":"Consumer Discretionary","XLP":"Consumer Staples",
+    "XLB":"Materials","XLRE":"Real Estate","XLU":"Utilities",
+    "XBI":"Biotech","SMH":"Semiconductors","SOXX":"Semiconductors",
+    "IBB":"Biotech","KRE":"Regional Banks","XOP":"Oil & Gas",
+    "XRT":"Retail","GDX":"Gold Miners","JETS":"Airlines",
+    "XME":"Metals & Mining","ITB":"Homebuilders",
+    "ARKK":"Innovation","HACK":"Cybersecurity","FINX":"Fintech",
+}
+SECTOR_NAMES = _SECTOR_NAMES_MAP  # Alias for compatibility
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 
@@ -368,7 +381,7 @@ def track_sector_flow(trade: dict, result: dict) -> dict | None:
             "tickers":           tickers,
             "total_premium":     total_premium,
             "alert":             (f"📊 SECTOR ROTATION: {flow_count} flows in "
-                                  f"{SECTOR_NAMES.get(sector, sector)} ({sector}) today — "
+                                  f"{_SECTOR_NAMES_MAP.get(sector, sector)} ({sector}) today — "
                                   f"{', '.join(tickers[:4])} — {prem_str} total premium"),
         }
     return None
