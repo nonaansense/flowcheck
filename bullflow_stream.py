@@ -161,7 +161,7 @@ def create_custom_alert(name: str, filters: dict) -> dict | None:
             headers={"Content-Type": "application/json"},
             timeout=10
         )
-        if r.status_code == 200:
+        if r.status_code in (200, 201):  # 201 = Created (success)
             return r.json()
         print(f"[BULLFLOW] create_alert error {r.status_code}: {r.text[:200]}")
     except Exception as e:
@@ -398,10 +398,13 @@ def start_stream_thread(process_fn, send_sms_fn=None):
     if not key:
         print("[BULLFLOW] No API key — stream disabled")
         return None
+    # Allow dual mode — stream runs if FLOW_SOURCE=bullflow OR DUAL_FLOW_MODE=true
     flow_source = os.environ.get("FLOW_SOURCE","flowgod").lower()
-    if flow_source != "bullflow":
-        print(f"[BULLFLOW] FLOW_SOURCE={flow_source} — stream disabled (set to 'bullflow' to enable)")
+    dual_mode   = os.environ.get("DUAL_FLOW_MODE","").lower() == "true"
+    if flow_source != "bullflow" and not dual_mode:
+        print(f"[BULLFLOW] FLOW_SOURCE={flow_source} and DUAL_FLOW_MODE not set — stream disabled")
         return None
+    print(f"[BULLFLOW] Starting stream (flow_source={flow_source} dual_mode={dual_mode})")
     t = threading.Thread(
         target=stream_alerts,
         args=(process_fn, send_sms_fn),

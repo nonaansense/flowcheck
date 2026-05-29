@@ -75,10 +75,17 @@ ANALYSES_FILE = "/tmp/flowcheck_analyses.json"
 ANALYSES_KEY = "analyses_today"
 
 def save_analyses():
-    from storage import save_data
+    from storage import save_data, db_set
     try:
         today      = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
         today_data = [a for a in analyses if a.get("date") == today]
+
+        # Also save yesterday's analyses separately for pre-market OI check
+        yesterday  = (datetime.now(ZoneInfo("America/New_York")).date() - __import__("datetime").timedelta(days=1)).isoformat()
+        yest_data  = [a for a in analyses if a.get("date") == yesterday]
+        if yest_data:
+            import json as _j
+            db_set("analyses_yesterday", _j.dumps({"date": yesterday, "analyses": yest_data}))
         serializable = []
         for a in today_data:
             try:
