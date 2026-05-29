@@ -433,14 +433,18 @@ def build_sms(trade: dict, data: dict, result: dict,
         elif is_expired:
             time_warning = f"⚠️ EXPIRED OPTION — historical alert only, cannot trade"
         else:
-            time_warning = f"🌙 AFTER-HOURS FLOW ({dte_display}) — stealth buy, expect overnight/pre-market move"
+            is_ps = data.get("fill_type","") == "PUT_SELL_BID"
+            ah_action = "stealth put sale" if is_ps else "stealth buy"
+            time_warning = f"🌙 AFTER-HOURS FLOW ({dte_display}) — {ah_action}, expect overnight/pre-market move"
     elif mins_to_close <= 30:
         if is_leap:
             time_warning = f"⏰ Late day LEAP ({mins_to_close}min left) — long-dated, no urgency signal"
         elif is_expired:
             time_warning = f"⚠️ EXPIRED OPTION — historical alert only"
         else:
-            time_warning = f"🎯 LATE DAY FLOW ({mins_to_close}min left, {dte_display}) — stealth buy, avoiding copycats"
+            is_ps2 = data.get("fill_type","") == "PUT_SELL_BID"
+            late_action = "stealth put sale" if is_ps2 else "stealth buy"
+            time_warning = f"🎯 LATE DAY FLOW ({mins_to_close}min left, {dte_display}) — {late_action}, avoiding copycats"
     else:
         if is_expired:
             time_warning = f"⚠️ EXPIRED OPTION — historical/backtest alert only"
