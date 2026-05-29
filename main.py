@@ -811,13 +811,22 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
 
         # Boost put sell score BEFORE building SMS
         if data.get("fill_type","") == "PUT_SELL_BID":
-            old_score = float(result.get("final_score", 0) or 0)
-            new_score = min(old_score + 1.0, 7.0)
+            old_score  = float(result.get("final_score", 0) or 0)
+            premium_v  = float(data.get("premium", 0) or 0)
+            vol_oi     = float(data.get("vol_oi_ratio", 0) or 0)
+            # Strong put sell: large premium + high Vol/OI = force TRADE
+            if premium_v >= 500000 and vol_oi >= 5.0:
+                new_score = max(old_score + 1.5, 6.0)  # Force to TRADE minimum
+            elif premium_v >= 200000 and vol_oi >= 3.0:
+                new_score = max(old_score + 1.0, 5.0)  # Force to strong WATCH
+            else:
+                new_score = old_score + 0.5
+            new_score = min(new_score, 7.0)
             result["final_score"] = new_score
-            result["market_adjustment"] = result.get("market_adjustment", 0) + 1.0
+            result["market_adjustment"] = result.get("market_adjustment", 0) + (new_score - old_score)
             if new_score >= 6.0:   result["verdict"] = "TRADE"
             elif new_score >= 4.0: result["verdict"] = "WATCH"
-            print(f"[PUT SELL BOOST] {ticker}: {old_score}→{new_score} {result['verdict']}")
+            print(f"[PUT SELL BOOST] {ticker}: {old_score}→{new_score} {result['verdict']} (premium=${premium_v:,.0f} vol_oi={vol_oi}x)")
 
         # Build and send SMS
         msg         = build_sms(trade, data, result, tweet_url, analysis_id, pattern, intel, risk)
