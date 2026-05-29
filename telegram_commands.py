@@ -1258,17 +1258,26 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
         "Optional fields (include if visible):",
         "  fees: trading commission/fee in dollars (e.g. 0.65)",
         "  reg_fees: regulatory fees shown separately (e.g. 0.02)",
+        "  realized_pnl: realized profit/loss if shown (e.g. 374.00 for profit, -150.00 for loss)",
         "",
         "Rules:",
         "  BTO or buy-to-open = entry. STO or sell-to-open = entry (put sell). STC or sell-to-close = exit. BTC or buy-to-close = exit.",
         "  IMPORTANT: Sell to Open (STO) means selling a put or call to open a new position — this is an ENTRY not an exit.",
         "  If you see 'Sell to Open', 'STO', or 'Sold to Open' set action=entry and order_type=STO.",
-        "  ROBINHOOD SPECIFIC: Robinhood shows 'Sold 1 AAPL $150 Put' with status 'Open' for STO orders.",
-        "  On Robinhood: if the order shows 'Sold' (not 'Bought') AND status is 'Open' = this is STO (sell to open).",
-        "  On Robinhood: if the order shows 'Sold' AND status is 'Closed' = this is STC (sell to close).",
-        "  On Robinhood: if the order shows 'Bought' AND status is 'Open' = this is BTO (buy to open).",
-        "  On Robinhood: if the order shows 'Bought' AND status is 'Closed' = this is BTC (buy to close).",
-        "  Look for the word 'Sold' or 'Bought' at the top of the fill confirmation — this is the key signal.",
+        "  ROBINHOOD SPECIFIC FORMAT:",
+        "  Robinhood fill confirmations show: action word ('Buy' or 'Sell') + option description + 'Position effect: Open or Closed'",
+        "  Example STO: 'Sell NVDA $250 Call 6/5' + 'Position effect: Open' + 'Est credit' = STO, action=entry, order_type=STO",
+        "  Example BTO: 'Buy NVDA $250 Call 6/5' + 'Position effect: Open' + 'Est debit' = BTO, action=entry, order_type=BTO",
+        "  Example STC: 'Sell NVDA $250 Call 6/5' + 'Position effect: Close' + 'Est debit' = STC, action=exit, order_type=STC",
+        "  Example BTC: 'Buy NVDA $250 Call 6/5' + 'Position effect: Close' + 'Est credit' = BTC, action=exit, order_type=BTC",
+        "  KEY RULE: 'Sell' + 'Position effect: Open' = STO (selling to open new position = put/call sell)",
+        "  KEY RULE: 'Buy' + 'Position effect: Open' = BTO (buying to open new position)",
+        "  KEY RULE: 'Position effect: Open' means NEW position, 'Position effect: Close' means CLOSING position",
+        "  The filled price comes from 'Filled quantity: X contracts at $Y.YY' — use Y.YY as the price",
+        "  'Est credit' = premium received (selling). 'Est debit' or 'Total cost' = premium paid (buying).",
+        "  BTC example: 'Buy NVDA $250 Call 6/5' + 'Position effect: Close' + 'Total cost' + 'Realized profit' = BTC, action=exit, order_type=BTC",
+        "  If 'Realized profit' appears, extract it as realized_pnl (e.g. +374.00 or -150.00)",
+        "  realized_pnl should be a number — positive for profit, negative for loss.",
         "  date and time must come from Filled timestamp on screen.",
         "  time format must be 10:34AM or 2:30PM with no space before AM/PM.",
         "  strike is critical — look carefully for the strike price number (e.g. 105, 460, 130).",
@@ -1599,8 +1608,13 @@ def handle_trade_photo(photo_list: list, caption: str, reply_chat_id: str):
                     reply_chat_id
                 )
                 return
-            pnl       = result.get("pnl_total", 0) or 0
-            pct       = result.get("pnl_pct", 0) or 0
+            # Use realized_pnl from screenshot if available (more accurate than calculated)
+            rh_pnl = data.get("realized_pnl")
+            pnl    = float(rh_pnl) if rh_pnl else (result.get("pnl_total", 0) or 0)
+            pct    = result.get("pnl_pct", 0) or 0
+            if rh_pnl:
+                # Update stored P&L with Robinhood's figure
+                result["pnl_total"] = pnl
             closing   = result.get("contracts", contracts)
             remaining = result.get("remaining", 0)
             label     = "WIN" if pnl > 0 else "LOSS"
