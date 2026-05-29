@@ -1320,6 +1320,30 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
         if start_i >= 0 and end_i > start_i:
             raw = raw[start_i:end_i]
         data = json.loads(raw)
+
+        # Post-parse: fix order_type using raw response text (more reliable than JSON field)
+        raw_lower = raw.lower()
+        full_lower = (response_text or "").lower()
+        # Check for Position effect indicators in full response
+        has_close   = "position effect: close" in full_lower or "position effect\": \"close" in full_lower or '"position_effect": "close"' in full_lower
+        has_open    = "position effect: open" in full_lower or "position effect\": \"open" in full_lower or '"position_effect": "open"' in full_lower
+        has_buy     = full_lower.strip().startswith("buy ") or '"action_word": "buy"' in full_lower or full_lower.count('"buy"') > 0
+        has_sell    = full_lower.strip().startswith("sell ") or '"action_word": "sell"' in full_lower
+
+        ot = data.get("order_type","").upper()
+        if has_close and ot in ("BTO",""):
+            data["order_type"] = "BTC"
+            data["action"]     = "exit"
+            print("[PHOTO] Corrected BTO→BTC (Position effect: Close detected in response)")
+        elif has_close and ot in ("STO",""):
+            data["order_type"] = "STC"
+            data["action"]     = "exit"
+            print("[PHOTO] Corrected STO→STC (Position effect: Close detected in response)")
+        elif has_open and ot in ("STC","BTC",""):
+            data["order_type"] = "STO" if has_sell else "BTO"
+            data["action"]     = "entry"
+            print(f"[PHOTO] Corrected to {data['order_type']} (Position effect: Open detected)")
+
         print("[PHOTO] Parsed: " + str(data))
         return data
     except Exception as e:
