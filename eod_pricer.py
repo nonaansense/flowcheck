@@ -354,6 +354,30 @@ def update_eod_prices(send_sms_fn=None):
             else:
                 print(f"[EOD PRICER] No price for {ticker} {strike} — skipped")
 
+    # Use Bullflow peakReturn API for closed trades that have an OCC symbol
+    bf_key = os.environ.get("BULLFLOW_API_KEY","")
+    if bf_key:
+        try:
+            from bullflow_stream import get_peak_return
+            for t in journal.get("closed",[]):
+                occ = t.get("occ_symbol","")
+                entry = float(t.get("entry_price",0) or 0)
+                ts    = t.get("flow_timestamp") or t.get("timestamp",0)
+                if occ and entry > 0 and ts:
+                    peak_data = get_peak_return(occ, entry, float(ts))
+                    if peak_data:
+                        peak_pct = float(peak_data.get("peakPercentReturnSinceTimestamp",0))
+                        peak_px  = float(peak_data.get("peakPriceSinceTimestamp",0))
+                        t["peak_pct"]   = round(peak_pct, 1)
+                        t["peak_price"] = round(peak_px, 2)
+                        exit_p = t.get("exit_price")
+                        if exit_p and entry > 0:
+                            exit_pct = ((float(exit_p) - entry) / entry) * 100
+                            t["left_on_table"] = round(peak_pct - exit_pct, 1)
+                        print(f"[EOD] Bullflow peak: {t.get('ticker')} peak=+{peak_pct}%")
+        except Exception as _bfe:
+            print(f"[EOD] Bullflow peak error: {_bfe}")
+
     # Recalculate peak/max_dd/left_on_table for all trades with price history
     for bucket in ("trades", "closed"):
         for t in journal.get(bucket, []):

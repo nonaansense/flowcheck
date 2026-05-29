@@ -301,8 +301,21 @@ async def startup():
                           "interval", minutes=30, id="ifttt_watchdog")
         scheduler.start()
         print("[SCHEDULER] Started: all jobs running")
-    except Exception as e:
-        print(f"[SCHEDULER] Warning: {e}")
+
+    except Exception as _sch_e:
+        print(f'[SCHEDULER] Warning: {_sch_e}')
+
+    # Start Bullflow SSE stream if configured
+    try:
+        flow_source = os.environ.get("FLOW_SOURCE","flowgod").lower()
+        if flow_source == "bullflow":
+            from bullflow_stream import start_stream_thread
+            start_stream_thread(process_alert, send_sms)
+            print("[STARTUP] Bullflow SSE stream started")
+        else:
+            print(f"[STARTUP] Flow source: {flow_source} (FlowGod/IFTTT mode)")
+    except Exception as _be:
+        print(f"[STARTUP] Bullflow stream error: {_be}")
 
 # ── SMS builder ───────────────────────────────────────────────────────
 def calc_exit_target(final_score: int, data: dict) -> dict:
@@ -1284,6 +1297,27 @@ async def test_tasty():
     """Test Tastytrade API connection."""
     from tasty_pricer import test_connection
     return {"status": test_connection()}
+
+@app.get("/test-bullflow")
+async def test_bullflow():
+    """Test Bullflow API connection."""
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        return {"status": "❌ BULLFLOW_API_KEY not set"}
+    try:
+        import requests as _req
+        r = _req.get(
+            f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}",
+            timeout=8
+        )
+        if r.status_code == 200:
+            data  = r.json()
+            count = data.get("count",0)
+            names = [a.get("alertName","") for a in data.get("alerts",[])]
+            return {"status": "✅ Connected", "custom_alerts": count, "alerts": names}
+        return {"status": f"❌ HTTP {r.status_code}", "detail": r.text[:200]}
+    except Exception as e:
+        return {"status": f"❌ Error: {str(e)}"}
 
 @app.get("/test-tradier")
 async def test_tradier():

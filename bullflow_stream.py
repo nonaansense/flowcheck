@@ -1,0 +1,321 @@
+"""
+Bullflow SSE streaming client.
+Connects to https://api.bullflow.io/v1/streaming/alerts and processes
+real-time flow alerts, feeding them into FlowCheck's process_alert pipeline.
+"""
+import os
+import json
+import time
+import threading
+import requests
+from datetime import datetime, date
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
+
+def parse_occ_symbol(sym: str) -> dict | None:
+    """
+    Parse OCC option symbol: O:TICKER[YYMMDD][C/P][STRIKE*1000 padded 8 digits]
+    Example: O:AMD251205P00205000 → ticker=AMD exp=12/05/25 put strike=205.0
+    """
+    try:
+        if sym.startswith("O:"):
+            sym = sym[2:]
+        # Find where the date starts (6 digits)
+        import re
+        m = re.match(r'^([A-Z]+)(\d{6})([CP])(\d{8})$', sym)
+        if not m:
+            return None
+        ticker   = m.group(1)
+        date_str = m.group(2)   # YYMMDD
+        cp       = m.group(3)   # C or P
+        strike_s = m.group(4)   # 8 digits, strike * 1000
+
+        # Parse date
+        yy, mm, dd_s = int(date_str[:2]), int(date_str[2:4]), int(date_str[4:])
+        year   = 2000 + yy
+        expiry = f"{mm:02d}/{dd_s:02d}/{str(year)[2:]}"  # MM/DD/YY
+
+        # Parse strike
+        strike = float(strike_s) / 1000.0
+
+        # DTE
+        try:
+            exp_dt = date(year, mm, dd_s)
+            dte    = (exp_dt - date.today()).days
+        except:
+            dte = 30
+
+        return {
+            "ticker":      ticker,
+            "strike":      str(int(strike) if strike == int(strike) else strike),
+            "option_type": "call" if cp == "C" else "put",
+            "expiry":      expiry,
+            "dte":         dte,
+            "occ_symbol":  sym,
+        }
+    except Exception as e:
+        print(f"[BULLFLOW] OCC parse error for {sym}: {e}")
+        return None
+
+def build_trade_from_alert(alert: dict) -> dict | None:
+    """Convert Bullflow alert payload to FlowCheck trade dict."""
+    sym     = alert.get("symbol","")
+    parsed  = parse_occ_symbol(sym)
+    if not parsed:
+        print(f"[BULLFLOW] Could not parse symbol: {sym}")
+        return None
+
+    premium  = float(alert.get("alertPremium", 0) or 0)
+    fill_px  = float(alert.get("averageFillPrice", 0) or 0)
+    ts       = alert.get("timestamp", time.time())
+    alert_nm = alert.get("alertName","")
+    alert_tp = alert.get("alertType","algo")
+
+    # Map Bullflow alert names to fill types
+    fill_type = "UNKNOWN"
+    nm_lower  = alert_nm.lower()
+    if "ask" in nm_lower or "urgent" in nm_lower or "sweep" in nm_lower:
+        fill_type = "FULL_ASK"
+    elif "bullflow" in nm_lower or "sizable" in nm_lower or "repeater" in nm_lower:
+        fill_type = "MOSTLY_ASK"
+    elif "bid" in nm_lower:
+        fill_type = "MOSTLY_BID"
+
+    # Is sweep?
+    is_sweep = any(w in nm_lower for w in ["sweep","urgent","sizable"])
+
+    # Build trade dict compatible with FlowCheck pipeline
+    trade = {
+        **parsed,
+        "premium":     premium,
+        "fill_type":   fill_type,
+        "is_sweep":    is_sweep,
+        "alert_name":  alert_nm,
+        "alert_type":  alert_tp,
+        "source":      "bullflow",
+        "timestamp":   ts,
+    }
+
+    # Estimate contracts from premium and fill price
+    if fill_px > 0 and premium > 0:
+        est_contracts = int(premium / (fill_px * 100))
+        trade["estimated_contracts"] = est_contracts
+
+    print(f"[BULLFLOW] Parsed: {parsed['ticker']} {parsed['strike']}"
+          f"{parsed['option_type'][0].upper()} {parsed['expiry']} "
+          f"${premium:,.0f} {fill_type} [{alert_nm}]")
+    return trade
+
+def get_peak_return(occ_symbol: str, entry_price: float, trade_timestamp: float) -> dict | None:
+    """
+    Fetch peak return for a closed/open trade from Bullflow peakReturn endpoint.
+    Returns {peakPriceSinceTimestamp, peakPercentReturnSinceTimestamp} or None.
+    """
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        return None
+    try:
+        r = requests.get(
+            "https://api.bullflow.io/v1/data/peakReturn",
+            params={
+                "key":             key,
+                "sym":             f"O:{occ_symbol}" if not occ_symbol.startswith("O:") else occ_symbol,
+                "old_price":       entry_price,
+                "trade_timestamp": int(trade_timestamp),
+            },
+            timeout=15
+        )
+        if r.status_code == 200:
+            return r.json()
+        print(f"[BULLFLOW] peakReturn {r.status_code} for {occ_symbol}")
+    except Exception as e:
+        print(f"[BULLFLOW] peakReturn error: {e}")
+    return None
+
+def create_custom_alert(name: str, filters: dict) -> dict | None:
+    """Create a custom alert on Bullflow to pre-filter flows."""
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        return None
+    try:
+        payload = {"name": name, **filters}
+        r = requests.post(
+            f"https://api.bullflow.io/v1/alerts/create-alert?key={key}",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json()
+        print(f"[BULLFLOW] create_alert error {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[BULLFLOW] create_alert error: {e}")
+    return None
+
+def setup_flowcheck_filters():
+    """
+    Create FlowCheck's custom alert filters on Bullflow.
+    Called once on startup. Filters match FlowGod-style high conviction flows.
+    """
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        return
+
+    # Check existing alerts first
+    try:
+        r = requests.get(
+            f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}",
+            timeout=10
+        )
+        if r.status_code == 200:
+            existing = r.json().get("alerts",[])
+            names    = [a.get("alertName","") for a in existing]
+            if any("FlowCheck" in n for n in names):
+                print(f"[BULLFLOW] FlowCheck custom alerts already exist: {names}")
+                return
+    except:
+        pass
+
+    # Get filter thresholds from env
+    min_premium = int(os.environ.get("FILTER_MIN_PREMIUM", 150000))
+    min_dte     = int(os.environ.get("FILTER_MIN_DTE", 7))
+    max_dte     = int(os.environ.get("FILTER_MAX_DTE", 90))
+    max_otm     = float(os.environ.get("FILTER_MAX_OTM", 20.0))
+
+    filters = {
+        "premiumMin": min_premium,
+        "dteMin":     min_dte,
+        "dteMax":     max_dte,
+        "otmPercentMin": -max_otm,  # negative = ITM side
+        "otmPercentMax": max_otm,
+        "quickFilters": ["Ask", "Sweeps", "Unusual"],
+        "includeBidSide": False,
+        "includeMid":     False,
+    }
+
+    result = create_custom_alert("FlowCheck High Conviction", filters)
+    if result:
+        print(f"[BULLFLOW] Created custom alert: {result}")
+    else:
+        print("[BULLFLOW] Could not create custom alert — using all algo alerts")
+
+def stream_alerts(process_fn, send_sms_fn=None):
+    """
+    Connect to Bullflow SSE stream and process alerts.
+    process_fn(tweet_text, tweet_url, pre_parsed_trade) — same signature as process_alert.
+    Runs forever with auto-reconnect.
+    """
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        print("[BULLFLOW] No BULLFLOW_API_KEY — stream not started")
+        return
+
+    # Setup custom filters once
+    try:
+        setup_flowcheck_filters()
+    except Exception as e:
+        print(f"[BULLFLOW] Filter setup error: {e}")
+
+    retry_delay = 5
+    while True:
+        try:
+            print(f"[BULLFLOW] Connecting to SSE stream...")
+            with requests.get(
+                "https://api.bullflow.io/v1/streaming/alerts",
+                params={"key": key},
+                stream=True,
+                timeout=(10, None),  # 10s connect, no read timeout
+            ) as resp:
+                resp.raise_for_status()
+                print("[BULLFLOW] Connected to live alert stream")
+                retry_delay = 5  # Reset on successful connect
+
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        msg   = json.loads(line[6:])
+                        event = msg.get("event","")
+
+                        if event == "init":
+                            print(f"[BULLFLOW] Stream initialized at {msg.get('startedAt','?')}")
+
+                        elif event == "heartbeat":
+                            pass  # Expected every 10s
+
+                        elif event == "alert":
+                            alert_id   = msg.get("id","")
+                            alert_data = msg.get("data",{})
+                            alert_type = alert_data.get("alertType","")
+                            alert_name = alert_data.get("alertName","")
+                            symbol     = alert_data.get("symbol","")
+                            premium    = alert_data.get("alertPremium",0)
+
+                            # Market hours check
+                            now_et = datetime.now(ET)
+                            if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30):
+                                print(f"[BULLFLOW] Pre-market alert skipped: {symbol}")
+                                continue
+                            if now_et.hour >= 16:
+                                print(f"[BULLFLOW] After-hours alert skipped: {symbol}")
+                                continue
+
+                            print(f"[BULLFLOW] Alert: {alert_id} {alert_type} {symbol} "
+                                  f"${premium:,.0f} [{alert_name}]")
+
+                            trade = build_trade_from_alert(alert_data)
+                            if not trade:
+                                continue
+
+                            # Build a synthetic tweet text for the pipeline
+                            tweet = (f"${trade['ticker']} - ${premium:,.0f} "
+                                    f"{trade['option_type'].title()} "
+                                    f"{trade['strike']} [{alert_name}] via Bullflow")
+
+                            # Feed into FlowCheck pipeline
+                            import asyncio
+                            try:
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    asyncio.ensure_future(process_fn(tweet, None, trade))
+                                else:
+                                    loop.run_until_complete(process_fn(tweet, None, trade))
+                            except Exception as pe:
+                                print(f"[BULLFLOW] process_alert error: {pe}")
+
+                    except json.JSONDecodeError:
+                        pass
+                    except Exception as e:
+                        print(f"[BULLFLOW] Line processing error: {e}")
+
+        except requests.RequestException as e:
+            print(f"[BULLFLOW] Stream error: {e} — reconnecting in {retry_delay}s")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+        except Exception as e:
+            print(f"[BULLFLOW] Unexpected error: {e} — reconnecting in {retry_delay}s")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+
+def start_stream_thread(process_fn, send_sms_fn=None):
+    """Start Bullflow SSE stream in a background thread."""
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        print("[BULLFLOW] No API key — stream disabled")
+        return None
+    flow_source = os.environ.get("FLOW_SOURCE","flowgod").lower()
+    if flow_source != "bullflow":
+        print(f"[BULLFLOW] FLOW_SOURCE={flow_source} — stream disabled (set to 'bullflow' to enable)")
+        return None
+    t = threading.Thread(
+        target=stream_alerts,
+        args=(process_fn, send_sms_fn),
+        daemon=True,
+        name="bullflow-stream"
+    )
+    t.start()
+    print("[BULLFLOW] Stream thread started")
+    return t
