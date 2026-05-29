@@ -232,31 +232,12 @@ def setup_flowcheck_filters():
     ]
     exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","true").lower() != "false"
 
+    # PREMIUM ONLY — no quickFilters (AND logic kills matches per Bullflow support)
+    # FlowCheck handles all quality filtering locally
     filters = {
-        "premiumMin":    min_premium,
-        "dteMin":        min_dte,
-        "dteMax":        max_dte,
-        "otmPercentMin": -max_otm,
-        "otmPercentMax": max_otm,
-        # Match FlowGod quality — most restrictive filters
-        # Urgent = rapid repeating sweeps (highest conviction)
-        # Bullflow = aggressive repeating (high conviction)
-        # Sizable = large unusual (>$500K)
-        # Vol>OI = abnormal volume vs open interest
-        # Vol/OI filters — use Bullflow's built-in detection
-        # "Unusual"     = single trade size > OI (strongest single-trade signal)
-        # "Vol>OI"      = cumulative volume crossed above OI today
-        # "Rising Vol"  = first trade where vol > OI (early detection)
-        # "Urgent"      = rapid repeat sweeps (high conviction)
-        # "Bullflow"    = aggressive repeat trades (proprietary criteria)
-        "quickFilters":  ["Unusual", "Vol>OI", "Rising Vol", "Urgent", "Bullflow"],
-        "includeBidSide":  True,   # Keep — put sells at bid = bullish signal
-        "includeAskSide":  True,
-        "includeMid":      False,
-        "includeSingles":  True,   # Keep singles — "Unusual" requires them
-        "includeMultiLeg": False,
-        "includeSplits":   False
+        "premiumMin": min_premium,
     }
+    print(f"[BULLFLOW] Filter payload: premiumMin={min_premium}")
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
 
