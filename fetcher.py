@@ -728,26 +728,29 @@ def fetch_sector_conditions(ticker: str) -> dict:
 def calc_fill_aggression(trade: dict) -> dict:
     # If fill_type already set (from Bullflow/test/pre-parsed), use it directly
     preset = (trade.get("fill_type") or "").upper()
-    if preset in ("FULL_ASK","MOSTLY_ASK","MIXED","MOSTLY_BID","AT_ASK","ABOVE_ASK"):
+    if preset in ("FULL_ASK","MOSTLY_ASK","MIXED","MOSTLY_BID","AT_ASK","ABOVE_ASK","PUT_SELL_BID"):
         emoji_map = {
-            "FULL_ASK": "🚨", "ABOVE_ASK": "🚨", "AT_ASK": "🚨",
-            "MOSTLY_ASK": "✅", "MIXED": "⚠️", "MOSTLY_BID": "❌"
+            "FULL_ASK":    "🚨", "ABOVE_ASK": "🚨", "AT_ASK": "🚨",
+            "MOSTLY_ASK":  "✅", "MIXED": "⚠️", "MOSTLY_BID": "❌",
+            "PUT_SELL_BID": "✅",  # Put selling = bullish conviction
         }
         label_map = {
-            "FULL_ASK": "FULL_ASK — maximum aggression",
-            "ABOVE_ASK": "ABOVE ASK — exceptional aggression",
-            "AT_ASK": "AT ASK — aggressive buyer",
-            "MOSTLY_ASK": "MOSTLY ASK — aggressive buyer",
-            "MIXED": "MIXED fill — buyer less urgent",
-            "MOSTLY_BID": "MOSTLY BID — passive, possible hedge",
+            "FULL_ASK":    "FULL_ASK — maximum aggression",
+            "ABOVE_ASK":   "ABOVE ASK — exceptional aggression",
+            "AT_ASK":      "AT ASK — aggressive buyer",
+            "MOSTLY_ASK":  "MOSTLY ASK — aggressive buyer",
+            "MIXED":       "MIXED fill — moderate conviction",
+            "MOSTLY_BID":  "MOSTLY BID — passive, possible hedge",
+            "PUT_SELL_BID":"PUT SELL at bid — bullish conviction, collecting premium",
         }
         fill_type = preset if preset != "AT_ASK" else "FULL_ASK"
         return {
-            "fill_type":  fill_type,
-            "fill_emoji": emoji_map.get(preset, "❓"),
-            "fill_label": label_map.get(preset, preset),
-            "ask_pct":    100 if "ASK" in preset else 0,
-            "multi_pct":  trade.get("multi_pct", 0),
+            "fill_type":    fill_type,
+            "fill_emoji":   emoji_map.get(preset, "❓"),
+            "fill_label":   label_map.get(preset, preset),
+            "ask_pct":      100 if "ASK" in preset else 0,
+            "multi_pct":    trade.get("multi_pct", 0),
+            "is_put_sell":  preset == "PUT_SELL_BID",
         }
 
     ask_size  = trade.get("ask_size") or 0
