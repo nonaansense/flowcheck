@@ -1298,6 +1298,61 @@ async def test_tasty():
     from tasty_pricer import test_connection
     return {"status": test_connection()}
 
+@app.get("/sync-bullflow-filters")
+async def sync_bullflow_filters():
+    """Delete existing FlowCheck custom alerts on Bullflow and recreate with current Railway filter settings."""
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        return {"status": "❌ BULLFLOW_API_KEY not set"}
+    try:
+        import requests as _req
+
+        # 1. Get existing alerts
+        r = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
+        if r.status_code != 200:
+            return {"status": f"❌ Could not fetch alerts: {r.status_code}"}
+        existing = r.json().get("alerts", [])
+
+        # 2. Delete FlowCheck alerts
+        deleted = []
+        for alert in existing:
+            if "FlowCheck" in alert.get("alertName",""):
+                alert_id = alert.get("id")
+                dr = _req.delete(
+                    f"https://api.bullflow.io/v1/alerts/{alert_id}?key={key}",
+                    timeout=8
+                )
+                if dr.status_code in (200, 204):
+                    deleted.append(alert.get("alertName"))
+                    print(f"[BULLFLOW] Deleted alert: {alert.get('alertName')}")
+                else:
+                    # Try POST delete if DELETE not supported
+                    print(f"[BULLFLOW] DELETE {dr.status_code} — trying via create-alert")
+
+        # 3. Recreate with current settings
+        from bullflow_stream import setup_flowcheck_filters
+        # Reset so it recreates
+        setup_flowcheck_filters()
+
+        # 4. Verify
+        r2 = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
+        new_alerts = r2.json().get("alerts",[]) if r2.status_code == 200 else []
+        names = [a.get("alertName") for a in new_alerts]
+
+        return {
+            "deleted": deleted,
+            "current_alerts": names,
+            "filters": {
+                "min_premium": os.environ.get("FILTER_MIN_PREMIUM","150000"),
+                "min_dte":     os.environ.get("FILTER_MIN_DTE","7"),
+                "max_dte":     os.environ.get("FILTER_MAX_DTE","90"),
+                "max_otm":     os.environ.get("FILTER_MAX_OTM","20"),
+                "exclude_etf": os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","false"),
+            }
+        }
+    except Exception as e:
+        return {"status": f"❌ Error: {str(e)}"}
+
 @app.get("/test-bullflow")
 async def test_bullflow():
     """Test Bullflow API connection."""
