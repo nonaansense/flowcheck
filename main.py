@@ -305,21 +305,20 @@ async def startup():
     except Exception as _sch_e:
         print(f'[SCHEDULER] Warning: {_sch_e}')
 
-    # Start Bullflow stream if API key present (runs alongside FlowGod if both configured)
+    # Start Bullflow SSE stream if configured (only once)
     try:
-        import threading
-        bf_key       = os.environ.get("BULLFLOW_API_KEY","")
-        flow_source  = os.environ.get("FLOW_SOURCE","flowgod").lower()
-        dual_mode    = os.environ.get("DUAL_FLOW_MODE","").lower() == "true"
-        bf_enabled   = bf_key and (flow_source == "bullflow" or dual_mode)
-        already_running = any(t.name == "bullflow-stream" for t in threading.enumerate())
-        if bf_enabled and not already_running:
-            from bullflow_stream import start_stream_thread
-            start_stream_thread(process_alert, send_sms)
-            mode_label = "DUAL MODE (FlowGod + Bullflow)" if dual_mode else "Bullflow only"
-            print(f"[STARTUP] {mode_label} — Bullflow SSE stream started")
-        elif not bf_enabled:
-            print(f"[STARTUP] FlowGod/IFTTT mode only")
+        flow_source = os.environ.get("FLOW_SOURCE","flowgod").lower()
+        if flow_source == "bullflow":
+            import threading
+            already_running = any(t.name == "bullflow-stream" for t in threading.enumerate())
+            if not already_running:
+                from bullflow_stream import start_stream_thread
+                start_stream_thread(process_alert, send_sms)
+                print("[STARTUP] Bullflow SSE stream started")
+            else:
+                print("[STARTUP] Bullflow stream already running — skipping duplicate")
+        else:
+            print(f"[STARTUP] Flow source: {flow_source} (FlowGod/IFTTT mode)")
     except Exception as _be:
         print(f"[STARTUP] Bullflow stream error: {_be}")
 
@@ -501,16 +500,6 @@ def build_sms(trade: dict, data: dict, result: dict,
         lines.append(f"⚠️ {ticker} alerted {pattern['count']}x today")
 
     # Analysis lines
-    # Cross-source confirmation badge
-    bf_conf = data.get("bullflow_confirmation")
-    if bf_conf:
-        bf_v = bf_conf.get("verdict","")
-        bf_s = bf_conf.get("score","?")
-        bf_t = bf_conf.get("time","")
-        conf_emoji = "🔥" if bf_v == "TRADE" else "✅"
-        time_note  = f" at {bf_t}" if bf_t else ""
-        lines.append(f"{conf_emoji} CONFIRMED by Bullflow{time_note} — scored {bf_s}/7 {bf_v}")
-
     if one_liner:
         lines.append(f"→ {one_liner}")
     if top_imp:
@@ -808,41 +797,6 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                 print(f"[FILTER] {ticker} OI {oi_val} < {min_oi} minimum — skipping")
                 return
 
-        # Cross-source confirmation — check both directions
-        if trade.get("source") in ("flowgod", "bullflow"):
-            try:
-                ticker_key  = trade.get("ticker","").upper()
-                strike_key  = str(trade.get("strike",""))
-                expiry_key  = trade.get("expiry","")
-                opt_key     = (trade.get("option_type","") or "")[:1].upper()
-                now_ts      = time.time()
-                cutoff      = now_ts - 86400  # Last 24 hours
-
-                # Search recent analyses for matching Bullflow alert
-                bf_match = None
-                for prev in analyses:
-                    prev_trade = prev.get("trade",{})
-                    opposite   = "bullflow" if trade.get("source") == "flowgod" else "flowgod"
-                    if (prev_trade.get("source") == opposite and
-                            prev_trade.get("ticker","").upper() == ticker_key and
-                            str(prev_trade.get("strike","")) == strike_key and
-                            float(prev.get("timestamp", 0) or 0) > cutoff):
-                        bf_match = prev
-                        break
-
-                if bf_match:
-                    bf_score   = bf_match.get("result",{}).get("final_score","?")
-                    bf_verdict = bf_match.get("result",{}).get("verdict","?")
-                    bf_time    = bf_match.get("data",{}).get("flow_time","")
-                    data["bullflow_confirmation"] = {
-                        "score":   bf_score,
-                        "verdict": bf_verdict,
-                        "time":    bf_time,
-                    }
-                    print(f"[CONFIRM] FlowGod {ticker_key} {strike_key} matches Bullflow alert (score={bf_score})")
-            except Exception as _ce:
-                print(f"[CONFIRM] Error: {_ce}")
-
         # Fetch support/resistance levels
         if data.get("stock_price") and trade.get("option_type"):
             try:
@@ -890,17 +844,10 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
 
         # For Bullflow: only send TRADE to Telegram — WATCH/SKIP stored silently
         # For FlowGod: send all verdicts (curated feed, low volume)
-        force_send    = bool(trade.get("_force_send"))
-        dual_mode     = os.environ.get("DUAL_FLOW_MODE","").lower() == "true"
-        # Bullflow mode: only send TRADE to avoid Telegram flood
-        # FlowGod mode: send all verdicts (curated feed, already filtered)
-        is_bullflow   = source == "bullflow"
-        bullflow_mode = is_bullflow and not force_send
-        min_score_alert = float(os.environ.get("BULLFLOW_MIN_SCORE","6.0")) if bullflow_mode else 0
-        should_send   = (force_send or
-                        not is_bullflow or           # FlowGod always sends
-                        verdict_val == "TRADE" or    # TRADE always sends
-                        final_score >= min_score_alert)
+        force_send       = bool(trade.get("_force_send"))
+        bullflow_mode    = (source == "bullflow" or os.environ.get("FLOW_SOURCE","").lower() == "bullflow") and not force_send
+        min_score_alert  = float(os.environ.get("BULLFLOW_MIN_SCORE","6.0")) if bullflow_mode else 0
+        should_send      = force_send or verdict_val == "TRADE" or (not bullflow_mode) or final_score >= min_score_alert
 
         print(f"[SMS] Routing: verdict='{verdict_val}' score={final_score} source={source} send={should_send}")
         success = False
@@ -1422,25 +1369,54 @@ async def test_tasty():
 
 @app.get("/sync-bullflow-filters")
 async def sync_bullflow_filters():
-    """Recreate Bullflow custom alert with current Railway filter settings."""
+    """Delete existing FlowCheck custom alerts on Bullflow and recreate with current Railway filter settings."""
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        return {"status": "❌ BULLFLOW_API_KEY not set"}
     try:
-        import os as _os
-        _os.environ["BULLFLOW_FORCE_RECREATE"] = "true"
-        from bullflow_stream import setup_flowcheck_filters
-        setup_flowcheck_filters()
-        _os.environ.pop("BULLFLOW_FORCE_RECREATE", None)
-        key = _os.environ.get("BULLFLOW_API_KEY","")
         import requests as _req
+
+        # 1. Get existing alerts
         r = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
-        alerts = r.json().get("alerts",[]) if r.status_code == 200 else []
+        if r.status_code != 200:
+            return {"status": f"❌ Could not fetch alerts: {r.status_code}"}
+        existing = r.json().get("alerts", [])
+
+        # 2. Delete FlowCheck alerts
+        deleted = []
+        for alert in existing:
+            if "FlowCheck" in alert.get("alertName",""):
+                alert_id = alert.get("id")
+                dr = _req.delete(
+                    f"https://api.bullflow.io/v1/alerts/{alert_id}?key={key}",
+                    timeout=8
+                )
+                if dr.status_code in (200, 204):
+                    deleted.append(alert.get("alertName"))
+                    print(f"[BULLFLOW] Deleted alert: {alert.get('alertName')}")
+                else:
+                    # Try POST delete if DELETE not supported
+                    print(f"[BULLFLOW] DELETE {dr.status_code} — trying via create-alert")
+
+        # 3. Recreate with current settings
+        from bullflow_stream import setup_flowcheck_filters
+        # Reset so it recreates
+        setup_flowcheck_filters()
+
+        # 4. Verify
+        r2 = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
+        new_alerts = r2.json().get("alerts",[]) if r2.status_code == 200 else []
+        names = [a.get("alertName") for a in new_alerts]
+
         return {
-            "status": "✅ Done",
-            "custom_alerts": len(alerts),
-            "alerts": [a.get("alertName") for a in alerts],
+            "deleted": deleted,
+            "current_alerts": names,
             "filters": {
-                "min_premium": _os.environ.get("FILTER_MIN_PREMIUM","500000"),
-                "min_dte":     _os.environ.get("FILTER_MIN_DTE","7"),
-                "max_dte":     _os.environ.get("FILTER_MAX_DTE","90"),
+                "min_premium": os.environ.get("FILTER_MIN_PREMIUM","150000"),
+                "min_dte":     os.environ.get("FILTER_MIN_DTE","7"),
+                "max_dte":     os.environ.get("FILTER_MAX_DTE","90"),
+                "max_otm":     os.environ.get("FILTER_MAX_OTM","20"),
+                "exclude_etf": os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","false"),
             }
         }
     except Exception as e:
