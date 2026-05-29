@@ -177,24 +177,9 @@ def setup_flowcheck_filters():
     if not key:
         return
 
-    # Check existing alerts first
-    try:
-        r = requests.get(
-            f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}",
-            timeout=10
-        )
-        if r.status_code == 200:
-            existing = r.json().get("alerts",[])
-            names    = [a.get("alertName","") for a in existing]
-            if any("FlowCheck" in n for n in names):
-                # Check if filters need updating
-                force_recreate = os.environ.get("BULLFLOW_FORCE_RECREATE","").lower() == "true"
-                if not force_recreate:
-                    print(f"[BULLFLOW] FlowCheck custom alerts already exist: {names}")
-                    return
-                print(f"[BULLFLOW] Force recreating custom alerts...")
-    except:
-        pass
+    # Custom alerts not needed — we filter algo alerts directly in FlowCheck
+    print("[BULLFLOW] Using algo alerts only — no custom alert needed")
+    return
 
     # Get filter thresholds from env
     min_premium = int(os.environ.get("FILTER_MIN_PREMIUM", 150000))
@@ -303,6 +288,11 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             alert_name = alert_data.get("alertName","")
                             symbol     = alert_data.get("symbol","")
                             premium    = alert_data.get("alertPremium",0)
+
+                            # Skip custom alerts — we process algo alerts only
+                            # Custom alerts are redundant since algo alerts cover same trades
+                            if alert_type == "custom":
+                                continue
 
                             # Market hours check
                             now_et = datetime.now(ET)
