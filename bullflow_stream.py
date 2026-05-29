@@ -345,8 +345,9 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                 print(f"[BULLFLOW] Hedge instrument skip: {symbol}")
                                 continue
 
-                            # Skip Grenade trades (very short DTE lottery tickets)
-                            if "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
+                            # Skip Grenade trades unless ALLOW_GRENADES=true
+                            allow_grenades = os.environ.get("ALLOW_GRENADES","").lower() == "true"
+                            if not allow_grenades and "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
                                 print(f"[BULLFLOW] Grenade skip (DTE≤7): {symbol}")
                                 continue
 
