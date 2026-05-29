@@ -73,19 +73,23 @@ def send_premarket_summary(analyses: list):
             emoji      = "✅" if verdict == "TRADE" else "👀"
 
             oi_str = ""
-            if ticker and strike and expiry and orig_oi > 0:
+            print(f"[PREMARKET OI] {ticker} {strike} expiry={expiry} orig_oi={orig_oi}")
+            if ticker and strike and expiry:  # Fetch OI even without baseline
                 try:
                     from fetcher import get_option_chain_oi
                     current_oi = get_option_chain_oi(ticker, strike, opt_type, expiry)
                     if current_oi is not None:
-                        oi_change = current_oi - orig_oi
-                        oi_pct    = round((oi_change / orig_oi) * 100, 1) if orig_oi > 0 else 0
-                        if oi_change < -orig_oi * 0.20:
-                            oi_str = f" ⚠️ OI -{abs(oi_pct)}% ({orig_oi}→{current_oi}) likely day trade"
-                        elif oi_change > 0:
-                            oi_str = f" ✅ OI +{oi_pct}% ({orig_oi}→{current_oi}) held overnight"
+                        if orig_oi > 0:
+                            oi_change = current_oi - orig_oi
+                            oi_pct    = round((oi_change / orig_oi) * 100, 1)
+                            if oi_change < -orig_oi * 0.20:
+                                oi_str = f" ⚠️ OI -{abs(oi_pct)}% ({orig_oi}→{current_oi}) likely day trade"
+                            elif oi_change > 0:
+                                oi_str = f" ✅ OI +{oi_pct}% ({orig_oi}→{current_oi}) held overnight"
+                            else:
+                                oi_str = f" OI unchanged ({current_oi})"
                         else:
-                            oi_str = f" OI unchanged ({current_oi})"
+                            oi_str = f" OI: {current_oi} (no baseline)"
                 except Exception as e:
                     print(f"[PREMARKET] OI check error for {ticker}: {e}")
 

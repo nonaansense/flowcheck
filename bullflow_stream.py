@@ -89,15 +89,27 @@ def build_trade_from_alert(alert: dict) -> dict | None:
     is_sweep = any(w in nm_lower for w in ["sweep","urgent","sizable"])
 
     # Build trade dict compatible with FlowCheck pipeline
+    # Map Bullflow alert names to Vol/OI signals for scorer
+    vol_oi_signal = 0.0
+    nm_up = alert_nm.upper()
+    if "UNUSUAL" in nm_up:     vol_oi_signal = 15.0  # Single trade > OI = massive
+    elif "RISING VOL" in nm_up: vol_oi_signal = 8.0   # First vol>OI crossing
+    elif "VOL>OI" in nm_up:    vol_oi_signal = 5.0   # Cumulative vol > OI
+    elif "URGENT" in nm_up:    vol_oi_signal = 6.0   # Rapid repeats
+    elif "BULLFLOW" in nm_up:  vol_oi_signal = 4.0   # Aggressive repeats
+    elif "SIZABLE" in nm_up:   vol_oi_signal = 3.0   # Large size
+
     trade = {
         **parsed,
-        "premium":     premium,
-        "fill_type":   fill_type,
-        "is_sweep":    is_sweep,
-        "alert_name":  alert_nm,
-        "alert_type":  alert_tp,
-        "source":      "bullflow",
-        "timestamp":   ts,
+        "premium":       premium,
+        "fill_type":     fill_type,
+        "is_sweep":      is_sweep,
+        "alert_name":    alert_nm,
+        "alert_type":    alert_tp,
+        "source":        "bullflow",
+        "timestamp":     ts,
+        "vol_oi_ratio":  vol_oi_signal,  # Estimated from alert type
+        "open_interest": int(premium / fill_px / 100) if fill_px > 0 else 0,
     }
 
     # Estimate contracts from premium and fill price
@@ -165,7 +177,7 @@ def setup_flowcheck_filters():
     if not key:
         return
 
-    # Check existing alerts first
+    # Check existing — only create if none exist
     try:
         r = requests.get(
             f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}",
@@ -173,16 +185,18 @@ def setup_flowcheck_filters():
         )
         if r.status_code == 200:
             existing = r.json().get("alerts",[])
-            names    = [a.get("alertName","") for a in existing]
-            if any("FlowCheck" in n for n in names):
-                # Check if filters need updating
-                force_recreate = os.environ.get("BULLFLOW_FORCE_RECREATE","").lower() == "true"
-                if not force_recreate:
-                    print(f"[BULLFLOW] FlowCheck custom alerts already exist: {names}")
-                    return
-                print(f"[BULLFLOW] Force recreating custom alerts...")
-    except:
-        pass
+            fc_alerts = [a for a in existing if "FlowCheck" in a.get("alertName","")]
+            force_recreate = os.environ.get("BULLFLOW_FORCE_RECREATE","").lower() == "true"
+            if fc_alerts and not force_recreate:
+                print(f"[BULLFLOW] Custom alert already exists ({len(fc_alerts)}) — skipping creation")
+                return
+            if len(fc_alerts) > 1:
+                print(f"[BULLFLOW] Warning: {len(fc_alerts)} duplicate alerts found — delete extras in Bullflow dashboard")
+                return
+    except Exception as e:
+        print(f"[BULLFLOW] Could not check existing alerts: {e}")
+
+    print("[BULLFLOW] Creating custom alert filter...")
 
     # Get filter thresholds from env
     min_premium = int(os.environ.get("FILTER_MIN_PREMIUM", 150000))
@@ -214,18 +228,26 @@ def setup_flowcheck_filters():
         # Bullflow = aggressive repeating (high conviction)
         # Sizable = large unusual (>$500K)
         # Vol>OI = abnormal volume vs open interest
-        "quickFilters":  ["Sweeps", "Unusual", "Vol>OI", "Urgent", "Bullflow"],
+        # Vol/OI filters — use Bullflow's built-in detection
+        # "Unusual"     = single trade size > OI (strongest single-trade signal)
+        # "Vol>OI"      = cumulative volume crossed above OI today
+        # "Rising Vol"  = first trade where vol > OI (early detection)
+        # "Urgent"      = rapid repeat sweeps (high conviction)
+        # "Bullflow"    = aggressive repeat trades (proprietary criteria)
+        "quickFilters":  ["Unusual", "Vol>OI", "Rising Vol", "Urgent", "Bullflow"],
         "includeBidSide":  True,   # Keep — put sells at bid = bullish signal
         "includeAskSide":  True,
         "includeMid":      False,
-        "includeSingles":  False,
+        "includeSingles":  True,   # Keep singles — "Unusual" requires them
         "includeMultiLeg": False,
         "includeSplits":   False
     }
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
 
-    result = create_custom_alert("FlowCheck High Conviction", filters)
+    # Remove name from filters dict if present to avoid duplicate
+    alert_name = filters.pop("name", "FlowCheck High Conviction")
+    result = create_custom_alert(alert_name, filters)
     if result:
         print(f"[BULLFLOW] Created custom alert: {result}")
     else:
@@ -323,8 +345,9 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                 print(f"[BULLFLOW] Hedge instrument skip: {symbol}")
                                 continue
 
-                            # Skip Grenade trades (very short DTE lottery tickets)
-                            if "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
+                            # Skip Grenade trades unless ALLOW_GRENADES=true
+                            allow_grenades = os.environ.get("ALLOW_GRENADES","").lower() == "true"
+                            if not allow_grenades and "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
                                 print(f"[BULLFLOW] Grenade skip (DTE≤7): {symbol}")
                                 continue
 
