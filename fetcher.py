@@ -1089,7 +1089,15 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
                 data["expiry_timing_label"] = f"{label}, {gap}d to expiry"
                 data["expiry_timing_emoji"] = emoji
             else:
-                if gap < 0:    data["expiry_timing_label"]=f"Expiry {abs(gap)}d BEFORE earnings — misses catalyst"; data["expiry_timing_emoji"]="❌"
+                if gap < 0:
+                    # For put sells, expiry before earnings is fine (theta decay)
+                    is_ps = data.get("fill_type","") == "PUT_SELL_BID"
+                    if is_ps:
+                        data["expiry_timing_label"] = f"Expiry {abs(gap)}d before earnings — theta decay in progress"
+                        data["expiry_timing_emoji"] = "✅"
+                    else:
+                        data["expiry_timing_label"] = f"Expiry {abs(gap)}d BEFORE earnings — misses catalyst"
+                        data["expiry_timing_emoji"] = "❌"
                 elif gap == 0: data["expiry_timing_label"]="Expiry SAME DAY as earnings";   data["expiry_timing_emoji"]="❌"
                 elif gap <= 4: data["expiry_timing_label"]=f"Expiry {gap}d after earnings — very tight"; data["expiry_timing_emoji"]="⚠️"
                 elif gap <= 14:data["expiry_timing_label"]=f"Expiry {gap}d after earnings — sweet spot"; data["expiry_timing_emoji"]="✅"
