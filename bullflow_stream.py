@@ -177,9 +177,9 @@ def setup_flowcheck_filters():
     if not key:
         return
 
-    # Custom alerts not needed — we filter algo alerts directly in FlowCheck
-    print("[BULLFLOW] Using algo alerts only — no custom alert needed")
-    return
+    # Create a simple premium-only custom alert — let FlowCheck do quality filtering
+    # Avoid complex quickFilters combinations that may not match anything
+    print("[BULLFLOW] Setting up custom alert filters...")
 
     # Get filter thresholds from env
     min_premium = int(os.environ.get("FILTER_MIN_PREMIUM", 150000))
@@ -288,11 +288,6 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             alert_name = alert_data.get("alertName","")
                             symbol     = alert_data.get("symbol","")
                             premium    = alert_data.get("alertPremium",0)
-
-                            # Skip custom alerts — we process algo alerts only
-                            # Custom alerts are redundant since algo alerts cover same trades
-                            if alert_type == "custom":
-                                continue
 
                             # Market hours check
                             now_et = datetime.now(ET)
