@@ -1259,6 +1259,8 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
         "  fees: trading commission/fee in dollars (e.g. 0.65)",
         "  reg_fees: regulatory fees shown separately (e.g. 0.02)",
         "  realized_pnl: realized profit/loss if shown (e.g. 374.00 for profit, -150.00 for loss)",
+        "  position_effect: exactly 'open' or 'close' from the Position effect field",
+        "  action_word: exactly 'buy' or 'sell' — the first action word shown (e.g. 'Buy NVDA' = 'buy', 'Sell NVDA' = 'sell')",
         "",
         "Rules:",
         "  BTO or buy-to-open = entry. STO or sell-to-open = entry (put sell). STC or sell-to-close = exit. BTC or buy-to-close = exit.",
@@ -1443,9 +1445,31 @@ def handle_trade_photo(photo_list: list, caption: str, reply_chat_id: str):
     date_str   = data.get("date","")
     time_str   = data.get("time","")
     confidence = data.get("confidence","medium")
-    order_type = data.get("order_type","")  # BTO/STO/STC/BTC
+    order_type     = data.get("order_type","")  # BTO/STO/STC/BTC
+    position_effect = data.get("position_effect","").lower()  # open/close
 
-    # Override action from order_type if present
+    # Post-parse correction using position_effect field
+    # Vision model sometimes gets order_type wrong — position_effect is more reliable
+    action_word = data.get("action_word","").lower()  # buy/sell from screenshot
+    if position_effect:
+        if "close" in position_effect:
+            # Closing a position
+            if action_word == "buy" or order_type in ("BTO",""):
+                order_type = "BTC"
+                print(f"[PHOTO] Corrected to BTC (Buy + Position effect: Close)")
+            elif action_word == "sell" or order_type in ("STO",""):
+                order_type = "STC"
+                print(f"[PHOTO] Corrected to STC (Sell + Position effect: Close)")
+        elif "open" in position_effect:
+            # Opening a position
+            if action_word == "sell" or order_type in ("STC",""):
+                order_type = "STO"
+                print(f"[PHOTO] Corrected to STO (Sell + Position effect: Open)")
+            elif action_word == "buy" or order_type in ("BTC",""):
+                order_type = "BTO"
+                print(f"[PHOTO] Corrected to BTO (Buy + Position effect: Open)")
+
+    # Set action from order_type
     if order_type in ("BTO","STO"):
         action = "entry"
     elif order_type in ("STC","BTC"):
