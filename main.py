@@ -822,11 +822,11 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                 bf_match = None
                 for prev in analyses:
                     prev_trade = prev.get("trade",{})
-                    opposite = "bullflow" if trade.get("source") == "flowgod" else "flowgod"
-                if (prev_trade.get("source") == opposite and
-                        prev_trade.get("ticker","").upper() == ticker_key and
-                        str(prev_trade.get("strike","")) == strike_key and
-                        float(prev.get("timestamp", 0) or 0) > cutoff):
+                    opposite   = "bullflow" if trade.get("source") == "flowgod" else "flowgod"
+                    if (prev_trade.get("source") == opposite and
+                            prev_trade.get("ticker","").upper() == ticker_key and
+                            str(prev_trade.get("strike","")) == strike_key and
+                            float(prev.get("timestamp", 0) or 0) > cutoff):
                         bf_match = prev
                         break
 
