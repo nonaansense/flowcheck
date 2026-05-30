@@ -282,6 +282,7 @@ def stream_alerts(process_fn, send_sms_fn=None):
     while True:
         try:
             print(f"[BULLFLOW] Connecting to SSE stream...")
+            time.sleep(1)  # Small delay to prevent duplicate connection race
             with requests.get(
                 "https://api.bullflow.io/v1/streaming/alerts",
                 params={"key": key},
@@ -401,11 +402,11 @@ def stream_alerts(process_fn, send_sms_fn=None):
         except requests.RequestException as e:
             print(f"[BULLFLOW] Stream error: {e} — reconnecting in {retry_delay}s")
             time.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+            retry_delay = min(retry_delay * 2, 120)  # Max 2 min between retries
         except Exception as e:
             print(f"[BULLFLOW] Unexpected error: {e} — reconnecting in {retry_delay}s")
             time.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+            retry_delay = min(retry_delay * 2, 120)
 
 _stream_started = False  # Module-level flag to prevent duplicate streams
 
