@@ -909,22 +909,19 @@ def fetch_greeks(ticker: str, strike: str, opt_type: str,
     return None
 
 def fetch_float_and_short(ticker: str) -> dict:
-    """Fetch float shares and short interest from Finnhub."""
-    data = fh_get("/stock/profile2", {"symbol": ticker})
+    """Fetch float shares from Finnhub. Short interest now handled by Massive/Polygon."""
+    data   = fh_get("/stock/profile2", {"symbol": ticker})
     result = {"float_shares": None, "short_interest": None, "short_ratio": None}
     if data:
         shares_float = data.get("shareOutstanding")
         if shares_float:
             result["float_shares"] = round(float(shares_float) * 1e6)
-    # Short interest
-    short = fh_get("/stock/short-interest", {"symbol": ticker})
-    if short and short.get("data"):
-        latest = short["data"][0] if short["data"] else {}
-        si     = latest.get("shortInterest")
-        if si and result["float_shares"]:
-            result["short_interest"]  = int(si)
-            result["short_ratio"]     = round(si / result["float_shares"] * 100, 1)
-            print(f"[FETCHER] Short interest: {result['short_ratio']}% of float")
+    # Short interest via Massive/Polygon (not Finnhub — requires paid tier)
+    si_data = fetch_short_interest(ticker)
+    if si_data and si_data.get("short_pct"):
+        result["short_ratio"]    = si_data["short_pct"]
+        result["short_interest"] = si_data.get("short_pct")
+        print(f"[FETCHER] Short interest: {si_data['short_pct']}% of float via Massive")
     return result
 
 def fetch_trade_data(trade: dict, flow_premium=None) -> dict:

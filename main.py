@@ -635,12 +635,18 @@ def build_sms(trade: dict, data: dict, result: dict,
             op_float = None
 
         if op_float and op_float > 0:
-            # Show flow entry price and suggested entry limit
-            opt_type_str = (trade.get("option_type","call") or "call").lower()
+            # Show flow entry price and suggested entry limit for all alerts with a fill price
+            has_fill     = bool(trade.get("avg_fill_price") or data.get("flow_fill_price"))
             source_str   = trade.get("source","")
-            if source_str == "bullflow":
-                # Entry limit: within 2-5% of flow fill price
-                entry_limit = round(op_float * 1.03, 2)  # 3% above flow fill
+            is_bullflow  = source_str == "bullflow"
+            if has_fill or is_bullflow:
+                # Entry limit: 3% above flow fill for calls, 3% below for puts
+                opt_lower   = (trade.get("option_type","call") or "call").lower()
+                is_put_sell = data.get("fill_type","") == "PUT_SELL_BID"
+                if "put" in opt_lower and not is_put_sell:
+                    entry_limit = round(op_float * 0.97, 2)  # 3% below for puts
+                else:
+                    entry_limit = round(op_float * 1.03, 2)  # 3% above for calls
                 lines.append(f"💰 Flow filled @ ${op_float:.2f} | Entry limit: ${entry_limit:.2f}")
 
             from outcomes import get_stats
