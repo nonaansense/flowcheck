@@ -403,6 +403,7 @@ def fetch_short_interest(ticker: str) -> dict | None:
             print(f"[SHORT INT] Polygon {r.status_code} — upgrade required for short interest")
             return None
         if r.status_code != 200:
+            print(f"[SHORT INT] Polygon {r.status_code} for {ticker}: {r.text[:100]}")
             return None
         results = r.json().get("results", [])
         if not results:

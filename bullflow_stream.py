@@ -276,6 +276,12 @@ def stream_alerts(process_fn, send_sms_fn=None):
     except Exception as e:
         print(f"[BULLFLOW] Filter setup error: {e}")
 
+    import atexit, os as _os
+    def _cleanup_lock():
+        try: _os.remove(_LOCK_FILE)
+        except: pass
+    atexit.register(_cleanup_lock)
+
     retry_delay   = 5
     _seen_symbols = set()
     _seen_tickers = set()
@@ -408,15 +414,26 @@ def stream_alerts(process_fn, send_sms_fn=None):
             time.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 120)
 
-_stream_started = False  # Module-level flag to prevent duplicate streams
+_LOCK_FILE = "/tmp/bullflow_stream.lock"
 
 def start_stream_thread(process_fn, send_sms_fn=None):
-    """Start Bullflow SSE stream in a background thread."""
-    global _stream_started
-    if _stream_started:
-        print("[BULLFLOW] Stream already started — skipping duplicate")
-        return None
-    _stream_started = True
+    """Start Bullflow SSE stream in a background thread. Uses lock file to prevent duplicates across workers."""
+    import os
+    # Check lock file — if exists and process is still running, skip
+    if os.path.exists(_LOCK_FILE):
+        try:
+            with open(_LOCK_FILE) as f:
+                pid = int(f.read().strip())
+            # Check if that PID is still running
+            os.kill(pid, 0)  # Raises if process doesn't exist
+            print(f"[BULLFLOW] Stream already running (PID {pid}) — skipping duplicate")
+            return None
+        except (ProcessLookupError, ValueError, OSError):
+            print("[BULLFLOW] Stale lock file — starting fresh")
+            os.remove(_LOCK_FILE)
+    # Write our PID to lock file
+    with open(_LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
     key = os.environ.get("BULLFLOW_API_KEY","")
     if not key:
         print("[BULLFLOW] No API key — stream disabled")
