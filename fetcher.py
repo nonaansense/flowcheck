@@ -387,6 +387,39 @@ def fetch_atr(ticker: str, days: int = 14) -> dict:
     ATR measures average daily price movement — key for assessing
     whether a strike is reachable by expiry.
     """
+
+def fetch_short_interest(ticker: str) -> dict | None:
+    """Fetch short interest from Polygon. Returns None on free tier."""
+    key = os.environ.get("POLYGON_API_KEY","")
+    if not key:
+        return None
+    try:
+        r = requests.get(
+            f"https://api.polygon.io/v2/reference/short_interest/{ticker.upper()}",
+            params={"apiKey": key, "limit": 1},
+            timeout=8
+        )
+        if r.status_code in (401, 403):
+            print(f"[SHORT INT] Polygon {r.status_code} — upgrade required for short interest")
+            return None
+        if r.status_code != 200:
+            return None
+        results = r.json().get("results", [])
+        if not results:
+            return None
+        d            = results[0]
+        short_shares = float(d.get("short_interest", 0) or 0)
+        float_shares = float(d.get("float", 0) or d.get("shares_float", 0) or 0)
+        avg_vol      = float(d.get("average_daily_volume", 0) or 1)
+        short_pct    = round(short_shares / float_shares * 100, 1) if float_shares > 0 else None
+        days_cover   = round(short_shares / avg_vol, 1) if avg_vol > 0 else None
+        settle_date  = d.get("settlement_date", "")
+        print(f"[SHORT INT] {ticker}: {short_pct}% float | {days_cover}d to cover ({settle_date})")
+        return {"short_pct": short_pct, "days_to_cover": days_cover, "settlement_date": settle_date}
+    except Exception as e:
+        print(f"[SHORT INT] Error {ticker}: {e}")
+        return None
+
     key = os.environ.get("POLYGON_API_KEY")
     if not key:
         return {}
