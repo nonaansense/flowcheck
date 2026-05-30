@@ -1180,7 +1180,7 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
 
     # ATR and move analysis
     if stock_price and data.get("days_to_expiry") and trade.get("strike"):
-        atr_data = fetch_atr(ticker, days=14)
+        atr_data = fetch_atr(ticker, days=14) or {}
         if atr_data.get("atr_pct"):
             move = calc_move_analysis(
                 stock_price,

@@ -407,8 +407,15 @@ def stream_alerts(process_fn, send_sms_fn=None):
             time.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
 
+_stream_started = False  # Module-level flag to prevent duplicate streams
+
 def start_stream_thread(process_fn, send_sms_fn=None):
     """Start Bullflow SSE stream in a background thread."""
+    global _stream_started
+    if _stream_started:
+        print("[BULLFLOW] Stream already started — skipping duplicate")
+        return None
+    _stream_started = True
     key = os.environ.get("BULLFLOW_API_KEY","")
     if not key:
         print("[BULLFLOW] No API key — stream disabled")
@@ -420,10 +427,11 @@ def start_stream_thread(process_fn, send_sms_fn=None):
         print(f"[BULLFLOW] FLOW_SOURCE={flow_source} and DUAL_FLOW_MODE not set — stream disabled")
         return None
     print(f"[BULLFLOW] Starting stream (flow_source={flow_source} dual_mode={dual_mode})")
-    # Check again for running thread before starting
+    # Double-check thread not already running
     existing = [t for t in threading.enumerate() if t.name == "bullflow-stream" and t.is_alive()]
     if existing:
         print("[BULLFLOW] Stream thread already running — not starting duplicate")
+        _stream_started = True
         return existing[0]
     t = threading.Thread(
         target=stream_alerts,

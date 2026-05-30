@@ -85,7 +85,7 @@ def add_to_watchlist(ticker, trade, result, data=None, send_sms_fn=None):
         print("[TECHNICAL] " + ticker + " already in watchlist — updating")
     # Calculate initial DTE
     from datetime import datetime as _dt2
-    expiry_raw = trade.get("expiry_raw","")
+    expiry_raw = trade.get("expiry_raw","") or trade.get("expiry","")
     dte_remaining = None
     if expiry_raw:
         try:
@@ -166,7 +166,7 @@ def load_watchlist():
         loaded = 0
         for ticker, entry in data.get("watchlist", {}).items():
             # Check DTE — skip if option expires in < MIN_DTE days
-            expiry_raw = entry.get("expiry_raw") or ""
+            expiry_raw = entry.get("expiry_raw") or entry.get("expiry") or ""
             dte        = None
             if expiry_raw:
                 try:
@@ -190,7 +190,8 @@ def load_watchlist():
 
             _watch_list[ticker] = entry
             loaded += 1
-            print(f"[TECHNICAL] Reloaded {ticker} — {dte}d left on option")
+            dte_display = f"{dte}d" if dte is not None else "unknown"
+            print(f"[TECHNICAL] Reloaded {ticker} — {dte_display} left on option")
 
         if loaded:
             print(f"[TECHNICAL] Loaded {loaded} tickers from saved watchlist")
