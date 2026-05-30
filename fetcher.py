@@ -394,27 +394,34 @@ def fetch_short_interest(ticker: str) -> dict | None:
     if not key:
         return None
     try:
+        # Correct Massive/Polygon endpoint: /stocks/v1/short-interest
         r = requests.get(
-            f"https://api.polygon.io/v2/reference/short_interest/{ticker.upper()}",
-            params={"apiKey": key, "limit": 1},
+            "https://api.polygon.io/stocks/v1/short-interest",
+            params={"apiKey": key, "ticker": ticker.upper(), "limit": 1, "sort": "settlement_date.desc"},
             timeout=8
         )
         if r.status_code in (401, 403):
-            print(f"[SHORT INT] Polygon {r.status_code} — upgrade required for short interest")
+            print(f"[SHORT INT] Massive {r.status_code} — plan upgrade required")
             return None
         if r.status_code != 200:
-            print(f"[SHORT INT] Polygon {r.status_code} for {ticker}: {r.text[:100]}")
+            print(f"[SHORT INT] Massive {r.status_code} for {ticker}: {r.text[:100]}")
             return None
         results = r.json().get("results", [])
         if not results:
+            print(f"[SHORT INT] No data for {ticker}")
             return None
         d            = results[0]
         short_shares = float(d.get("short_interest", 0) or 0)
-        float_shares = float(d.get("float", 0) or d.get("shares_float", 0) or 0)
-        avg_vol      = float(d.get("average_daily_volume", 0) or 1)
-        short_pct    = round(short_shares / float_shares * 100, 1) if float_shares > 0 else None
-        days_cover   = round(short_shares / avg_vol, 1) if avg_vol > 0 else None
+        avg_vol      = float(d.get("avg_daily_volume", 0) or 1)
+        days_cover   = float(d.get("days_to_cover", 0) or 0) or round(short_shares / avg_vol, 1)
         settle_date  = d.get("settlement_date", "")
+        # Need float shares for % — fetch from Finnhub profile
+        float_shares = 0
+        fh_profile   = fh_get("/stock/profile2", {"symbol": ticker})
+        if fh_profile:
+            so = fh_profile.get("shareOutstanding", 0)
+            float_shares = float(so or 0) * 1e6
+        short_pct = round(short_shares / float_shares * 100, 1) if float_shares > 0 else None
         print(f"[SHORT INT] {ticker}: {short_pct}% float | {days_cover}d to cover ({settle_date})")
         return {"short_pct": short_pct, "days_to_cover": days_cover, "settlement_date": settle_date}
     except Exception as e:
