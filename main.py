@@ -520,12 +520,23 @@ def build_sms(trade: dict, data: dict, result: dict,
     # Cross-source confirmation badge
     bf_conf = data.get("bullflow_confirmation")
     if bf_conf:
-        bf_v = bf_conf.get("verdict","")
-        bf_s = bf_conf.get("score","?")
-        bf_t = bf_conf.get("time","")
+        bf_v        = bf_conf.get("verdict","")
+        bf_s        = bf_conf.get("score","?")
+        bf_t        = bf_conf.get("time","")
+        curr_source = trade.get("source","")
+        # Show which source is confirming which
+        conf_src = bf_conf.get("conf_source","")
+        if curr_source == "flowgod" and conf_src == "bullflow":
+            # FlowGod tweet confirms what Bullflow already caught — strongest signal
+            conf_label = "🅱 Bullflow caught this early — FlowGod now confirms"
+        elif curr_source == "bullflow" and conf_src == "flowgod":
+            # Bullflow alert, but FlowGod already tweeted it — Bullflow was late
+            conf_label = "🐦 FlowGod already on this — Bullflow late confirmation"
+        else:
+            conf_label = "🔄 Cross-source confirmation"
         conf_emoji = "🔥" if bf_v == "TRADE" else "✅"
         time_note  = f" at {bf_t}" if bf_t else ""
-        lines.append(f"{conf_emoji} CONFIRMED by Bullflow{time_note} — scored {bf_s}/7 {bf_v}")
+        lines.append(f"{conf_emoji} {conf_label}{time_note} — scored {bf_s}/7 {bf_v}")
 
     if one_liner:
         lines.append(f"→ {one_liner}")
@@ -893,12 +904,30 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                     bf_score   = bf_match.get("result",{}).get("final_score","?")
                     bf_verdict = bf_match.get("result",{}).get("verdict","?")
                     bf_time    = bf_match.get("data",{}).get("flow_time","")
+                    conf_source = bf_match.get("trade",{}).get("source","")
+                    curr_src    = trade.get("source","")
+
+                    # Only boost when FlowGod confirms something Bullflow already caught
+                    # Bullflow first → FlowGod later = strong signal (Bullflow was early)
+                    # FlowGod first → Bullflow later = no boost (Bullflow was slow)
+                    is_flowgod_confirming_bullflow = (
+                        curr_src == "flowgod" and conf_source == "bullflow"
+                    )
+                    if is_flowgod_confirming_bullflow:
+                        try:
+                            if isinstance(result.get("final_score"), (int,float)):
+                                result["final_score"] = round(min(7.0, float(result["final_score"]) + 0.5), 1)
+                                result["adj_notes"]   = result.get("adj_notes","") + " +0.5 FlowGod confirms Bullflow"
+                                print(f"[CONFIRM] Score +0.5 — FlowGod confirming Bullflow early alert")
+                        except: pass
+
                     data["bullflow_confirmation"] = {
-                        "score":   bf_score,
-                        "verdict": bf_verdict,
-                        "time":    bf_time,
+                        "score":       bf_score,
+                        "verdict":     bf_verdict,
+                        "time":        bf_time,
+                        "conf_source": conf_source,
                     }
-                    print(f"[CONFIRM] FlowGod {ticker_key} {strike_key} matches Bullflow alert (score={bf_score})")
+                    print(f"[CONFIRM] {curr_src} {ticker_key} {strike_key} — {conf_source} saw it {'earlier' if is_flowgod_confirming_bullflow else 'later'} (score={bf_score})")
             except Exception as _ce:
                 print(f"[CONFIRM] Error: {_ce}")
 
