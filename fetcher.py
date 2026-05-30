@@ -390,13 +390,15 @@ def fetch_atr(ticker: str, days: int = 14) -> dict:
 
 def fetch_short_interest(ticker: str) -> dict | None:
     """Fetch short interest from Polygon. Returns None on free tier."""
-    key = os.environ.get("POLYGON_API_KEY","")
+    key = os.environ.get("MASSIVE_API_KEY","") or os.environ.get("POLYGON_API_KEY","")
     if not key:
         return None
+    # Massive uses api.polygon.io with Massive API key
+    base_url = "https://api.polygon.io"
     try:
-        # Correct Massive/Polygon endpoint: /stocks/v1/short-interest
+        # Correct Massive endpoint: /stocks/v1/short-interest
         r = requests.get(
-            "https://api.polygon.io/stocks/v1/short-interest",
+            f"{base_url}/stocks/v1/short-interest",
             params={"apiKey": key, "ticker": ticker.upper(), "limit": 1, "sort": "settlement_date.desc"},
             timeout=8
         )
