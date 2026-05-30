@@ -605,9 +605,18 @@ def build_sms(trade: dict, data: dict, result: dict,
     if data.get("short_squeeze_potential") and data.get("short_ratio"):
         lines.append(f"🔥 Short interest: {data['short_ratio']}% — squeeze potential")
 
-    # Position sizing
-    option_price = trade.get("option_price") or trade.get("avg_fill_price") or data.get("flow_fill_price")
+    # Position sizing — use avg_fill_price (per contract) not total premium
+    option_price = trade.get("avg_fill_price") or data.get("flow_fill_price")
     src_debug    = trade.get("source","")
+    # Sanity check — option_price should be per-contract price not total premium
+    if option_price:
+        try:
+            op_check = float(str(option_price).replace("K","000").replace("M","000000"))
+            if op_check > 5000:  # >$5000/contract = definitely total premium not per-contract
+                print(f"[BUILD_SMS] Ignoring option_price={option_price} — looks like total premium not per-contract")
+                option_price = None
+        except:
+            pass
     print(f"[BUILD_SMS] source={src_debug} option_price={option_price} flow_fill={data.get('flow_fill_price')}")
     if option_price:
         # Safe convert — option_price may be string like '2.85' or '462.0K'

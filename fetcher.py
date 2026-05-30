@@ -1285,6 +1285,16 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
     float_data = fetch_float_and_short(ticker)
     data["float_shares"]   = float_data.get("float_shares")
     data["short_interest"] = float_data.get("short_interest")
+
+    # Polygon short interest (more reliable, bi-weekly FINRA data)
+    if not data.get("short_interest"):
+        si = fetch_short_interest(ticker)
+        if si:
+            data["short_interest_pct"] = si.get("short_pct")
+            data["days_to_cover"]      = si.get("days_to_cover")
+            data["short_settle_date"]  = si.get("settlement_date")
+    else:
+        data["short_interest_pct"] = data["short_interest"]
     data["short_ratio"]    = float_data.get("short_ratio")
     if float_data.get("short_ratio") and float_data["short_ratio"] > 15:
         data["short_squeeze_potential"] = True
