@@ -28,6 +28,19 @@ SECTOR_ETF_MAP = {
     "POET":"XLK","HPE":"XLK","MSFT":"XLK",
 }
 
+# ── Massive/Polygon key rotation ────────────────────────────────────────
+def massive_key() -> str:
+    """Round-robin between Massive API keys to spread call load."""
+    import time as _t
+    keys = [k for k in [
+        os.environ.get("MASSIVE_API_KEY"),
+        os.environ.get("MASSIVE_API_KEY_2"),
+        os.environ.get("POLYGON_API_KEY"),
+    ] if k]
+    if not keys:
+        return ""
+    return keys[int(_t.time()) % len(keys)]
+
 # ── Finnhub ────────────────────────────────────────────────────────────
 def fh_key():
     return os.environ.get("FINNHUB_API_KEY")
