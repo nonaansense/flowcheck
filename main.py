@@ -1427,6 +1427,9 @@ async def test_alert(request: Request, background_tasks: BackgroundTasks):
         "vol_oi_ratio":  vol_oi_val,
         "ask_size":      100 if "ASK" in fill_val.upper() else 0,
         "bid_size":      0   if "ASK" in fill_val.upper() else 100,
+        # avg_fill_price from request body (per-contract price, not total premium)
+        "avg_fill_price": float(body.get("avg_fill_price", 0)) or None,
+        "source":        body.get("source",""),
     }
 
     fake_trade["_test"]   = True   # Flag to skip watchlist/journal
