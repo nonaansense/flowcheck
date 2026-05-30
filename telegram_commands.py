@@ -1264,6 +1264,12 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
         "  action_word: exactly 'buy' or 'sell' — the first action word shown (e.g. 'Buy NVDA' = 'buy', 'Sell NVDA' = 'sell')",
         "",
         "Rules:",
+        "  MOST IMPORTANT: Find the field labeled 'Position effect' on screen.",
+        "  If 'Position effect' shows 'Close' or 'Closing' — this is an EXIT. Set action=exit.",
+        "  If 'Position effect' shows 'Open' or 'Opening' — this is an ENTRY. Set action=entry.",
+        "  Then look at whether it says Buy or Sell at the top:",
+        "  Buy + Position effect Close = BTC. Sell + Position effect Close = STC.",
+        "  Buy + Position effect Open = BTO. Sell + Position effect Open = STO.",
         "  BTO or buy-to-open = entry. STO or sell-to-open = entry (put sell). STC or sell-to-close = exit. BTC or buy-to-close = exit.",
         "  IMPORTANT: Sell to Open (STO) means selling a put or call to open a new position — this is an ENTRY not an exit.",
         "  If you see 'Sell to Open', 'STO', or 'Sold to Open' set action=entry and order_type=STO.",
@@ -1323,43 +1329,39 @@ def parse_trade_screenshot(image_bytes: bytes, caption: str = ""):
             raw = raw[start_i:end_i]
         data = json.loads(raw)
 
-        # Post-parse: fix order_type using reliable Robinhood-specific signals
+        # Post-parse corrections using raw text + parsed fields
         full_lower = raw.lower()
         ot         = data.get("order_type","").upper()
         aw         = data.get("action_word","").lower()
         pe         = data.get("position_effect","").lower()
 
-        has_realized   = "realized profit" in full_lower or "realized p" in full_lower
-        has_est_credit = "est credit" in full_lower or "estimated credit" in full_lower
-        has_total_cost = "total cost" in full_lower
-        is_close       = pe == "close" or "close" in full_lower.split('"position_effect"')[1][:20] if '"position_effect"' in full_lower else pe == "close"
+        # Search raw text directly for "Position effect" value — most reliable
+        import re as _re
+        pe_match = _re.search(r'position.?effect["\s:]+([a-z]+)', full_lower)
+        pe_from_text = pe_match.group(1).strip() if pe_match else pe
+        print(f"[PHOTO] position_effect from JSON={pe} from_text={pe_from_text}")
+
+        has_realized   = "realized profit" in full_lower
+        has_est_credit = "est credit" in full_lower
         buy_action     = aw == "buy" or ot in ("BTO","BTC")
         sell_action    = aw == "sell" or ot in ("STO","STC")
+        is_close       = pe_from_text == "close" or pe == "close"
+        is_open        = pe_from_text == "open" or pe == "open"
 
-        # Priority 1: Realized profit = always an exit (BTC or STC)
+        # Priority 1: Realized profit = always an exit
         if has_realized:
-            if buy_action:
-                data["order_type"] = "BTC"
-                data["action"]     = "exit"
-                print("[PHOTO] Corrected to BTC (Realized profit + Buy)")
-            else:
-                data["order_type"] = "STC"
-                data["action"]     = "exit"
-                print("[PHOTO] Corrected to STC (Realized profit + Sell)")
+            data["order_type"] = "BTC" if buy_action else "STC"
+            data["action"]     = "exit"
+            print(f"[PHOTO] Corrected to {data['order_type']} (Realized profit)")
 
-        # Priority 2: Position effect = close = exit
-        elif pe == "close":
-            if buy_action:
-                data["order_type"] = "BTC"
-                data["action"]     = "exit"
-                print("[PHOTO] Corrected to BTC (Position effect: close + Buy)")
-            else:
-                data["order_type"] = "STC"
-                data["action"]     = "exit"
-                print("[PHOTO] Corrected to STC (Position effect: close + Sell)")
+        # Priority 2: Position effect close = exit
+        elif is_close:
+            data["order_type"] = "BTC" if buy_action else "STC"
+            data["action"]     = "exit"
+            print(f"[PHOTO] Corrected to {data['order_type']} (Position effect: close)")
 
-        # Priority 3: Est credit + Sell = STO
-        elif has_est_credit and sell_action and pe != "close":
+        # Priority 3: Est credit + Sell + Open = STO
+        elif has_est_credit and sell_action and is_open:
             data["order_type"] = "STO"
             data["action"]     = "entry"
             print("[PHOTO] Corrected to STO (Est credit + Sell + Open)")
