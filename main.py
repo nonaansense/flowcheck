@@ -601,9 +601,27 @@ def build_sms(trade: dict, data: dict, result: dict,
     if data.get("has_insider_buying") and data.get("insider_summary"):
         lines.append(f"👔 {data['insider_summary'][:80]}")
 
-    # Short squeeze potential
-    if data.get("short_squeeze_potential") and data.get("short_ratio"):
-        lines.append(f"🔥 Short interest: {data['short_ratio']}% — squeeze potential")
+    # Short interest — from Massive/Polygon
+    si_pct = data.get("short_interest_pct") or data.get("short_ratio")
+    dtc    = data.get("days_to_cover")
+    if si_pct:
+        opt_lower   = (trade.get("option_type","call") or "call").lower()
+        is_put_sell = data.get("fill_type","") == "PUT_SELL_BID"
+        is_bullish  = "call" in opt_lower or is_put_sell
+        if si_pct >= 25:
+            si_emoji = "🔥"
+            si_label = "extreme short interest — squeeze candidate" if is_bullish else "extreme shorting — bearish confirmation"
+        elif si_pct >= 15:
+            si_emoji = "⚠️"
+            si_label = "elevated short interest — squeeze potential" if is_bullish else "elevated shorting activity"
+        elif si_pct >= 8:
+            si_emoji = "📊"
+            si_label = "moderate short interest"
+        else:
+            si_emoji = "✅"
+            si_label = "low short interest — clean setup"
+        dtc_str = f" | {dtc}d to cover" if dtc else ""
+        lines.append(f"{si_emoji} Short interest: {si_pct}%{dtc_str} — {si_label}")
 
     # Position sizing — use avg_fill_price (per contract) not total premium
     option_price = trade.get("avg_fill_price") or data.get("flow_fill_price")
