@@ -418,8 +418,11 @@ def update_eod_prices(send_sms_fn=None):
         if send_sms_fn:
             accounts = journal.get("accounts",{})
             lines    = ["📊 Position Values — " + now_et.strftime("%b %d %I:%M%p ET")]
-            total    = sum(u["pnl"] for u in updated)
-            for u in updated:
+            # Only show OPEN positions in Telegram — closed trades track silently
+            open_tickers = {t.get("ticker","") for t in journal.get("trades",[])}
+            open_updated = [u for u in updated if u.get("ticker","") in open_tickers]
+            total    = sum(u["pnl"] for u in open_updated)
+            for u in open_updated:
                 sign  = "+" if u["pnl"] >= 0 else ""
                 emoji = "🟢" if u["pnl"] >= 0 else "🔴"
                 acc   = accounts.get(u["account"],{}).get("name","")
@@ -431,7 +434,7 @@ def update_eod_prices(send_sms_fn=None):
                     " (" + sign + "$" + str(u["pnl"]) + ")" +
                     (" [" + acc + "]" if acc else "")
                 )
-            if any(u["source"] == "intrinsic" for u in updated):
+            if any(u["source"] == "intrinsic" for u in open_updated):
                 lines.append("~ = intrinsic estimate (no live quote)")
             sign = "+" if total >= 0 else ""
             lines.append("")
