@@ -430,7 +430,7 @@ def fetch_short_interest(ticker: str) -> dict | None:
         print(f"[SHORT INT] Error {ticker}: {e}")
         return None
 
-    key = os.environ.get("POLYGON_API_KEY")
+    key = os.environ.get("MASSIVE_API_KEY") or os.environ.get("POLYGON_API_KEY")
     if not key:
         return {}
     try:
@@ -839,7 +839,7 @@ def fetch_current_option_price(ticker: str, strike: str,
     Fetch current bid/ask for the specific option contract.
     Compare vs flow fill price to assess entry quality.
     """
-    key = os.environ.get("POLYGON_API_KEY")
+    key = os.environ.get("MASSIVE_API_KEY") or os.environ.get("POLYGON_API_KEY")
     if not key or not expiry_raw or not strike:
         return None
     try:
@@ -881,7 +881,7 @@ def fetch_current_option_price(ticker: str, strike: str,
 def fetch_greeks(ticker: str, strike: str, opt_type: str,
                   expiry_raw: str) -> dict | None:
     """Fetch options Greeks from Polygon free tier."""
-    key = os.environ.get("POLYGON_API_KEY")
+    key = os.environ.get("MASSIVE_API_KEY") or os.environ.get("POLYGON_API_KEY")
     if not key or not expiry_raw or not strike:
         return None
     try:

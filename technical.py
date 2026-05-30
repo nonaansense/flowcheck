@@ -213,9 +213,9 @@ def fetch_1min_candles(ticker: str, count: int = 120) -> list:
     Free tier: unlimited calls, 5/minute rate limit.
     Returns list oldest→newest.
     """
-    poly_key = os.environ.get("POLYGON_API_KEY")
+    poly_key = os.environ.get("MASSIVE_API_KEY") or os.environ.get("POLYGON_API_KEY")
     if not poly_key:
-        print("[TECHNICAL] POLYGON_API_KEY not set")
+        print("[TECHNICAL] No Massive/Polygon API key set")
         return []
 
     from datetime import datetime as _dt, timedelta as _td
