@@ -1315,9 +1315,9 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
         data["sweep_emoji"] = ""
 
     # Float + short interest
-    float_data = fetch_float_and_short(ticker)
+    float_data = fetch_float_and_short(ticker) or {}
     data["float_shares"]   = float_data.get("float_shares")
-    data["short_interest"] = float_data.get("short_interest") if float_data else None
+    data["short_interest"] = float_data.get("short_interest")
 
     # Polygon short interest (more reliable, bi-weekly FINRA data)
     if not data.get("short_interest"):
