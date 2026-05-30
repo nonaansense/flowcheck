@@ -606,7 +606,9 @@ def build_sms(trade: dict, data: dict, result: dict,
         lines.append(f"🔥 Short interest: {data['short_ratio']}% — squeeze potential")
 
     # Position sizing
-    option_price = trade.get("option_price") or data.get("flow_fill_price")
+    option_price = trade.get("option_price") or trade.get("avg_fill_price") or data.get("flow_fill_price")
+    src_debug    = trade.get("source","")
+    print(f"[BUILD_SMS] source={src_debug} option_price={option_price} flow_fill={data.get('flow_fill_price')}")
     if option_price:
         # Safe convert — option_price may be string like '2.85' or '462.0K'
         try:
