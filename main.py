@@ -671,10 +671,14 @@ def build_sms(trade: dict, data: dict, result: dict,
     if top_imp:
         lines.append(f"→ {top_imp}")
 
-    # Earnings timing
-    earn = data.get("expiry_timing_label","")
+    # Earnings timing — show earnings date prominently on its own line
+    earn       = data.get("expiry_timing_label","")
+    earn_date  = data.get("earnings_date","") or data.get("next_earnings","")
+    earn_emoji = data.get("expiry_timing_emoji","")
     if earn:
-        lines.append(f"{data.get('expiry_timing_emoji','')} {earn}")
+        lines.append(f"{earn_emoji} {earn}")
+    if earn_date:
+        lines.append(f"📅 Earnings: {earn_date}")
 
     # Breakout
     if data.get("is_breakout_bet") and data.get("breakout_label"):
