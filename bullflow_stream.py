@@ -105,14 +105,22 @@ def build_trade_from_alert(alert: dict) -> dict | None:
 
     # Build trade dict compatible with FlowCheck pipeline
     # Map Bullflow alert names to Vol/OI signals for scorer
-    vol_oi_signal = 0.0
-    nm_up = alert_nm.upper()
-    if "UNUSUAL" in nm_up:     vol_oi_signal = 15.0  # Single trade > OI = massive
-    elif "RISING VOL" in nm_up: vol_oi_signal = 8.0   # First vol>OI crossing
-    elif "VOL>OI" in nm_up:    vol_oi_signal = 5.0   # Cumulative vol > OI
-    elif "URGENT" in nm_up:    vol_oi_signal = 6.0   # Rapid repeats
-    elif "BULLFLOW" in nm_up:  vol_oi_signal = 4.0   # Aggressive repeats
-    elif "SIZABLE" in nm_up:   vol_oi_signal = 3.0   # Large size
+    # Use real vol/OI from Bullflow payload if available, else estimate from alert name
+    raw_vol = float(alert.get("volume", 0) or alert.get("vol", 0) or 0)
+    raw_oi  = float(alert.get("openInterest", 0) or alert.get("oi", 0) or 0)
+    if raw_vol > 0 and raw_oi > 0:
+        vol_oi_signal = round(raw_vol / raw_oi, 1)
+        print(f"[BULLFLOW] Real Vol/OI: {raw_vol:.0f}/{raw_oi:.0f} = {vol_oi_signal}x")
+    else:
+        nm_up = alert_nm.upper()
+        if "UNUSUAL" in nm_up:      vol_oi_signal = 15.0
+        elif "RISING VOL" in nm_up: vol_oi_signal = 8.0
+        elif "VOL>OI" in nm_up:     vol_oi_signal = 5.0
+        elif "URGENT" in nm_up:     vol_oi_signal = 6.0
+        elif "BULLFLOW" in nm_up:   vol_oi_signal = 4.0
+        elif "SIZABLE" in nm_up:    vol_oi_signal = 3.0
+        else:                        vol_oi_signal = 3.0
+
 
     # Calculate DTE from parsed expiry
     dte_val = None

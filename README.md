@@ -13,28 +13,68 @@ Railway-hosted system that monitors @FL0WG0D tweets and Bullflow.io SSE stream, 
 @FL0WG0D tweets → IFTTT → /webhook → Vision parser → Scorer → Telegram 🐦
 Bullflow SSE stream → background thread → Scorer → Telegram 🅱
 Robinhood screenshots → Telegram bot → Trade journal
-EOD pricer → daily price/peak updates → position tracking
-Pre-market summary → 8AM ET weekdays → Telegram
+EOD pricer → 4:30PM daily → position price/peak updates
+Pre-market summary → 8:00AM ET weekdays → Telegram
+Earnings calendar → 8:30AM ET weekdays → pre-loaded cache
 Weekly P&L report → Friday 4:45PM ET → Telegram
+Analyses archive → 12:01AM daily → Supabase weekly key
 ```
 
 ---
 
 ## Alert Format
 
+### TRADE (full detail)
 ```
-✅ NVDA 190C 06/20/26 [21d] 🟢$214 🅱         ← verdict | option | DTE | stock price | source
-6.5/7→ 6.5/7 TRADE                             ← raw score → adjusted score | verdict
-VIX 15.4 Calm · SPY Flat +0.1% today           ← market regime
-🚨 FULL_ASK — maximum aggression               ← fill type
-👀 NOTABLE flow $1.1M — whale activity         ← premium tier
-🚨 Vol/OI 8.2x — massive new position          ← volume signal
-✅ Short interest: 3.0% | 1.4d to cover        ← Massive bi-weekly short interest
-🅱 Bullflow caught this early — FlowGod confirms ← cross-source confirmation
-💰 Flow filled @ $6.25 | Entry limit: $6.44    ← fill price + suggested entry
-💰 Size: 2 contracts @ $6.25 = $1,250 (1.2%)  ← position sizing
-🎯 Target: +100% | Stop: -60% option loss       ← exit targets by DTE
-📊 Support: $188.50 → $185.20                  ← key levels
+━━━ SIGNAL ━━━
+✅ NVDA 190C 06/20/26 [21d] 🟢$214 🅱
+6.5/7→ 6.5/7 TRADE · VIX 15.4 Calm · SPY +0.1%
+
+━━━ FLOW ━━━
+💰 $1.1M — whale activity
+🚨 FULL_ASK — maximum aggression
+🚨 Vol/OI 8.2x — massive new position
+  ⚡ Sweep · OTM -3.2% · 21d DTE
+✅ Short interest: 1.2% | 0.8d to cover — low — clean setup
+
+━━━ CONTEXT ━━━
+🏢 NVIDIA Corporation
+   Designs GPUs and system-on-chip units for gaming and AI
+   Technology · Earnings: Aug 27, 2026
+
+━━━ THESIS ━━━
+→ Pre-earnings accumulation with strong Vol/OI conviction
+→ ATR suggests 14% move possible in 21 days
+❌ Expiry 7d BEFORE earnings — misses catalyst
+📈 $3.2M total flow over 2 days — accumulation
+🔁 NVDA 190C seen 2x — repeat buyer
+
+━━━ ENTRY ━━━
+💰 Flow filled @ $6.25 | Limit: $6.44
+💰 Size: 2 contracts @ $6.25 = $1,250 (1.2%)
+🛑 Stop: $203.80 (Fixed 5% stop)
+🎯 Target: +100% | -60% option loss
+  Sell 50% at +51%, hold to +100%
+📊 Support: $188.50 → $185.20
+  Thesis broken below $188.50
+
+━━━ RISK ━━━
+⚠️ News in last 24h — flow may be news-driven
+📰 <a href="...">NVIDIA AI chip demand surges</a>
+
+🔗 https://web-production-19e44.up.railway.app/analysis/42
+```
+
+### WATCH/SKIP (compact)
+```
+👀 PLTR 130C 07/18/26 [47d] 🟢$156.54
+5.5/7→ 5.5/7 WATCH · $500K · FULL ASK · 6.0x Vol/OI
+→ Informed accumulation but pre-earnings expiry weakens thesis
+💰 Flow @ $6.25 | Limit: $6.44
+🛑 $148.71 · 🎯 +110% · 2 contracts @ $6.25
+VIX 15.3 Calm · SPY +0.1%
+❌ Expiry 16d BEFORE earnings
+📋 Full analysis → /analysis/47
 ```
 
 ---
@@ -43,20 +83,23 @@ VIX 15.4 Calm · SPY Flat +0.1% today           ← market regime
 
 Claude Haiku evaluates each flow on 7 criteria:
 
-| Points | Verdict | Action |
-|--------|---------|--------|
-| 6-7 | ✅ TRADE | Always sent to Telegram |
-| 4-5 | 👀 WATCH | Sent (FlowGod) / Stored silently (Bullflow) |
-| 0-3 | ❌ SKIP | Discarded |
+| Points | Verdict | Telegram |
+|--------|---------|---------|
+| 6-7 | ✅ TRADE | Full alert sent |
+| 4-5 | 👀 WATCH | Compact alert + analysis link |
+| 0-3 | ❌ SKIP | Nothing sent (Bullflow) / compact (FlowGod) |
 
 **Score boosts:**
 - PUT_SELL_BID ≥$500K + ≥5x Vol/OI → force 6.0 minimum
 - Sector rotation (3rd flow in sector) → +1.0 | (5th+) → +1.5
-- FlowGod confirms a prior Bullflow alert → +0.5 (Bullflow was early = strong signal)
+- FlowGod confirms prior Bullflow alert → +0.5 (Bullflow was early)
 
-**Cross-source confirmation logic:**
-- Bullflow alerts first → FlowGod tweets later = `🅱 Bullflow caught this early — FlowGod now confirms` + **+0.5 boost**
-- FlowGod tweets first → Bullflow alerts later = `🐦 FlowGod already on this — Bullflow late confirmation` (no boost — Bullflow was slow)
+**WATCH → TRADE upgrade:**
+When a prior WATCH alert gets confirmed to TRADE by a second source or higher score, a follow-up Telegram notification fires automatically.
+
+**Cross-source confirmation:**
+- Bullflow first → FlowGod later = `🅱 Bullflow caught this early — FlowGod now confirms` + **+0.5 boost**
+- FlowGod first → Bullflow later = `🐦 FlowGod already on this — Bullflow late` (no boost)
 
 ---
 
@@ -64,70 +107,59 @@ Claude Haiku evaluates each flow on 7 criteria:
 
 ### 🐦 FlowGod (IFTTT → webhook)
 - @FL0WG0D tweets → IFTTT → `/webhook`
-- Vision parser extracts ticker, strike, expiry, fill type from screenshot
-- All WATCH/TRADE verdicts sent to Telegram
+- 30-minute dedup window (prevents same ticker firing twice)
+- Vision parser extracts ticker, strike, expiry, fill type
+- All WATCH/TRADE sent to Telegram
 
 ### 🅱 Bullflow (SSE stream)
-- Real-time options flow stream from bullflow.io
+- Real-time SSE stream from bullflow.io
 - Custom alert: `premiumMin: $500K + Stocks only + DTE 7-90 + OTM ≤20%`
-- Ticker-level 2h dedup (prevents SNOW×15 repeats)
+- Ticker-level 2h dedup (prevents SNOW×15)
 - **TRADE only** sent to Telegram (WATCH stored silently)
+- Real Vol/OI used when available in payload
 
 ---
 
-## Filters (Bullflow)
+## Bullflow Filters
 
 | Filter | Value | Purpose |
 |--------|-------|---------|
 | Premium | ≥ $500K | Removes retail noise |
 | DTE | 7–90 days | No lotto tickets or multi-year LEAPs |
 | OTM | ≤ 20% | No deep OTM lotto plays |
-| Stocks only | true | Excludes SPX/SPXW/RUT index hedges |
+| Stocks only | true | Excludes SPX/SPXW/RUT/NDX index options |
 | Ticker dedup | 2h window | One alert per ticker per 2 hours |
 
 ---
 
 ## Journal System
 
-Web journal at `/journal-view` — tracks entries, exits, P&L, peak returns, left on table.
-
-### Logging trades via Telegram bot
-
-**Entry (screenshot):** Send Robinhood fill confirmation photo  
-**Exit (screenshot):** Send BTC/STC confirmation photo  
-**Manual entry:** `/entry TICKER STRIKE CALL/PUT EXPIRY CONTRACTS PRICE`  
-**Manual exit:** `/exit TICKER PRICE`
+Web journal at `/journal-view` · P&L summary at `/journal-summary`
 
 ### Robinhood screenshot detection
 
-| Screen shows | Position effect | Est credit/cost | Detected as |
-|-------------|----------------|-----------------|-------------|
+| Screen shows | Position effect | Field | Detected as |
+|-------------|----------------|-------|-------------|
 | Buy | Open | Est debit | BTO → entry |
 | Sell | Open | Est credit | STO → entry (put sell) |
 | Sell | Close | — | STC → exit |
 | Buy | Close | Total cost + Realized profit | BTC → exit |
 
-Detection uses priority chain:
-1. `Realized profit` present → always exit
-2. `Position effect: Close` → exit
-3. `Est credit + Sell` → STO entry
+Detection priority: Realized profit → Position effect: Close → Est credit + Sell
 
 **P&L calculation:**
 - BTO → STC: `(exit - entry) × contracts × 100`
 - STO → BTC: `(entry - exit) × contracts × 100` (profit when premium decays)
-- Realized P&L from Robinhood screenshot used when available (most accurate)
-
-**Editable journal fields:** entry_price, exit_price, strike, contracts, expiry, ticker, option_type, order_type, fill_type, note, score, verdict
+- Realized P&L from Robinhood screenshot used when available
 
 ---
 
 ## Short Interest
 
-Fetched from Massive (Polygon) `/stocks/v1/short-interest` — bi-weekly FINRA data.  
-Requires `MASSIVE_API_KEY`.
+Fetched from Massive `/stocks/v1/short-interest` — bi-weekly FINRA data.
 
-| Short % | Display | Bullish flow context |
-|---------|---------|---------------------|
+| Short % | Display | Context |
+|---------|---------|---------|
 | ≥ 25% | 🔥 | Extreme — squeeze candidate |
 | ≥ 15% | ⚠️ | Elevated — squeeze potential |
 | ≥ 8% | 📊 | Moderate |
@@ -137,11 +169,7 @@ Requires `MASSIVE_API_KEY`.
 
 ## Technical Scanner
 
-Scans all watchlist tickers every 5 minutes for M5/M10/M15/M30/H1 breakout signals using Massive intraday candles.
-
-- Uses `MASSIVE_API_KEY` + `MASSIVE_API_KEY_2` in round-robin rotation (doubles call limit)
-- Expired options auto-removed from watchlist on reload
-- Fires Telegram alert when breakout detected on open position
+Scans all watchlist tickers every 5 minutes (market hours) for M5/M10/M15/M30/H1 breakout signals using Massive intraday candles. Uses `MASSIVE_API_KEY` + `MASSIVE_API_KEY_2` in round-robin rotation. Expired options auto-removed on reload.
 
 ---
 
@@ -163,13 +191,36 @@ Scans all watchlist tickers every 5 minutes for M5/M10/M15/M30/H1 breakout signa
 
 | Time | Job |
 |------|-----|
-| 8:00 AM ET (Mon-Fri) | Pre-market summary — open positions + watchlist |
+| 8:00 AM ET (Mon-Fri) | Pre-market summary |
+| 8:30 AM ET (Mon-Fri) | Earnings calendar pre-load (14 days) |
 | 9:00 AM ET (daily) | Railway balance check |
-| 9:30 AM ET (Mon-Fri) | Market open — position monitor starts |
 | Every 5 min (market hours) | Technical scanner — breakout detection |
-| 4:30 PM ET (Mon-Fri) | EOD pricer — update all position prices/peaks |
+| Every 15 min (market hours) | Exit signal monitor |
+| 4:00 PM ET (Mon-Fri) | Outcome tracking |
+| 4:15 PM ET (Mon-Fri) | EOD OI verification |
+| 4:30 PM ET (Mon-Fri) | EOD price + peak updates |
 | 4:45 PM ET (Friday) | Weekly P&L report |
-| 12:01 AM ET (daily) | Analyses cleanup — reset daily memory |
+| 12:01 AM ET (daily) | Analyses cleanup + archive |
+
+---
+
+## Telegram Commands
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Stream status, open positions, today's alerts, Railway balance |
+| `/price TICKER` | Real-time stock price |
+| `/positions` | All open positions with current P&L |
+| `/watchlist` | Active watchlist with DTE |
+| `/portfolio` | Portfolio summary by account |
+| `/stats` | Win rate and P&L statistics |
+| `/exit TICKER PRICE` | Manual exit log |
+| `/entry TICKER STRIKE C/P EXPIRY CONTRACTS PRICE` | Manual entry log |
+| `/oi TICKER STRIKE C/P EXPIRY` | Open interest check |
+| `/oi all` | OI check for all yesterday's alerts |
+| `/find TICKER` | Find open position by ticker |
+| `/history` | Recent alert history |
+| `/sectors` | Sector rotation summary |
 
 ---
 
@@ -191,7 +242,7 @@ BULLFLOW_MIN_SCORE        = 6.0
 
 # APIs
 MASSIVE_API_KEY           = (primary Massive/Polygon key)
-MASSIVE_API_KEY_2         = (secondary Massive key — doubles rate limit)
+MASSIVE_API_KEY_2         = (secondary key — doubles rate limit)
 FINNHUB_API_KEY           = ...
 TIINGO_API_KEY            = ...
 ANTHROPIC_API_KEY         = ...
@@ -208,7 +259,7 @@ SUPABASE_KEY              = ...
 ACCOUNT_SIZE              = 100000
 
 # Railway balance monitoring (update after each top-up)
-RAILWAY_BALANCE           = 4.46
+RAILWAY_BALANCE           = 4.43
 RAILWAY_DAILY_COST        = 0.37
 ```
 
@@ -219,25 +270,28 @@ RAILWAY_DAILY_COST        = 0.37
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Status check |
-| `POST /test-alert` | Test flow alert (JSON body) |
+| `POST /test-alert` | Test flow alert |
 | `GET /sync-bullflow-filters` | Recreate Bullflow custom alert |
-| `GET /test-bullflow` | Verify Bullflow connection + list alerts |
+| `GET /test-bullflow` | Verify Bullflow connection |
 | `GET /journal-view` | Web journal UI |
-| `GET /backfill-price-history` | Seed price history from last_price |
-| `GET /analysis/{id}` | Full analysis page |
+| `GET /journal-summary` | P&L summary stats (JSON) |
+| `GET /backfill-price-history` | Seed price history |
+| `GET /analysis/{id}` | Full analysis web page |
+| `GET /history` | Recent alert history |
 
 **Test alert body:**
 ```json
 {
-  "ticker": "PLTR",
+  "ticker": "NVDA",
   "opt_type": "call",
-  "strike": "130",
-  "expiry": "07/18/26",
-  "premium": 500000,
+  "strike": "190",
+  "expiry": "06/20/26",
+  "premium": 1100000,
   "fill_type": "FULL_ASK",
-  "vol_oi": 6.0,
-  "oi": 1000,
-  "avg_fill_price": 6.25
+  "vol_oi": 8.2,
+  "oi": 500,
+  "avg_fill_price": 6.25,
+  "source": "bullflow"
 }
 ```
 
@@ -247,20 +301,20 @@ RAILWAY_DAILY_COST        = 0.37
 
 | Source | Used for | Tier |
 |--------|----------|------|
-| Finnhub | Price, earnings, float | Free |
+| Finnhub | Price, earnings, float, company profile | Free |
 | Tiingo | SPY daily history | Free |
 | Yahoo Finance | VIX | Free (no key) |
-| Massive/Polygon (key 1) | Short interest, ATR, greeks | Paid |
+| Massive/Polygon (key 1) | Short interest, ATR, greeks, candles | Paid |
 | Massive/Polygon (key 2) | Technical scanner candles (round-robin) | Paid |
-| Bullflow.io | Real-time options flow SSE | Paid |
-| Anthropic Haiku | Flow scoring, vision parsing | Pay-per-use |
+| Bullflow.io | Real-time SSE options flow | Paid |
+| Anthropic Haiku | Scoring, vision parsing, company descriptions | Pay-per-use |
 
 ---
 
 ## Known Limitations
 
-- Duplicate Bullflow stream during Railway rolling deploy (~60s overlap, self-resolving)
-- `$AI` ticker (C3.ai) — maps correctly but Finnhub resolution unreliable
-- Short interest: bi-weekly cadence (not real-time)
-- Railway balance check is manual — upgrade to Hobby plan for automatic API-based balance monitoring
-- Pre-market summary and weekly report require test/validation on first run
+- Duplicate Bullflow stream during Railway rolling deploy (~15s overlap, self-resolving)
+- Short interest: bi-weekly FINRA cadence (not real-time)
+- Railway balance check is manual — update `RAILWAY_BALANCE` after each top-up
+- Upgrade to Railway Hobby plan for automatic API-based balance monitoring
+- `$AI` ticker (C3.ai) — Finnhub resolution unreliable on free tier

@@ -17,8 +17,15 @@ def poly_key():
 OUTCOMES_KEY = "outcomes"
 
 def load_outcomes() -> dict:
-    from storage import load_data
-    return load_data(OUTCOMES_KEY, OUTCOMES_FILE, {"history": []})
+    from storage import load_data, save_data
+    data = load_data(OUTCOMES_KEY, OUTCOMES_FILE, None)
+    if data is None:
+        default = {"history": [], "stats": {"total": 0, "wins": 0, "losses": 0, "win_rate": None}}
+        save_data(OUTCOMES_KEY, OUTCOMES_FILE, default)
+        return default
+    if "stats" not in data:
+        data["stats"] = {"total": 0, "wins": 0, "losses": 0, "win_rate": None}
+    return data
 
 def save_outcomes(data: dict):
     from storage import save_data

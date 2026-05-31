@@ -203,6 +203,50 @@ def remind_open_journal_trades():
     except Exception as e:
         print(f"[REMINDER] Error: {e}")
 
+def preload_earnings_calendar():
+    """Pre-load 2-week earnings calendar at 8:30AM to speed up alert processing."""
+    try:
+        from fetcher import fh_get
+        from datetime import timedelta
+        today = datetime.now(ZoneInfo("America/New_York"))
+        end   = today + timedelta(days=14)
+        data  = fh_get("/calendar/earnings", {
+            "from": today.strftime("%Y-%m-%d"),
+            "to":   end.strftime("%Y-%m-%d")
+        })
+        if data and data.get("earningsCalendar"):
+            _earnings_cache.clear()
+            for e in data["earningsCalendar"]:
+                sym  = (e.get("symbol") or "").upper()
+                date = e.get("date","")
+                if sym and date:
+                    _earnings_cache[sym] = date
+            print(f"[EARNINGS] Pre-loaded {len(_earnings_cache)} earnings dates")
+    except Exception as _ee:
+        print(f"[EARNINGS] Pre-load error: {_ee}")
+
+def cleanup_old_analyses():
+    """Remove today-old analyses from memory; archive >7d to Supabase weekly key."""
+    global analyses
+    from datetime import timedelta
+    today  = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    cutoff = (datetime.now(ZoneInfo("America/New_York")) - timedelta(days=7)).strftime("%Y-%m-%d")
+    before = len(analyses)
+    # Archive old
+    old = [a for a in analyses if a.get("date","") < cutoff]
+    if old:
+        try:
+            from storage import save_data as _sd
+            week_key = f"analyses_week_{cutoff[:7]}"
+            _sd(week_key, f"/tmp/{week_key}.json", old)
+            print(f"[PERSIST] Archived {len(old)} analyses to {week_key}")
+        except Exception as _ae:
+            print(f"[PERSIST] Archive error: {_ae}")
+    analyses = [a for a in analyses if a.get("date","") >= today]
+    removed  = before - len(analyses)
+    if removed > 0:
+        print(f"[PERSIST] Cleaned {removed} old analyses from memory")
+
 def cleanup_expired_positions():
     """4:02 PM — close positions where option has expired."""
     from exit_signals import load_positions, save_positions, close_position
@@ -266,12 +310,16 @@ async def startup():
     try:
         scheduler.add_job(lambda: send_premarket_summary(analyses),
                           "cron", day_of_week="mon-fri", hour=8, minute=0, id="premarket")
+        scheduler.add_job(preload_earnings_calendar,
+                          "cron", day_of_week="mon-fri", hour=8, minute=30, id="earnings_preload")
         scheduler.add_job(lambda: verify_eod_positions(analyses),
                           "cron", day_of_week="mon-fri", hour=16, minute=15, id="eod_oi")
         scheduler.add_job(lambda: send_eod_summary(analyses) if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=30, id="eod_summary")
         scheduler.add_job(cleanup_expired_positions,
                           "cron", day_of_week="mon-fri", hour=16, minute=2, id="expire_cleanup")
+        scheduler.add_job(cleanup_old_analyses,
+                          "cron", hour=0, minute=1, id="analyses_cleanup")
         scheduler.add_job(lambda: remind_open_journal_trades() if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=10, id="journal_reminder")
         scheduler.add_job(lambda: send_position_check() if is_market_open() else None,
@@ -710,6 +758,20 @@ def build_sms(trade: dict, data: dict, result: dict,
     risk_lines = []
     if risk and risk.get("warnings"):
         risk_lines.extend(risk["warnings"][:2])
+
+    # Portfolio delta exposure check
+    try:
+        from trade_journal import load_journal as _lj
+        _open = [t for t in _lj().get("trades",[]) if t.get("status","").upper() != "CLOSED"]
+        _call_ct = sum(1 for t in _open if (t.get("option_type","") or "").lower() == "call")
+        _put_ct  = sum(1 for t in _open if (t.get("option_type","") or "").lower() == "put"
+                       and t.get("fill_type","") != "PUT_SELL_BID")
+        _curr    = (trade.get("option_type","call") or "call").lower()
+        if _curr == "call" and _call_ct >= 5:
+            risk_lines.append(f"⚠️ HIGH DELTA EXPOSURE: {_call_ct} calls open — consider sizing down")
+        elif _curr == "put" and _put_ct >= 3:
+            risk_lines.append(f"⚠️ HIGH PUT EXPOSURE: {_put_ct} puts open — consider sizing down")
+    except: pass
     if intel and intel.get("earnings_season",{}).get("in_earnings_season") and not is_put_sell:
         es = intel["earnings_season"]
         risk_lines.append(f"{es.get('season_emoji','')} {es.get('season_note','')}")
@@ -1098,6 +1160,29 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
             rot = intel["sector_rotation"]
             send_sms(rot["alert"])  # alert already contains emoji
 
+        # WATCH → TRADE upgrade notification
+        if result.get("verdict") == "TRADE":
+            try:
+                ticker_key = f"{ticker}_{strike}_{otype}"
+                for prior in analyses[-50:]:
+                    pt = prior.get("trade",{})
+                    pr = prior.get("result",{})
+                    pk = f"{pt.get('ticker','')}_{pt.get('strike','')}_{(pt.get('option_type','call') or 'call')[0].upper()}"
+                    if (pk == ticker_key and
+                        pr.get("verdict") == "WATCH" and
+                        not prior.get("_upgraded")):
+                        prior["_upgraded"] = True
+                        base_url_up = os.environ.get("BASE_URL","https://flowcheck-production.up.railway.app")
+                        send_sms(
+                            f"🔄 UPGRADE: {ticker} {strike}{otype} — was WATCH ({pr.get('final_score','?')}/7)" + chr(10) +
+                            f"Now TRADE ({result.get('final_score','?')}/7) — {src_badge if 'src_badge' in dir() else ''}" + chr(10) +
+                            f"📋 {base_url_up}/analysis/{prior.get('id',0)}"
+                        )
+                        print(f"[UPGRADE] {ticker} {strike}{otype} upgraded WATCH→TRADE")
+                        break
+            except Exception as _ue:
+                print(f"[UPGRADE] Error: {_ue}")
+
         # Send max positions block warning to TRADE channel
         if risk.get("blocked"):
             send_sms(risk["block_msg"], verdict="TRADE")
@@ -1187,6 +1272,30 @@ async def clear_test_trades():
     removed_anal = before - len(analyses)
     save_analyses()
     return {"removed_analyses": removed_anal, "note": "Watchlist clears on next redeploy"}
+
+@app.get("/journal-summary")
+async def journal_summary():
+    """P&L summary stats for closed trades."""
+    from storage import load_data as _ld2
+    journal = _ld2("journal", "/tmp/journal.json", {"trades":[],"closed":[]})
+    closed  = journal.get("closed",[])
+    if not closed:
+        return {"total":0,"wins":0,"losses":0,"win_rate":None,"total_pnl":0}
+    wins     = [t for t in closed if (t.get("pnl_total",0) or 0) > 0]
+    losses   = [t for t in closed if (t.get("pnl_total",0) or 0) < 0]
+    total_pnl= round(sum(t.get("pnl_total",0) or 0 for t in closed), 2)
+    win_rate = round(len(wins)/len(closed)*100, 1) if closed else None
+    avg_win  = round(sum(t.get("pnl_total",0) for t in wins)/len(wins), 0) if wins else 0
+    avg_loss = round(sum(t.get("pnl_total",0) for t in losses)/len(losses), 0) if losses else 0
+    best     = max(closed, key=lambda t: t.get("pnl_total",0) or 0) if closed else {}
+    worst    = min(closed, key=lambda t: t.get("pnl_total",0) or 0) if closed else {}
+    return {
+        "total": len(closed), "wins": len(wins), "losses": len(losses),
+        "win_rate": win_rate, "total_pnl": total_pnl,
+        "avg_win": avg_win, "avg_loss": avg_loss,
+        "best":  f"{best.get('ticker','')} +${best.get('pnl_total',0):.0f}",
+        "worst": f"{worst.get('ticker','')} ${worst.get('pnl_total',0):.0f}",
+    }
 
 @app.get("/close.js")
 async def serve_close_js():
@@ -1827,10 +1936,24 @@ async def webhook(request: Request):
         print(f"[WEBHOOK] Tweet URL: {tweet_url}")
 
     import asyncio
-    asyncio.create_task(process_alert(tweet, tweet_url, {"source": "flowgod"}))
+    # Dedup — same ticker+content within 30 min = skip
     ticker = "?"
     try: ticker = re.search(r'\$([A-Z]{1,5})',tweet).group(1)
     except: pass
+    dedup_key = f"fg_{ticker}_{tweet[:50]}"
+    now_ts    = time.time()
+    if hasattr(app.state, "fg_dedup") and dedup_key in app.state.fg_dedup:
+        last_ts = app.state.fg_dedup[dedup_key]
+        if now_ts - last_ts < 1800:  # 30 min window
+            print(f"[WEBHOOK] Dedup skip: {ticker} — same alert within 30min")
+            return {"status":"dedup","ticker":ticker}
+    if not hasattr(app.state, "fg_dedup"):
+        app.state.fg_dedup = {}
+    app.state.fg_dedup[dedup_key] = now_ts
+    # Cleanup old entries
+    app.state.fg_dedup = {k:v for k,v in app.state.fg_dedup.items() if now_ts-v < 3600}
+
+    asyncio.create_task(process_alert(tweet, tweet_url, {"source": "flowgod"}))
     print(f"[WEBHOOK] Queued background processing for {ticker}")
     return {"status":"queued","ticker":ticker,"message":"Processing in background — SMS incoming"}
 

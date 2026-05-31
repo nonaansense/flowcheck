@@ -98,6 +98,49 @@ def handle_command(text: str, from_chat_id: str):
         handle_oi_all(from_chat_id)
     elif cmd == "sentiment" and args:
         handle_sentiment(args[0].upper(), from_chat_id)
+
+    elif cmd == "price" and args:
+        # /price TICKER — real-time stock price
+        ticker_p = args[0].upper()
+        try:
+            from fetcher import fetch_price
+            px = fetch_price(ticker_p)
+            if px:
+                send_reply(f"🟢 {ticker_p}: ${px:.2f}", from_chat_id)
+            else:
+                send_reply(f"Could not fetch price for {ticker_p}", from_chat_id)
+        except Exception as e:
+            send_reply(f"Price error: {e}", from_chat_id)
+
+    elif cmd == "status":
+        # /status — system health summary
+        try:
+            import threading
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            from storage import load_data as _ld
+            bf_alive = any(t.name == "bullflow-stream" and t.is_alive() for t in threading.enumerate())
+            stream_s = "✅ Connected" if bf_alive else "❌ Disconnected"
+            journal  = _ld("journal", "/tmp/journal.json", {"trades":[]})
+            open_ct  = len([t for t in journal.get("trades",[]) if t.get("status","").upper() != "CLOSED"])
+            today    = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            analyses = _ld("analyses_today", "/tmp/analyses.json", []) or []
+            trades_t = sum(1 for a in analyses if a.get("date","")==today and a.get("verdict","")=="TRADE")
+            watches_t= sum(1 for a in analyses if a.get("date","")==today and a.get("verdict","")=="WATCH")
+            balance  = __import__('os').environ.get("RAILWAY_BALANCE","?")
+            now_et   = datetime.now(ZoneInfo("America/New_York")).strftime("%I:%M %p ET")
+            sep = chr(10) + "─"*20 + chr(10)
+            msg_lines = [
+                f"📊 FlowCheck Status — {now_et}",
+                "─"*20,
+                f"🅱 Bullflow: {stream_s}",
+                f"📈 Open positions: {open_ct}",
+                f"🔔 Today: {trades_t} TRADE · {watches_t} WATCH",
+                f"💰 Railway balance: ${balance}",
+            ]
+            send_reply(chr(10).join(msg_lines), from_chat_id)
+        except Exception as e:
+            send_reply(f"Status error: {e}", from_chat_id)
     elif cmd == "entry" and len(args) >= 6:
         # /entry TICKER STRIKE C/P EXPIRY CONTRACTS PRICE [DATE] [TIME]
         # Log now:   /entry FLNC 23 C 06/18/26 3 2.85
