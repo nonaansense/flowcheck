@@ -182,10 +182,13 @@ def load_watchlist():
             if dte is not None and dte < MIN_DTE_TO_MONITOR:
                 print(f"[TECHNICAL] Skipping {ticker} on reload — {dte}d left, too late")
                 continue
+            if dte is not None and dte < 0:
+                print(f"[TECHNICAL] Removing {ticker} from watchlist — expired {abs(dte)}d ago")
+                continue  # Don't add to _watch_list — effectively removes it
 
             age_days = (time.time() - entry.get("added", time.time())) / 86400
             if age_days > MAX_MONITOR_DAYS:
-                print(f"[TECHNICAL] Skipping {ticker} on reload — {age_days:.0f}d old")
+                print(f"[TECHNICAL] Removing {ticker} from watchlist — {age_days:.0f}d old")
                 continue
 
             _watch_list[ticker] = entry

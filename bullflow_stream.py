@@ -114,6 +114,20 @@ def build_trade_from_alert(alert: dict) -> dict | None:
     elif "BULLFLOW" in nm_up:  vol_oi_signal = 4.0   # Aggressive repeats
     elif "SIZABLE" in nm_up:   vol_oi_signal = 3.0   # Large size
 
+    # Calculate DTE from parsed expiry
+    dte_val = None
+    expiry_raw = parsed.get("expiry_raw","") or parsed.get("expiry","")
+    if expiry_raw:
+        try:
+            from datetime import datetime as _dt2
+            parts = expiry_raw.split("/")
+            m2, d2, y2 = parts
+            y2 = "20" + y2 if len(y2) == 2 else y2
+            exp_dt  = _dt2(int(y2), int(m2), int(d2))
+            dte_val = (exp_dt - _dt2.now()).days
+        except:
+            pass
+
     trade = {
         **parsed,
         "premium":        premium,
@@ -126,8 +140,9 @@ def build_trade_from_alert(alert: dict) -> dict | None:
         "flow_timestamp": ts,
         "vol_oi_ratio":   vol_oi_signal,
         "open_interest":  int(premium / fill_px / 100) if fill_px > 0 else 0,
-        "option_price":   fill_px,        # averageFillPrice = entry price for the flow
+        "option_price":   fill_px,
         "avg_fill_price": fill_px,
+        "dte":            dte_val,
     }
 
     # Estimate contracts from premium and fill price
@@ -448,8 +463,7 @@ def start_stream_thread(process_fn, send_sms_fn=None):
     # Double-check thread not already running
     existing = [t for t in threading.enumerate() if t.name == "bullflow-stream" and t.is_alive()]
     if existing:
-        print("[BULLFLOW] Stream thread already running — not starting duplicate")
-        _stream_started = True
+        print(f"[BULLFLOW] Stream thread already running ({len(existing)}) — skipping duplicate")
         return existing[0]
     t = threading.Thread(
         target=stream_alerts,

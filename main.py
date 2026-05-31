@@ -631,7 +631,7 @@ def build_sms(trade: dict, data: dict, result: dict,
         else:
             si_emoji = "✅"
             si_label = "low short interest — clean setup"
-        dtc_str = f" | {dtc}d to cover" if dtc else ""
+        dtc_str = f" | {round(float(dtc),1)}d to cover" if dtc else ""
         lines.append(f"{si_emoji} Short interest: {si_pct}%{dtc_str} — {si_label}")
 
     # Position sizing — use avg_fill_price (per contract) not total premium
@@ -1485,8 +1485,9 @@ async def test_alert(request: Request, background_tasks: BackgroundTasks):
         "source":        body.get("source",""),
     }
 
-    fake_trade["_test"]   = True   # Flag to skip watchlist/journal
+    fake_trade["_test"]       = True   # Flag to skip watchlist/journal
     fake_trade["_force_send"] = True  # Always send Telegram regardless of mode
+    fake_trade["analysis_id"] = len(analyses) + 1  # Assign real-ish ID
     background_tasks.add_task(process_alert, fake_tweet, None, fake_trade)
     return {"status": "queued", "ticker": ticker, "tweet": fake_tweet}
 
