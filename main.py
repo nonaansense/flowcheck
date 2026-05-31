@@ -855,7 +855,8 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         # Add to technical watchlist if WATCH or TRADE (skip test trades)
         dte = data.get("days_to_expiry")
         if trade.get("_test"):
-            print("[PROCESS] Test trade — skipping watchlist/position/analyses")
+            analysis_id = trade.get("analysis_id", len(analyses) + 1)
+            print(f"[PROCESS] Test trade — skipping watchlist/position/analyses (id={analysis_id})")
         elif dte is None or int(dte) >= 1:
             if result.get("verdict") in ("WATCH", "TRADE"):
                 add_to_watchlist(ticker, trade, result, data, send_sms_fn=send_sms)
