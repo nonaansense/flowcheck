@@ -736,6 +736,69 @@ def build_sms(trade: dict, data: dict, result: dict,
         lines.append(f"🐦 {tweet_url}")
     lines.append(f"🔗 {base_url.rstrip('/')}/analysis/{analysis_id}")
 
+    # WATCH/SKIP get a compact format — full details at analysis URL
+    if verdict in ("WATCH", "SKIP"):
+        short_lines = []
+
+        # Line 1: verdict + ticker + option + price + source
+        short_lines.append(f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}")
+
+        # Line 2: score + key flow data
+        prem_raw  = data.get("premium_raw", 0) or 0
+        prem_str2 = f"${prem_raw/1000000:.1f}M" if prem_raw >= 1000000 else (f"${prem_raw/1000:.0f}K" if prem_raw >= 1000 else "")
+        fill_short = data.get("fill_type","").replace("_"," ")
+        vol_short  = f"{data.get('vol_oi_ratio',0):.1f}x Vol/OI" if data.get("vol_oi_ratio") else ""
+        flow_parts = [p for p in [prem_str2, fill_short, vol_short] if p]
+        short_lines.append(f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict} · {' · '.join(flow_parts)}")
+
+        # Line 3: time warning or conf if present
+        if time_warning:
+            short_lines.append(time_warning)
+        if conf_line:
+            short_lines.append(conf_line)
+
+        # Line 4: key thesis point if available
+        if one_liner:
+            short_lines.append(f"→ {cap(one_liner, 80)}")
+
+        # Line 5: entry if we have fill price
+        if op_float and op_float > 0:
+            has_fill   = bool(trade.get("avg_fill_price") or data.get("flow_fill_price"))
+            if has_fill:
+                opt_lower2 = (trade.get("option_type","call") or "call").lower()
+                entry_limit = round(op_float * (0.97 if "put" in opt_lower2 and not is_put_sell else 1.03), 2)
+                short_lines.append(f"💰 Flow @ ${op_float:.2f} | Limit: ${entry_limit:.2f}")
+
+        # Line 6: stop + target + sizing compact
+        try:
+            tgt = calc_exit_target(int(final_score), data)
+            ss  = risk.get("smart_stop",{}) if risk else {}
+            stop_str = f"🛑 ${ss['stop_price']}" if ss.get("stop_price") else ""
+            tgt_str  = f"🎯 +{tgt['target']}%" if not is_put_sell else "🎯 50-80% decay"
+            from outcomes import get_stats
+            stats    = get_stats()
+            win_rate = stats.get("win_rate") if stats.get("total",0) >= 5 else None
+            sizing   = calc_position_size(op_float, verdict, win_rate=win_rate, score=final_score) if op_float else None
+            sz_str   = f"{sizing['contracts']} contract{'s' if sizing['contracts']!=1 else ''} @ ${op_float:.2f}" if sizing and op_float else ""
+            compact  = " · ".join([p for p in [stop_str, tgt_str, sz_str] if p])
+            if compact:
+                short_lines.append(compact)
+        except: pass
+
+        # Line 7: VIX + market quick
+        short_lines.append(f"VIX {vix_str} · SPY {spy_str}")
+
+        # Line 8: earnings warning if relevant
+        earn = data.get("expiry_timing_label","")
+        if earn:
+            short_lines.append(f"{data.get('expiry_timing_emoji','')} {earn}")
+
+        # Footer
+        short_lines.append(f"📋 Full analysis → {base_url.rstrip('/')}/analysis/{analysis_id}")
+
+        return "\n".join([str(l) for l in short_lines if l is not None])
+
+    # TRADE gets full format
     body = "\n".join([str(l) for l in lines if l is not None])
 
     if len(body) > 3800:
