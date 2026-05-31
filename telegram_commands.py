@@ -243,13 +243,18 @@ def handle_command(text: str, from_chat_id: str):
         handle_sentiment(args[0].upper(), from_chat_id)
 
     elif cmd in ("evaluate", "eval", "review"):
-        # /evaluate          — all accounts, deduped by ticker+strike
-        # /evaluate @rh_ira  — specific account only
-        acct_filter = args[0].lstrip("@").lower() if args else None
-        handle_evaluate_command(from_chat_id, account_filter=acct_filter)
-
-    elif cmd in ("evaluate", "eval", "review"):
-        handle_evaluate_command(from_chat_id)
+        # /evaluate                  — all positions, deduped
+        # /evaluate NVDA             — specific ticker only
+        # /evaluate NVDA @rh_ira     — specific ticker + account
+        # /evaluate @rh_ira          — specific account only
+        tkr_f  = None
+        act_f  = None
+        for arg in args:
+            if arg.startswith("@"):
+                act_f = arg.lstrip("@").lower()
+            elif arg.upper() == arg and len(arg) <= 5:
+                tkr_f = arg.upper()
+        handle_evaluate_command(from_chat_id, ticker_filter=tkr_f, account_filter=act_f)
 
     elif cmd == "price" and args:
         # /price TICKER — real-time stock price
