@@ -2027,68 +2027,201 @@ async def analysis_detail(analysis_id: int):
 
     base_url = os.environ.get("BASE_URL","https://flowcheck-production.up.railway.app")
 
+    # Build full analysis page with all sections
+    intel   = a.get("intel",{}) or {}
+    risk    = a.get("risk",{}) or {}
+    pattern = a.get("pattern",{}) or {}
+
+    # Flow data
+    fill_type   = data.get("fill_type","")
+    fill_label  = data.get("fill_label","")
+    fill_emoji  = data.get("fill_emoji","")
+    vol_ratio   = data.get("vol_oi_ratio",0) or 0
+    vol_label   = data.get("vol_oi_label","")
+    prem_label  = data.get("premium_label","")
+    prem_emoji  = data.get("premium_emoji","")
+    otm_pct     = data.get("otm_pct")
+    dte_val     = data.get("days_to_expiry")
+    stock_px    = data.get("stock_price")
+    earn_date   = data.get("earnings_date","")
+    earn_label  = data.get("expiry_timing_label","")
+    earn_emoji  = data.get("expiry_timing_emoji","")
+    si_pct      = data.get("short_interest_pct") or data.get("short_ratio")
+    dtc         = data.get("days_to_cover")
+    is_sweep    = data.get("is_sweep")
+    sweep_label = data.get("sweep_label","")
+    company_name= data.get("company_name","") or ticker
+    company_desc= data.get("company_desc","")
+    company_sec = data.get("company_sector","")
+    src         = a.get("trade",{}).get("source","")
+    src_badge   = "🅱 Bullflow" if src=="bullflow" else ("🐦 FlowGod" if src=="flowgod" else "")
+    one_liner   = result.get("one_liner","")
+    improvements= result.get("improvements") or []
+
+    # Smart stop + target
+    ss       = risk.get("smart_stop",{}) if risk else {}
+    stop_px  = ss.get("stop_price","")
+    stop_rsn = ss.get("stop_reason","")
+    is_ps    = fill_type == "PUT_SELL_BID"
+
+    # News
+    news_data = data.get("news",{}) or {}
+    news_arts = news_data.get("news_articles",[]) or []
+    news_html = ""
+    for art in news_arts[:3]:
+        h   = art.get("headline","")[:100]
+        url = art.get("url","")
+        if url:
+            news_html += f'<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05)"><a href="{url}" target="_blank" style="color:#60a5fa;text-decoration:none">📰 {h} →</a></div>'
+        else:
+            news_html += f'<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);color:#94a3b8">📰 {h}</div>'
+
+    # Risk warnings
+    warnings_html = ""
+    if risk and risk.get("warnings"):
+        for w in risk["warnings"][:3]:
+            warnings_html += f'<div style="padding:4px 0;color:#fbbf24">{w}</div>'
+
+    # Checklist
+    checklist_html = ""
+    for k,v in (result.get("checklist") or {}).items():
+        icon = "✅" if v.get("pass") else "❌"
+        num  = k.replace("criterion_","")
+        checklist_html += f'<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05)">{icon} <b>#{num}</b> {v.get("note","")}</div>'
+
+    # Intelligence
+    intel_html = ""
+    if intel.get("weekly_summary"):
+        intel_html += f'<div style="padding:4px 0;color:#94a3b8">📈 {intel["weekly_summary"].get("summary","")}</div>'
+    if intel.get("repeat",{}).get("is_repeat"):
+        intel_html += f'<div style="padding:4px 0;color:#f59e0b">🔁 {intel["repeat"].get("repeat_label","")}</div>'
+    if intel.get("roll",{}).get("is_roll"):
+        intel_html += f'<div style="padding:4px 0;color:#a78bfa">🔄 {intel["roll"].get("roll_label","")}</div>'
+
+    # Support/resistance
+    sr      = data.get("support_resistance",{}) or {}
+    sr_html = ""
+    is_call = "call" in str(a.get("trade",{}).get("option_type","call")).lower()
+    if is_call and sr.get("support_levels"):
+        levels  = " → ".join([f"${l}" for l in sr["support_levels"]])
+        sr_html = f'<div style="color:#94a3b8">Support: {levels}</div><div style="color:#ef4444;font-size:12px;margin-top:4px">Thesis broken below ${sr.get("primary_support","")}</div>'
+    elif not is_call and sr.get("resistance_levels"):
+        levels  = " → ".join([f"${l}" for l in sr["resistance_levels"]])
+        sr_html = f'<div style="color:#94a3b8">Resistance: {levels}</div><div style="color:#ef4444;font-size:12px;margin-top:4px">Thesis broken above ${sr.get("primary_resistance","")}</div>'
+
+    # Greeks
+    greeks     = data.get("greeks") or {}
+    greeks_html= ""
+    if greeks:
+        greeks_html = f'<div class="grid" style="margin-top:8px"><div class="cell"><div class="cell-label">Delta</div><div class="cell-value">{greeks.get("delta","?")}</div></div><div class="cell"><div class="cell-label">Theta/day</div><div class="cell-value">{greeks.get("theta","?")}</div></div><div class="cell"><div class="cell-label">IV</div><div class="cell-value">{greeks.get("iv","?")}%</div></div></div>'
+
     return HTMLResponse(f"""<!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FlowCheck — {ticker}</title>
+<title>FlowCheck — {ticker} {strike}{otype}</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:#080810;color:#fff;font-family:-apple-system,sans-serif;padding:20px;max-width:640px;margin:0 auto}}
-.hdr{{display:flex;align-items:center;gap:10px;padding:20px 0;border-bottom:1px solid rgba(255,255,255,0.08);margin-bottom:20px}}
-.badge{{padding:8px 18px;border-radius:20px;font-weight:700;font-size:18px;color:#000;background:{verdict_color}}}
-.sec{{background:rgba(255,255,255,0.04);border-radius:12px;padding:16px;margin-bottom:12px}}
-.sec-title{{font-size:10px;letter-spacing:2px;color:#64748b;text-transform:uppercase;margin-bottom:10px}}
-.tweet{{font-family:monospace;font-size:13px;color:#94a3b8;background:rgba(0,0,0,0.3);padding:10px;border-radius:8px}}
-.grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px}}
-.cell{{background:rgba(255,255,255,0.04);border-radius:8px;padding:12px}}
-.cell-label{{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}}
-.cell-value{{font-size:16px;font-weight:600}}
-a{{color:#60a5fa}}
+body{{background:#080810;color:#fff;font-family:-apple-system,sans-serif;padding:16px;max-width:640px;margin:0 auto}}
+.hdr{{padding:16px 0 12px;border-bottom:1px solid rgba(255,255,255,0.08);margin-bottom:12px}}
+.badge{{display:inline-block;padding:6px 14px;border-radius:20px;font-weight:700;font-size:14px;color:#000;background:{verdict_color}}}
+.sec{{background:rgba(255,255,255,0.04);border-radius:12px;padding:14px;margin-bottom:10px}}
+.sec-title{{font-size:10px;letter-spacing:2px;color:#64748b;text-transform:uppercase;margin-bottom:10px;font-weight:600}}
+.row{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:14px}}
+.row-label{{color:#64748b}}
+.grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}}
+.cell{{background:rgba(255,255,255,0.04);border-radius:8px;padding:10px}}
+.cell-label{{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}}
+.cell-value{{font-size:15px;font-weight:600}}
+.tag{{display:inline-block;padding:3px 8px;border-radius:6px;font-size:12px;margin:2px;background:rgba(255,255,255,0.08)}}
+a{{color:#60a5fa;text-decoration:none}}
+.imp{{color:#94a3b8;font-size:13px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04)}}
 </style>
 </head>
 <body>
+
 <div class="hdr">
-  <div>
-    <div style="font-size:28px;font-weight:800">{ticker}</div>
-    <div style="color:#94a3b8;font-size:14px">{strike} {otype} · {expiry}</div>
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <div>
+      <div style="font-size:26px;font-weight:800">{ticker} <span style="font-size:16px;color:#94a3b8">{strike}{otype} {expiry}</span></div>
+      <div style="margin-top:4px">
+        <span class="badge">{score}/7 {verdict}</span>
+        <span style="color:#64748b;font-size:13px;margin-left:8px">{src_badge}</span>
+      </div>
+    </div>
+    <div style="text-align:right;color:#94a3b8;font-size:13px">
+      {"🟢" if stock_px else ""}${stock_px if stock_px else ""}<br>
+      {dte_val}d DTE
+    </div>
   </div>
-  <div class="badge">{score}/7 | {verdict}</div>
 </div>
 
+<!-- CONTEXT -->
 <div class="sec">
-  <div class="sec-title">Original Alert</div>
-  <div class="tweet">{a.get("tweet","")}</div>
-  {tweet_link_html}
+  <div class="sec-title">Context</div>
+  <div style="font-weight:600;font-size:16px"><a href="https://finance.yahoo.com/quote/{ticker}/profile" target="_blank">{company_name} ↗</a></div>
+  {"<div style='color:#94a3b8;font-size:13px;margin-top:4px'>" + company_desc + "</div>" if company_desc else ""}
+  {"<div style='color:#64748b;font-size:12px;margin-top:4px'>" + company_sec + "</div>" if company_sec else ""}
+  {"<div style='color:#f59e0b;font-size:13px;margin-top:6px'>📅 Earnings: " + str(earn_date) + "</div>" if earn_date else ""}
 </div>
 
+<!-- SIGNAL -->
 <div class="sec">
-  <div class="sec-title">Market Conditions</div>
-  <div class="grid">
-    <div class="cell"><div class="cell-label">VIX</div><div class="cell-value">{mkt.get("vix","None")} {mkt.get("vix_label","")}</div></div>
-    <div class="cell"><div class="cell-label">SPY 5-Day</div><div class="cell-value">{mkt.get("spy_trend","None")}</div></div>
-    <div class="cell"><div class="cell-label">Sector ({data.get("sector",{}).get("etf","?")})</div><div class="cell-value">{data.get("sector",{}).get("sector_trend","None")}</div></div>
-    <div class="cell"><div class="cell-label">Market Bias</div><div class="cell-value" style="color:{verdict_color}">{mkt.get("market_bias","?")}</div></div>
-  </div>
-  <div style="margin-top:10px;font-size:13px;color:#94a3b8">{mkt.get("market_summary","")}</div>
+  <div class="sec-title">Signal</div>
+  <div class="row"><span class="row-label">Score</span><span style="color:{verdict_color};font-weight:700">{score}/7 {verdict}</span></div>
+  <div class="row"><span class="row-label">VIX</span><span>{mkt.get("vix","?")} {mkt.get("vix_label","")}</span></div>
+  <div class="row"><span class="row-label">SPY</span><span>{mkt.get("spy_trend","?")}</span></div>
+  <div class="row"><span class="row-label">Market</span><span>{mkt.get("market_bias","?")}</span></div>
+  <div style="margin-top:8px;font-size:13px;color:#94a3b8">{mkt.get("market_summary","")}</div>
 </div>
 
+<!-- FLOW -->
 <div class="sec">
-  <div class="sec-title">Trade Analysis</div>
-  <div style="color:#94a3b8;font-size:14px;line-height:1.6">{result.get("reasoning","")}</div>
+  <div class="sec-title">Flow Data</div>
+  <div class="row"><span class="row-label">Premium</span><span>{prem_emoji} {prem_label}</span></div>
+  <div class="row"><span class="row-label">Fill Type</span><span>{fill_emoji} {fill_label}</span></div>
+  <div class="row"><span class="row-label">Vol/OI</span><span>{vol_ratio:.1f}x — {vol_label}</span></div>
+  {"<div class='row'><span class='row-label'>OTM</span><span>" + str(otm_pct) + "%</span></div>" if otm_pct is not None else ""}
+  {"<div class='row'><span class='row-label'>Sweep</span><span>⚡ " + sweep_label + "</span></div>" if is_sweep and sweep_label else ""}
+  {"<div class='row'><span class='row-label'>Short Interest</span><span>" + str(si_pct) + "% | " + str(round(float(dtc),1)) + "d to cover</span></div>" if si_pct else ""}
+  {greeks_html}
 </div>
 
+<!-- THESIS -->
 <div class="sec">
-  <div class="sec-title">Checklist</div>
+  <div class="sec-title">Thesis</div>
+  {"<div style='color:#e2e8f0;font-size:14px;margin-bottom:8px'>→ " + one_liner + "</div>" if one_liner else ""}
+  {"".join(["<div class='imp'>→ " + imp + "</div>" for imp in improvements[:3]])}
+  {"<div style='margin-top:8px;color:#ef4444;font-size:13px'>" + earn_emoji + " " + earn_label + "</div>" if earn_label else ""}
+  {intel_html}
+  <div style="margin-top:8px;color:#94a3b8;font-size:13px;line-height:1.6">{result.get("reasoning","")}</div>
+</div>
+
+<!-- CHECKLIST -->
+<div class="sec">
+  <div class="sec-title">Scoring Checklist</div>
   {checklist_html}
 </div>
 
+<!-- ENTRY -->
 <div class="sec">
-  <div class="sec-title">Improvements</div>
-  {improvements_html}
+  <div class="sec-title">Entry</div>
+  {"<div class='row'><span class='row-label'>Stop</span><span>🛑 $" + str(stop_px) + " (" + str(stop_rsn) + ")</span></div>" if stop_px else ""}
+  {"<div class='row'><span class='row-label'>Target</span><span>🎯 Capture 50-80% premium decay</span></div>" if is_ps else ""}
+  {sr_html}
 </div>
 
-<div style="text-align:center;padding:20px 0">
+<!-- RISK -->
+{"<div class='sec'><div class='sec-title'>Risk</div>" + warnings_html + news_html + "</div>" if warnings_html or news_html else ""}
+
+<!-- ORIGINAL -->
+<div class="sec">
+  <div class="sec-title">Original Alert</div>
+  <div style="font-family:monospace;font-size:12px;color:#94a3b8;background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;word-break:break-word">{a.get("tweet","")}</div>
+  {tweet_link_html}
+</div>
+
+<div style="text-align:center;padding:20px 0;color:#64748b;font-size:13px">
   <a href="{base_url}/history">← Back to history</a>
 </div>
 </body>
