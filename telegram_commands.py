@@ -123,7 +123,10 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
         results   = []
         total_pnl = 0.0
 
-        for t in open_trades[:10]:
+        total_count = len(open_trades)
+        if total_count > 20:
+            send_reply(str(total_count) + " positions found — evaluating first 20. Use /eval TICKER for specific ones.", from_chat_id)
+        for t in open_trades[:20]:
             ticker     = t.get("ticker", "?")
             strike     = str(t.get("strike", "?"))
             opt_type   = ((t.get("option_type", "call") or "call").upper() + " ")[0]
@@ -301,6 +304,24 @@ def handle_command(text: str, from_chat_id: str):
             elif arg.upper() == arg and len(arg) <= 5:
                 tkr_f = arg.upper()
         handle_evaluate_command(from_chat_id, ticker_filter=tkr_f, account_filter=act_f)
+
+    elif cmd in ("count", "cnt"):
+        try:
+            from storage import load_data as _ld3
+            journal    = _ld3("journal", "/tmp/journal.json", {"trades":[]})
+            all_open   = [t for t in journal.get("trades",[]) if t.get("status","").upper() != "CLOSED"]
+            # Count by account
+            from collections import Counter
+            acct_counts = Counter(t.get("account_id","unknown") for t in all_open)
+            lines = ["📊 Open positions: " + str(len(all_open))]
+            for acct, cnt in sorted(acct_counts.items()):
+                lines.append("  @" + str(acct) + ": " + str(cnt))
+            # Unique tickers
+            tickers = sorted(set(t.get("ticker","") for t in all_open))
+            lines.append("🎯 Unique tickers (" + str(len(tickers)) + "): " + ", ".join(tickers))
+            send_reply(chr(10).join(lines), from_chat_id)
+        except Exception as e:
+            send_reply("Count error: " + str(e), from_chat_id)
 
     elif cmd == "price" and args:
         # /price TICKER — real-time stock price
