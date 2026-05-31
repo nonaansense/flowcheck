@@ -125,16 +125,18 @@ def analyze_news_context(ticker: str) -> dict:
     if news_6h:
         result["has_recent_news"] = True
         result["news_count"]      = len(news_6h)
-        headlines = [a.get("headline","")[:100] for a in news_6h[:2]]
-        result["news_summary"]    = " | ".join(headlines)
+        articles = news_6h[:2]
+        result["news_articles"]   = [{"headline": a.get("headline","")[:100], "url": a.get("url","")} for a in articles]
+        result["news_summary"]    = " | ".join([a.get("headline","")[:100] for a in articles])
         result["news_emoji"]      = "📰"
         result["flow_context"]    = "Recent news may explain flow — lower conviction signal"
         result["flow_context_emoji"] = "⚠️"
     elif news_24h:
         result["has_recent_news"] = True
         result["news_count"]      = len(news_24h)
-        headlines = [a.get("headline","")[:100] for a in news_24h[:2]]
-        result["news_summary"]    = " | ".join(headlines)
+        articles = news_24h[:2]
+        result["news_articles"]   = [{"headline": a.get("headline","")[:100], "url": a.get("url","")} for a in articles]
+        result["news_summary"]    = " | ".join([a.get("headline","")[:100] for a in articles])
         result["news_emoji"]      = "📰"
         result["flow_context"]    = "News in last 24h — flow may be news-driven"
         result["flow_context_emoji"] = "⚠️"
@@ -156,14 +158,24 @@ def analyze_news_context(ticker: str) -> dict:
     return result
 
 def format_news_for_sms(news_data: dict) -> list:
-    """Format news context for Telegram message."""
+    """Format news context for Telegram message with article links."""
     lines = []
 
     if news_data.get("flow_context"):
         emoji = news_data.get("flow_context_emoji","")
         lines.append(f"{emoji} {news_data['flow_context']}")
 
-    if news_data.get("news_summary"):
+    # Show each article as a clickable link
+    articles = news_data.get("news_articles",[])
+    if articles:
+        for a in articles[:2]:
+            headline = a.get("headline","")[:80]
+            url      = a.get("url","")
+            if url:
+                lines.append(f'📰 <a href="{url}">{headline}</a>')
+            else:
+                lines.append(f"📰 {headline}")
+    elif news_data.get("news_summary"):
         lines.append(f"📰 {news_data['news_summary'][:120]}")
 
     if news_data.get("insider_summary"):
