@@ -397,7 +397,7 @@ def build_sms(trade: dict, data: dict, result: dict,
 
     verdict_emoji = {"TRADE":"✅","WATCH":"👀","SKIP":"❌"}.get(verdict,"❓")
 
-    mkt = data.get("market",{})
+    mkt     = data.get("market",{})
     vix_str = f"{mkt.get('vix','?')} {mkt.get('vix_label','')}" if mkt.get("vix") else "N/A"
     spy_str = mkt.get("spy_trend","N/A") or "N/A"
 
@@ -415,178 +415,162 @@ def build_sms(trade: dict, data: dict, result: dict,
     top_imp   = cap(top_imp)
 
     base_url = os.environ.get("BASE_URL","https://flowcheck-production.up.railway.app")
+    SEP = "─────────────────────"
 
-    # Stock price context for title
+    # Stock price tag
     stock_px = data.get("stock_price")
     if stock_px and float(stock_px) < 40:
-        px_tag = f" 🔴${stock_px:.2f}"  # Below $40 — immediate entry
+        px_tag = f" 🔴${stock_px:.2f}"
     elif stock_px:
-        px_tag = f" 🟢${stock_px:.2f}"  # Above $40 — monitor for pullback
+        px_tag = f" 🟢${stock_px:.2f}"
     else:
         px_tag = ""
 
-    # Check time remaining in trading day
+    # Source badge
+    src = trade.get("source","")
+    src_badge = " 🅱" if src == "bullflow" else (" 🐦" if src == "flowgod" else "")
+
+    # Time warning
     from zoneinfo import ZoneInfo as _ZI
     from datetime import datetime as _dt2
-    now_et       = _dt2.now(_ZI("America/New_York"))
+    now_et        = _dt2.now(_ZI("America/New_York"))
     mins_to_close = (16*60) - (now_et.hour*60 + now_et.minute)
-    dte_val  = data.get("days_to_expiry")
-    is_leap  = dte_val is not None and int(dte_val) > 180
-    is_expired = dte_val is not None and int(dte_val) < 0
-    dte_display = "EXPIRED" if is_expired else (f"{dte_val}d DTE" if dte_val is not None else "")
+    dte_val       = data.get("days_to_expiry")
+    is_leap       = dte_val is not None and int(dte_val) > 180
+    is_expired    = dte_val is not None and int(dte_val) < 0
+    dte_display   = "EXPIRED" if is_expired else (f"{dte_val}d DTE" if dte_val is not None else "")
+    is_put_sell   = data.get("fill_type","") == "PUT_SELL_BID"
 
     if mins_to_close <= 0:
         if is_leap:
-            time_warning = "🌙 AFTER-HOURS LEAP — routine positioning, no urgency signal"
+            time_warning = "🌙 AFTER-HOURS LEAP — routine positioning, no urgency"
         elif is_expired:
-            time_warning = f"⚠️ EXPIRED OPTION — historical alert only, cannot trade"
+            time_warning = "⚠️ EXPIRED OPTION — historical alert only"
         else:
-            is_ps = data.get("fill_type","") == "PUT_SELL_BID"
-            ah_action = "stealth put sale" if is_ps else "stealth buy"
-            time_warning = f"🌙 AFTER-HOURS FLOW ({dte_display}) — {ah_action}, expect overnight/pre-market move"
+            ah_action    = "stealth put sale" if is_put_sell else "stealth buy"
+            time_warning = f"🌙 AFTER-HOURS FLOW ({dte_display}) — {ah_action}"
     elif mins_to_close <= 30:
         if is_leap:
-            time_warning = f"⏰ Late day LEAP ({mins_to_close}min left) — long-dated, no urgency signal"
+            time_warning = f"⏰ Late day LEAP ({mins_to_close}min left) — no urgency"
         elif is_expired:
-            time_warning = f"⚠️ EXPIRED OPTION — historical alert only"
+            time_warning = "⚠️ EXPIRED OPTION — historical alert only"
         else:
-            is_ps2 = data.get("fill_type","") == "PUT_SELL_BID"
-            late_action = "stealth put sale" if is_ps2 else "stealth buy"
-            time_warning = f"🎯 LATE DAY FLOW ({mins_to_close}min left, {dte_display}) — {late_action}, avoiding copycats"
+            late_action  = "stealth put sale" if is_put_sell else "stealth buy"
+            time_warning = f"🎯 LATE DAY FLOW ({mins_to_close}min left) — {late_action}"
     else:
-        if is_expired:
-            time_warning = f"⚠️ EXPIRED OPTION — historical/backtest alert only"
-        else:
-            time_warning = None
+        time_warning = f"⚠️ EXPIRED OPTION — backtest only" if is_expired else None
 
     regime_str = ""
     if mkt.get("regime") and mkt.get("regime") not in ("NEUTRAL","UNKNOWN"):
         regime_str = f" · {mkt.get('regime_emoji','')} {mkt.get('regime','')}"
 
-    # Source badge
-    src = trade.get("source","")
-    if src == "bullflow":
-        src_badge = " 🅱"
-    elif src == "flowgod":
-        src_badge = " 🐦"
-    else:
-        src_badge = ""
+    # ── Option price parsing ─────────────────────────────────────────
+    option_price = trade.get("avg_fill_price") or data.get("flow_fill_price")
+    src_debug    = trade.get("source","")
+    op_float     = None
+    if option_price:
+        try:
+            op_check = float(str(option_price).replace("K","000").replace("M","000000"))
+            if op_check > 5000:
+                option_price = None
+        except: pass
+    print(f"[BUILD_SMS] source={src_debug} option_price={option_price} flow_fill={data.get('flow_fill_price')}")
+    if option_price:
+        try:
+            op_str = str(option_price).strip().upper()
+            if op_str.endswith("K"):   op_float = float(op_str[:-1]) * 1000
+            elif op_str.endswith("M"): op_float = float(op_str[:-1]) * 1000000
+            else:                      op_float = float(op_str)
+            if op_float and op_float > 500: op_float = None
+        except: op_float = None
 
-    lines = [
-        f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}",
-        f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict}",
-        f"VIX {vix_str} · SPY {spy_str}{regime_str}",
-    ]
-    # Strategy note for non-neutral regimes
-    if mkt.get("strategy_note") and mkt.get("regime") not in ("NEUTRAL","UNKNOWN","TRENDING_BULL"):
-        lines.append(f"📋 {mkt['strategy_note']}")
-    if time_warning:
-        lines.append(time_warning)
-
-    # Fill aggression
-    fill_type  = data.get("fill_type")
-    fill_emoji = data.get("fill_emoji","")
-    fill_label = data.get("fill_label","")
-    if fill_type and fill_type not in ("UNKNOWN","") and fill_label:
-        lines.append(f"{fill_emoji} {fill_label}")
-
-    # Premium size signal
-    if data.get("premium_label") and data.get("premium_emoji"):
-        lines.append(f"{data['premium_emoji']} {data['premium_label']}")
-
-    # Vol/OI ratio signal
-    if data.get("vol_oi_label") and data.get("vol_oi_ratio",0) >= 3:
-        lines.append(f"{data.get('vol_oi_emoji','')} {data['vol_oi_label']}")
-
-    # Breakout warning
-    if data.get("is_breakout_bet") and data.get("breakout_label"):
-        lines.append(f"⚠️ BREAKOUT BET: {cap(data['breakout_label'], 80)}")
-
-    # Move analysis
-    move = data.get("move_analysis")
-    if move and data.get("days_to_expiry",99) <= 60:  # Only show for near-term
-        lines.append(f"📐 {move['label']}")
-
-    # Earnings timing
-    earn = data.get("expiry_timing_label","")
-    if earn:
-        lines.append(f"{data.get('expiry_timing_emoji','')} {earn}")
-
-    # Pattern alert
-    if pattern.get("alert"):
-        lines.append(f"⚠️ {ticker} alerted {pattern['count']}x today")
-
-    # Analysis lines
-    # Cross-source confirmation badge
-    bf_conf = data.get("bullflow_confirmation")
+    # ── Cross-source confirmation ────────────────────────────────────
+    bf_conf      = data.get("bullflow_confirmation")
+    conf_line    = None
     if bf_conf:
         bf_v        = bf_conf.get("verdict","")
         bf_s        = bf_conf.get("score","?")
         bf_t        = bf_conf.get("time","")
+        conf_src    = bf_conf.get("conf_source","")
         curr_source = trade.get("source","")
-        # Show which source is confirming which
-        conf_src = bf_conf.get("conf_source","")
         if curr_source == "flowgod" and conf_src == "bullflow":
-            # FlowGod tweet confirms what Bullflow already caught — strongest signal
             conf_label = "🅱 Bullflow caught this early — FlowGod now confirms"
         elif curr_source == "bullflow" and conf_src == "flowgod":
-            # Bullflow alert, but FlowGod already tweeted it — Bullflow was late
-            conf_label = "🐦 FlowGod already on this — Bullflow late confirmation"
+            conf_label = "🐦 FlowGod already on this — Bullflow late"
         else:
-            conf_label = "🔄 Cross-source confirmation"
+            conf_label = "🔄 Cross-source confirmed"
         conf_emoji = "🔥" if bf_v == "TRADE" else "✅"
         time_note  = f" at {bf_t}" if bf_t else ""
-        lines.append(f"{conf_emoji} {conf_label}{time_note} — scored {bf_s}/7 {bf_v}")
+        conf_line  = f"{conf_emoji} {conf_label}{time_note} — {bf_s}/7 {bf_v}"
 
-    if one_liner:
-        lines.append(f"→ {one_liner}")
-    if top_imp:
-        lines.append(f"→ {top_imp}")
+    # ── Short interest ───────────────────────────────────────────────
+    si_pct   = data.get("short_interest_pct") or data.get("short_ratio")
+    dtc      = data.get("days_to_cover")
+    si_line  = None
+    if si_pct:
+        opt_lower  = (trade.get("option_type","call") or "call").lower()
+        is_bullish = "call" in opt_lower or is_put_sell
+        if si_pct >= 25:   si_emoji, si_label = "🔥", ("squeeze candidate" if is_bullish else "bearish confirmation")
+        elif si_pct >= 15: si_emoji, si_label = "⚠️", ("squeeze potential" if is_bullish else "elevated shorting")
+        elif si_pct >= 8:  si_emoji, si_label = "📊", "moderate short interest"
+        else:              si_emoji, si_label = "✅", "low — clean setup"
+        dtc_str = f" | {round(float(dtc),1)}d to cover" if dtc else ""
+        si_line = f"{si_emoji} Short interest: {si_pct}%{dtc_str} — {si_label}"
 
-    # Sweep detection
-    if data.get("is_sweep") and data.get("sweep_label"):
-        lines.append(f"{data.get('sweep_emoji','')} {data['sweep_label']}")
+    # ══════════════════════════════════════════
+    # SECTION 1: SIGNAL
+    # ══════════════════════════════════════════
+    lines = [
+        f"━━━ SIGNAL ━━━",
+        f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}",
+        f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict}",
+        f"VIX {vix_str} · SPY {spy_str}{regime_str}",
+    ]
+    if time_warning:
+        lines.append(time_warning)
+    if conf_line:
+        lines.append(conf_line)
 
-    # Current option price vs flow fill
-    if data.get("option_entry_note") and data.get("option_entry_emoji"):
-        lines.append(f"{data['option_entry_emoji']} {data['option_entry_note']}")
+    # ══════════════════════════════════════════
+    # SECTION 2: FLOW DATA
+    # ══════════════════════════════════════════
+    lines.append("")
+    lines.append("━━━ FLOW ━━━")
 
-    # Confidence score from historical data
-    if intel.get("confidence",{}).get("confidence") is not None:
-        c = intel["confidence"]
-        lines.append(f"📊 Confidence: {c['confidence_label']}")
+    # Premium + fill type
+    prem_label = data.get("premium_label","")
+    prem_emoji = data.get("premium_emoji","")
+    fill_label = data.get("fill_label","")
+    fill_emoji = data.get("fill_emoji","")
+    fill_type  = data.get("fill_type","")
+    vol_label  = data.get("vol_oi_label","")
+    vol_emoji  = data.get("vol_oi_emoji","")
 
-    # Weekly ticker summary
-    if intel.get("weekly_summary"):
-        lines.append(f"📈 {intel['weekly_summary']['summary']}")
+    if prem_label:
+        lines.append(f"{prem_emoji} {prem_label}")
+    if fill_type and fill_type not in ("UNKNOWN","") and fill_label:
+        lines.append(f"{fill_emoji} {fill_label}")
+    if vol_label and data.get("vol_oi_ratio",0) >= 3:
+        lines.append(f"{vol_emoji} {vol_label}")
 
-    # Intelligence signals
-    if intel:
-        if intel.get("roll",{}).get("is_roll"):
-            lines.append(f"{intel['roll']['roll_emoji']} {intel['roll']['roll_label']}")
-            lines.append(f"  → {intel['roll']['roll_note']}")
-        if intel.get("repeat",{}).get("is_repeat"):
-            lines.append(f"{intel['repeat']['repeat_emoji']} {intel['repeat']['repeat_label']}")
-        if intel.get("divergence",{}).get("has_divergence") is not False and intel.get("divergence"):
-            div = intel["divergence"]
-            lines.append(f"{div.get('div_emoji','')} {div.get('div_label','')}")
-        if intel.get("dark_pool",{}).get("unusual_volume"):
-            dp = intel["dark_pool"]
-            lines.append(f"{dp.get('dark_pool_emoji','')} {dp.get('dark_pool_label','')}")
-        if intel.get("earnings_season",{}).get("in_earnings_season"):
-            es = intel["earnings_season"]
-            # Suppress earnings season note for put sells — they benefit from theta, not catalysts
-            is_put_sell_es = data.get("fill_type","") == "PUT_SELL_BID"
-            if not is_put_sell_es:
-                lines.append(f"{es.get('season_emoji','')} {es.get('season_note','')}")
+    # OTM / DTE / sweep inline
+    otm_pct  = data.get("otm_pct")
+    otm_str  = f"OTM {otm_pct:+.1f}%" if otm_pct is not None else ""
+    dte_info = f"{dte}d DTE" if dte is not None else ""
+    sweep_label = data.get("sweep_label","") if data.get("is_sweep") else ""
+    sweep_emoji = data.get("sweep_emoji","") if data.get("is_sweep") else ""
+    inline_parts = [p for p in [sweep_label and f"{sweep_emoji} {sweep_label}", otm_str, dte_info] if p]
+    if inline_parts:
+        lines.append("  " + " · ".join(inline_parts))
 
-    # Risk warnings
-    if risk and risk.get("warnings"):
-        for w in risk["warnings"][:2]:
-            lines.append(w)
-    if risk and risk.get("smart_stop"):
-        ss = risk["smart_stop"]
-        lines.append(f"🛑 Smart stop: ${ss['stop_price']} ({ss['stop_reason']})")
+    # Short interest
+    if si_line:
+        lines.append(si_line)
+
+    # Move analysis
+    move = data.get("move_analysis")
+    if move and dte_val is not None and int(dte_val) <= 60:
+        lines.append(f"📐 {move['label']}")
 
     # Greeks
     greeks = data.get("greeks")
@@ -594,146 +578,145 @@ def build_sms(trade: dict, data: dict, result: dict,
         delta = greeks.get("delta","?")
         theta = greeks.get("theta","?")
         iv    = greeks.get("iv","?")
-        lines.append(f"Δ {delta} | θ {theta}/day | IV {iv}%")
+        lines.append(f"Δ {delta} · θ {theta}/day · IV {iv}%")
 
-    # IV Rank
-    if data.get("iv_rank") is not None:
-        lines.append(f"IV Rank: {data['iv_rank']}% {data.get('iv_label','')} — {data.get('iv_advice','')}")
+    # ══════════════════════════════════════════
+    # SECTION 3: THESIS
+    # ══════════════════════════════════════════
+    lines.append("")
+    lines.append("━━━ THESIS ━━━")
 
-    # IV Crush risk
-    if data.get("crush_risk","NONE") not in ("NONE","LOW",""):
-        lines.append(f"{data.get('crush_emoji','')} IV Crush: {data.get('crush_label','')}")
+    if one_liner:
+        lines.append(f"→ {one_liner}")
+    if top_imp:
+        lines.append(f"→ {top_imp}")
 
-    # News context
-    news_lines = format_news_for_sms(data.get("news") or {})
-    lines.extend(news_lines)
+    # Earnings timing
+    earn = data.get("expiry_timing_label","")
+    if earn:
+        lines.append(f"{data.get('expiry_timing_emoji','')} {earn}")
 
-    # Insider buying
+    # Breakout
+    if data.get("is_breakout_bet") and data.get("breakout_label"):
+        lines.append(f"⚠️ BREAKOUT BET: {cap(data['breakout_label'], 80)}")
+
+    # Intelligence signals
+    if intel:
+        if intel.get("weekly_summary"):
+            lines.append(f"📈 {intel['weekly_summary']['summary']}")
+        if intel.get("repeat",{}).get("is_repeat"):
+            lines.append(f"{intel['repeat']['repeat_emoji']} {intel['repeat']['repeat_label']}")
+        if intel.get("roll",{}).get("is_roll"):
+            lines.append(f"{intel['roll']['roll_emoji']} {intel['roll']['roll_label']}")
+            lines.append(f"  → {intel['roll']['roll_note']}")
+        if intel.get("divergence",{}).get("has_divergence") is not False and intel.get("divergence"):
+            div = intel["divergence"]
+            lines.append(f"{div.get('div_emoji','')} {div.get('div_label','')}")
+        if intel.get("dark_pool",{}).get("unusual_volume"):
+            dp = intel["dark_pool"]
+            lines.append(f"{dp.get('dark_pool_emoji','')} {dp.get('dark_pool_label','')}")
+
     if data.get("has_insider_buying") and data.get("insider_summary"):
         lines.append(f"👔 {data['insider_summary'][:80]}")
 
-    # Short interest — from Massive/Polygon
-    si_pct = data.get("short_interest_pct") or data.get("short_ratio")
-    dtc    = data.get("days_to_cover")
-    if si_pct:
-        opt_lower   = (trade.get("option_type","call") or "call").lower()
-        is_put_sell = data.get("fill_type","") == "PUT_SELL_BID"
-        is_bullish  = "call" in opt_lower or is_put_sell
-        if si_pct >= 25:
-            si_emoji = "🔥"
-            si_label = "extreme short interest — squeeze candidate" if is_bullish else "extreme shorting — bearish confirmation"
-        elif si_pct >= 15:
-            si_emoji = "⚠️"
-            si_label = "elevated short interest — squeeze potential" if is_bullish else "elevated shorting activity"
-        elif si_pct >= 8:
-            si_emoji = "📊"
-            si_label = "moderate short interest"
-        else:
-            si_emoji = "✅"
-            si_label = "low short interest — clean setup"
-        dtc_str = f" | {round(float(dtc),1)}d to cover" if dtc else ""
-        lines.append(f"{si_emoji} Short interest: {si_pct}%{dtc_str} — {si_label}")
+    # ══════════════════════════════════════════
+    # SECTION 4: ENTRY
+    # ══════════════════════════════════════════
+    lines.append("")
+    lines.append("━━━ ENTRY ━━━")
 
-    # Position sizing — use avg_fill_price (per contract) not total premium
-    option_price = trade.get("avg_fill_price") or data.get("flow_fill_price")
-    src_debug    = trade.get("source","")
-    # Sanity check — option_price should be per-contract price not total premium
-    if option_price:
-        try:
-            op_check = float(str(option_price).replace("K","000").replace("M","000000"))
-            if op_check > 5000:  # >$5000/contract = definitely total premium not per-contract
-                print(f"[BUILD_SMS] Ignoring option_price={option_price} — looks like total premium not per-contract")
-                option_price = None
-        except:
-            pass
-    print(f"[BUILD_SMS] source={src_debug} option_price={option_price} flow_fill={data.get('flow_fill_price')}")
-    if option_price:
-        # Safe convert — option_price may be string like '2.85' or '462.0K'
-        try:
-            op_str = str(option_price).strip().upper()
-            if op_str.endswith("K"):
-                op_float = float(op_str[:-1]) * 1000
-            elif op_str.endswith("M"):
-                op_float = float(op_str[:-1]) * 1000000
+    if op_float and op_float > 0:
+        has_fill    = bool(trade.get("avg_fill_price") or data.get("flow_fill_price"))
+        opt_lower2  = (trade.get("option_type","call") or "call").lower()
+        if has_fill:
+            if "put" in opt_lower2 and not is_put_sell:
+                entry_limit = round(op_float * 0.97, 2)
             else:
-                op_float = float(op_str)
-            # Sanity check — option price should be under $500 per contract
-            if op_float > 500:
-                op_float = None  # Likely a premium value, not option price
-        except:
-            op_float = None
+                entry_limit = round(op_float * 1.03, 2)
+            lines.append(f"💰 Flow filled @ ${op_float:.2f} | Limit: ${entry_limit:.2f}")
 
-        if op_float and op_float > 0:
-            # Show flow entry price and suggested entry limit for all alerts with a fill price
-            has_fill     = bool(trade.get("avg_fill_price") or data.get("flow_fill_price"))
-            source_str   = trade.get("source","")
-            is_bullflow  = source_str == "bullflow"
-            if has_fill or is_bullflow:
-                # Entry limit: 3% above flow fill for calls, 3% below for puts
-                opt_lower   = (trade.get("option_type","call") or "call").lower()
-                is_put_sell = data.get("fill_type","") == "PUT_SELL_BID"
-                if "put" in opt_lower and not is_put_sell:
-                    entry_limit = round(op_float * 0.97, 2)  # 3% below for puts
-                else:
-                    entry_limit = round(op_float * 1.03, 2)  # 3% above for calls
-                lines.append(f"💰 Flow filled @ ${op_float:.2f} | Entry limit: ${entry_limit:.2f}")
+        from outcomes import get_stats
+        stats      = get_stats()
+        win_rate   = stats.get("win_rate") if stats.get("total",0) >= 5 else None
+        sizing     = calc_position_size(op_float, verdict, win_rate=win_rate, score=final_score)
+        sizing_str = format_sizing_for_sms(sizing, op_float)
+        if sizing_str:
+            lines.append(sizing_str)
 
-            from outcomes import get_stats
-            stats      = get_stats()
-            win_rate   = stats.get("win_rate") if stats.get("total",0) >= 5 else None
-            sizing     = calc_position_size(op_float, verdict,
-                                            win_rate=win_rate, score=final_score)
-            sizing_str = format_sizing_for_sms(sizing, op_float)
-            if sizing_str:
-                lines.append(sizing_str)
-
-    # Exit target + S/R
+    # Stop + target
     try:
-        tgt         = calc_exit_target(int(final_score), data)
-        is_put_sell = data.get("fill_type","") == "PUT_SELL_BID"
+        if risk and risk.get("smart_stop"):
+            ss = risk["smart_stop"]
+            lines.append(f"🛑 Stop: ${ss['stop_price']} ({ss['stop_reason']})")
+
+        tgt = calc_exit_target(int(final_score), data)
         if is_put_sell:
-            strike_val = trade.get("strike","?")
-            lines.append(f"🎯 Target: Capture 50-80% of premium via time decay")
-            lines.append(f"  Exit when premium decays to 20-50% | Close near ${strike_val}")
+            lines.append(f"🎯 Target: Capture 50-80% premium via decay")
+            lines.append(f"  Exit at 20-50% decay | Close near ${trade.get('strike','?')}")
         else:
-            lines.append(f"🎯 Target: +{tgt['target']}% | Stop: {tgt['stop']}")
+            lines.append(f"🎯 Target: +{tgt['target']}% | {tgt['stop']}")
             lines.append(f"  {tgt['scale']}")
 
+        # S/R levels
         sr = data.get("support_resistance",{})
-        opt_lower   = str(trade.get("option_type","call")).lower()
-        is_put_sell = data.get("fill_type","") == "PUT_SELL_BID"
-        is_bullish  = "call" in opt_lower or is_put_sell
-        if sr and is_bullish and sr.get("support_levels"):
+        opt_lower3  = str(trade.get("option_type","call")).lower()
+        is_bullish3 = "call" in opt_lower3 or is_put_sell
+        if sr and is_bullish3 and sr.get("support_levels"):
             levels = " → ".join(["$"+str(l) for l in sr["support_levels"]])
             lines.append(f"📊 Support: {levels}")
             lines.append(f"  Thesis broken below ${sr['primary_support']}")
-        elif sr and not is_bullish and sr.get("resistance_levels"):
+        elif sr and not is_bullish3 and sr.get("resistance_levels"):
             levels = " → ".join(["$"+str(l) for l in sr["resistance_levels"]])
             lines.append(f"📊 Resistance: {levels}")
             lines.append(f"  Thesis broken above ${sr['primary_resistance']}")
     except Exception as _te:
         print(f"[TARGET] {_te}")
 
-    # Links
+    # ══════════════════════════════════════════
+    # SECTION 5: RISK
+    # ══════════════════════════════════════════
+    risk_lines = []
+    if risk and risk.get("warnings"):
+        risk_lines.extend(risk["warnings"][:2])
+    if intel and intel.get("earnings_season",{}).get("in_earnings_season") and not is_put_sell:
+        es = intel["earnings_season"]
+        risk_lines.append(f"{es.get('season_emoji','')} {es.get('season_note','')}")
+    if mkt.get("strategy_note") and mkt.get("regime") not in ("NEUTRAL","UNKNOWN","TRENDING_BULL"):
+        risk_lines.append(f"📋 {mkt['strategy_note']}")
+    if data.get("iv_rank") is not None:
+        risk_lines.append(f"IV Rank: {data['iv_rank']}% {data.get('iv_label','')} — {data.get('iv_advice','')}")
+    if data.get("crush_risk","NONE") not in ("NONE","LOW",""):
+        risk_lines.append(f"{data.get('crush_emoji','')} IV Crush: {data.get('crush_label','')}")
+    # News
+    news_lines = format_news_for_sms(data.get("news") or {})
+    risk_lines.extend(news_lines)
+
+    if risk_lines:
+        lines.append("")
+        lines.append("━━━ RISK ━━━")
+        lines.extend(risk_lines)
+
+    # ══════════════════════════════════════════
+    # FOOTER
+    # ══════════════════════════════════════════
+    lines.append("")
     if tweet_url:
         lines.append(f"🐦 {tweet_url}")
-    lines.append(f"📊 {base_url.rstrip('/')}/analysis/{analysis_id}")
+    lines.append(f"🔗 {base_url.rstrip('/')}/analysis/{analysis_id}")
 
-    body   = "\n".join([str(l) for l in lines if l])
-    footer = ""
-    max_body = 3800 - len(footer)
+    body = "\n".join([str(l) for l in lines if l is not None])
 
-    if len(body) > max_body:
+    if len(body) > 3800:
         truncated = []
         running   = 0
         for line in lines:
-            if running + len(line) + 1 > max_body:
+            if running + len(str(line)) + 1 > 3800:
                 break
-            truncated.append(line)
-            running += len(line) + 1
+            truncated.append(str(line))
+            running += len(str(line)) + 1
         body = "\n".join(truncated)
 
-    return body + footer
+    return body
 
 # ── Process alert ─────────────────────────────────────────────────────
 async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = None):
