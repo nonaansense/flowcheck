@@ -932,13 +932,23 @@ def fetch_greeks(ticker: str, strike: str, opt_type: str,
     return None
 
 def fetch_float_and_short(ticker: str) -> dict:
-    """Fetch float shares from Finnhub. Short interest now handled by Massive/Polygon."""
+    """Fetch float shares, company profile and short interest."""
     data   = fh_get("/stock/profile2", {"symbol": ticker})
-    result = {"float_shares": None, "short_interest": None, "short_ratio": None}
+    result = {"float_shares": None, "short_interest": None, "short_ratio": None,
+              "company_name": None, "company_desc": None, "sector": None, "industry": None}
     if data:
         shares_float = data.get("shareOutstanding")
         if shares_float:
             result["float_shares"] = round(float(shares_float) * 1e6)
+        # Company profile
+        result["company_name"] = data.get("name","")
+        result["sector"]       = data.get("finnhubIndustry","") or data.get("ggroup","")
+        result["industry"]     = data.get("gsubind","") or data.get("naicsNationalIndustry","")
+        # Description — take first sentence only
+        desc = data.get("description","") or ""
+        if desc:
+            first = desc.split(".")[0].strip()
+            result["company_desc"] = first[:200] if first else desc[:200]
     # Short interest via Massive/Polygon (not Finnhub — requires paid tier)
     si_data = fetch_short_interest(ticker)
     if si_data and si_data.get("short_pct"):
@@ -1341,6 +1351,10 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
     data["float_shares"]   = float_data.get("float_shares")
     data["short_interest"] = float_data.get("short_interest")
     data["days_to_cover"]  = float_data.get("days_to_cover") or data.get("days_to_cover")
+    data["company_name"]   = float_data.get("company_name")
+    data["company_desc"]   = float_data.get("company_desc")
+    data["sector"]         = float_data.get("sector")
+    data["industry"]       = float_data.get("industry")
 
     # Polygon short interest (more reliable, bi-weekly FINRA data)
     if not data.get("short_interest"):

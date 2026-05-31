@@ -581,7 +581,39 @@ def build_sms(trade: dict, data: dict, result: dict,
         lines.append(f"Δ {delta} · θ {theta}/day · IV {iv}%")
 
     # ══════════════════════════════════════════
-    # SECTION 3: THESIS
+    # SECTION 3: CONTEXT
+    # ══════════════════════════════════════════
+    company_name = data.get("company_name","") or ticker
+    company_desc = data.get("company_desc","")
+    sector       = data.get("sector","")
+    industry     = data.get("industry","")
+    earn_date    = data.get("next_earnings","")
+
+    context_lines = []
+    # Company name as clickable Yahoo Finance profile link
+    yf_url = f"https://finance.yahoo.com/quote/{ticker}/profile"
+    name_str = company_name if company_name else ticker
+    context_lines.append(f'🏢 <a href="{yf_url}">{name_str}</a>')
+
+    # One-line description
+    if company_desc:
+        context_lines.append(f"   {company_desc}")
+
+    # Sector / industry / earnings
+    meta_parts = []
+    if sector:   meta_parts.append(sector)
+    if industry: meta_parts.append(industry)
+    if earn_date: meta_parts.append(f"Earnings: {earn_date}")
+    if meta_parts:
+        context_lines.append("   " + " · ".join(meta_parts))
+
+    if context_lines:
+        lines.append("")
+        lines.append("━━━ CONTEXT ━━━")
+        lines.extend(context_lines)
+
+    # ══════════════════════════════════════════
+    # SECTION 4: THESIS
     # ══════════════════════════════════════════
     lines.append("")
     lines.append("━━━ THESIS ━━━")
