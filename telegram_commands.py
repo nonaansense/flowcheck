@@ -55,20 +55,58 @@ def get_updates() -> list:
     return []
 
 
-def handle_evaluate_command(from_chat_id):
-    """Evaluate all open positions — HOLD, TRIM, or CLOSE recommendation."""
-    send_reply("Evaluating open positions...", from_chat_id)
-    try:
-        import os
-        import anthropic as _ant
-        from storage import load_data
-        from fetcher import fetch_price, fetch_vix
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
+def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=None):
+    """Evaluate open positions: HOLD, TRIM, or CLOSE. Filters by ticker/account."""
+    import os
+    import anthropic as _ant
+    from storage import load_data
+    from fetcher import fetch_price, fetch_vix
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
 
-        journal     = load_data("journal", "/tmp/journal.json", {"trades": []})
-        open_trades = [t for t in journal.get("trades", [])
-                       if t.get("status", "").upper() != "CLOSED"]
+    # Build status message
+    parts = []
+    if ticker_filter:   parts.append(ticker_filter.upper())
+    if account_filter:  parts.append("@" + account_filter)
+    label = " + ".join(parts) if parts else "all positions"
+    send_reply("Evaluating " + label + "...", from_chat_id)
+
+    try:
+        journal  = load_data("journal", "/tmp/journal.json", {"trades": []})
+        all_open = [t for t in journal.get("trades", [])
+                    if t.get("status", "").upper() != "CLOSED"]
+
+        # Apply ticker filter
+        if ticker_filter:
+            all_open = [t for t in all_open
+                        if (t.get("ticker","") or "").upper() == ticker_filter.upper()]
+            if not all_open:
+                send_reply("No open positions for " + ticker_filter.upper() + ".", from_chat_id)
+                return
+
+        # Apply account filter or dedup by ticker+strike
+        if account_filter:
+            open_trades = [t for t in all_open
+                           if (t.get("account_id","") or "").lower().lstrip("@") == account_filter]
+            if not open_trades:
+                send_reply("No open positions for @" + account_filter + ".", from_chat_id)
+                return
+        else:
+            seen    = {}
+            deduped = []
+            for t in all_open:
+                key = (t.get("ticker","") + "_" + str(t.get("strike","")) +
+                       "_" + (t.get("option_type","") or "") + "_" + (t.get("expiry","") or ""))
+                if key not in seen:
+                    seen[key] = 0
+                    t2 = dict(t)
+                    deduped.append(t2)
+                seen[key] += 1
+            for t2 in deduped:
+                key = (t2.get("ticker","") + "_" + str(t2.get("strike","")) +
+                       "_" + (t2.get("option_type","") or "") + "_" + (t2.get("expiry","") or ""))
+                t2["_acct_count"] = seen.get(key, 1)
+            open_trades = deduped
 
         if not open_trades:
             send_reply("No open positions to evaluate.", from_chat_id)
@@ -88,7 +126,7 @@ def handle_evaluate_command(from_chat_id):
         for t in open_trades[:10]:
             ticker     = t.get("ticker", "?")
             strike     = str(t.get("strike", "?"))
-            opt_type   = (t.get("option_type", "call") or "call").upper()[0]
+            opt_type   = ((t.get("option_type", "call") or "call").upper() + " ")[0]
             expiry     = t.get("expiry", "?")
             entry_px   = float(t.get("entry_price", 0) or 0)
             curr_px    = float(t.get("last_price", 0) or entry_px)
@@ -98,23 +136,24 @@ def handle_evaluate_command(from_chat_id):
             account    = t.get("account_id", "")
             score      = t.get("score", "?")
             verdict_orig = t.get("verdict", "?")
+            acct_count   = t.get("_acct_count", 1)
 
             try:
                 stock_px  = fetch_price(ticker)
-                stock_str = "$" + str(round(stock_px, 2)) if stock_px else "unknown"
+                stock_str = "$" + str(round(stock_px, 2)) if stock_px else "?"
             except Exception:
-                stock_str = "unknown"
+                stock_str = "?"
 
             dte = None
             try:
-                parts = expiry.split("/")
-                m2, d2, y2 = parts
+                parts2 = expiry.split("/")
+                m2, d2, y2 = parts2
                 y2     = "20" + y2 if len(y2) == 2 else y2
                 exp_dt = datetime(int(y2), int(m2), int(d2), tzinfo=ZoneInfo("America/New_York"))
                 dte    = (exp_dt - now_et).days
             except Exception:
                 pass
-            dte_str = str(dte) + "d" if dte is not None else "unknown"
+            dte_str = str(dte) + "d" if dte is not None else "?"
 
             if entry_px > 0 and curr_px > 0:
                 if is_sto:
@@ -126,48 +165,42 @@ def handle_evaluate_command(from_chat_id):
                 total_pnl += pnl_usd
                 sign     = "+" if pnl_pct >= 0 else ""
                 sign_usd = "+" if pnl_usd >= 0 else ""
-                pnl_str  = sign + str(pnl_pct) + "% ($" + sign_usd + str(int(pnl_usd)) + ")"
+                pnl_str  = sign + str(pnl_pct) + "% (" + sign_usd + "$" + str(int(pnl_usd)) + ")"
             else:
                 pnl_str = "unknown"
-                pnl_usd = 0
 
             prompt = (
-                "Evaluate this options position. Reply ONLY in this format:\n"
+                "Evaluate this options position. Reply ONLY:\n"
                 "VERDICT: HOLD or TRIM or CLOSE\n"
                 "REASON: one sentence max 20 words\n\n"
                 "POSITION: " + ticker + " " + strike + opt_type +
-                " expiring " + expiry + " (" + dte_str + " left)\n"
-                "TYPE: " + ("Put Sell STO" if is_sto else "Long BTO") + "\n"
-                "ENTRY: $" + str(entry_px) + " | CURRENT: $" + str(curr_px) +
+                " exp " + expiry + " (" + dte_str + " left)\n"
+                "TYPE: " + ("STO put sell" if is_sto else "BTO long") + "\n"
+                "ENTRY: $" + str(entry_px) + " | NOW: $" + str(curr_px) +
                 " | PNL: " + pnl_str + "\n"
                 "STOCK: " + stock_str + " | VIX: " + vix_str + "\n"
-                "ORIGINAL SCORE: " + str(score) + "/7 " + str(verdict_orig)
+                "SCORE: " + str(score) + "/7 " + str(verdict_orig)
             )
 
             try:
-                resp         = client.messages.create(
+                resp     = client.messages.create(
                     model="claude-haiku-4-5-20251001",
                     max_tokens=80,
                     messages=[{"role": "user", "content": prompt}]
                 )
-                raw          = resp.content[0].text.strip()
-                raw_lines    = raw.splitlines()
-                v_line       = next((l for l in raw_lines if "VERDICT:" in l), "VERDICT: HOLD")
-                r_line       = next((l for l in raw_lines if "REASON:" in l), "REASON: Monitor position.")
+                raw      = resp.content[0].text.strip()
+                raw_lines= raw.splitlines()
+                v_line   = next((l for l in raw_lines if "VERDICT:" in l), "VERDICT: HOLD")
+                r_line   = next((l for l in raw_lines if "REASON:" in l), "REASON: Monitor position.")
                 verdict_eval = v_line.replace("VERDICT:", "").strip()
                 reason_eval  = r_line.replace("REASON:", "").strip()
             except Exception as he:
                 verdict_eval = "HOLD"
-                reason_eval  = "Evaluation error: " + str(he)[:40]
+                reason_eval  = "Haiku error: " + str(he)[:40]
 
-            if verdict_eval == "CLOSE":
-                emoji = "red_circle"
-            elif verdict_eval == "TRIM":
-                emoji = "yellow_circle"
-            else:
-                emoji = "green_circle"
+            EMOJIS = {"CLOSE": "\U0001f534", "TRIM": "\U0001f7e1", "HOLD": "\U0001f7e2"}
+            em = EMOJIS.get(verdict_eval, "\U0001f7e2")
 
-            acct_count = t.get("_acct_count", 1)
             if account_filter:
                 acct_str = " [" + account + "]" if account else ""
             elif acct_count > 1:
@@ -175,26 +208,23 @@ def handle_evaluate_command(from_chat_id):
             else:
                 acct_str = " [" + account + "]" if account else ""
 
-            results.append((emoji, ticker, strike, opt_type, dte_str, acct_str,
-                             verdict_eval, pnl_str, stock_str, reason_eval))
+            line1 = em + " " + ticker + " " + strike + opt_type + " [" + dte_str + "]" + acct_str + " -- " + verdict_eval
+            line2 = "   " + pnl_str + " | " + stock_str
+            line3 = "   -> " + reason_eval
+            results.append(line1 + "\n" + line2 + "\n" + line3)
 
-        # Build output
-        EMOJIS = {"red_circle": "\U0001f534", "yellow_circle": "\U0001f7e1",
-                  "green_circle": "\U0001f7e2"}
-        sep    = chr(10) + "\u2500" * 20 + chr(10)
-        lines  = ["=== Position Review " + now_et.strftime("%b %d %I:%M%p ET") + " ==="]
-        for (em, tk, sk, ot, dt, ac, verd, pnl, stk, rsn) in results:
-            e = EMOJIS.get(em, "")
-            lines.append(e + " " + tk + " " + sk + ot + " [" + dt + "]" + ac + " -- " + verd)
-            lines.append("   " + pnl + " | " + stk)
-            lines.append("   -> " + rsn)
-        lines.append("-" * 20)
-        sign = "+" if total_pnl >= 0 else ""
-        lines.append("Total open P&L: " + sign + "$" + str(int(total_pnl)))
-        send_reply(chr(10).join(lines), from_chat_id)
+        sep   = "-" * 20
+        hdr   = "=== Evaluate: " + label + " | " + now_et.strftime("%b %d %I:%M%p ET") + " ==="
+        sign  = "+" if total_pnl >= 0 else ""
+        total = "Total P&L: " + sign + "$" + str(int(total_pnl))
+        msg   = hdr + "\n" + "\n\n".join(results) + "\n" + sep + "\n" + total
+        send_reply(msg, from_chat_id)
 
     except Exception as e:
-        send_reply("Evaluate error: " + str(e), from_chat_id)
+        import traceback
+        err = traceback.format_exc()[-200:]
+        send_reply("Evaluate error: " + str(e) + "\n" + err, from_chat_id)
+        print("[EVALUATE] Error: " + str(e))
 
 
 def handle_command(text: str, from_chat_id: str):
