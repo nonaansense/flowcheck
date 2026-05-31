@@ -54,6 +54,149 @@ def get_updates() -> list:
         print(f"[CMD] getUpdates error: {e}")
     return []
 
+
+def handle_evaluate_command(from_chat_id):
+    """Evaluate all open positions — HOLD, TRIM, or CLOSE recommendation."""
+    send_reply("Evaluating open positions...", from_chat_id)
+    try:
+        import os
+        import anthropic as _ant
+        from storage import load_data
+        from fetcher import fetch_price, fetch_vix
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        journal     = load_data("journal", "/tmp/journal.json", {"trades": []})
+        open_trades = [t for t in journal.get("trades", [])
+                       if t.get("status", "").upper() != "CLOSED"]
+
+        if not open_trades:
+            send_reply("No open positions to evaluate.", from_chat_id)
+            return
+
+        try:
+            vix     = fetch_vix()
+            vix_str = str(round(vix, 1)) if vix else "?"
+        except Exception:
+            vix_str = "?"
+
+        now_et    = datetime.now(ZoneInfo("America/New_York"))
+        client    = _ant.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+        results   = []
+        total_pnl = 0.0
+
+        for t in open_trades[:10]:
+            ticker     = t.get("ticker", "?")
+            strike     = str(t.get("strike", "?"))
+            opt_type   = (t.get("option_type", "call") or "call").upper()[0]
+            expiry     = t.get("expiry", "?")
+            entry_px   = float(t.get("entry_price", 0) or 0)
+            curr_px    = float(t.get("last_price", 0) or entry_px)
+            contracts  = int(t.get("contracts", 1) or 1)
+            order_type = (t.get("order_type", "BTO") or "BTO").upper()
+            is_sto     = order_type == "STO" or t.get("fill_type", "") == "PUT_SELL_BID"
+            account    = t.get("account_id", "")
+            score      = t.get("score", "?")
+            verdict_orig = t.get("verdict", "?")
+
+            try:
+                stock_px  = fetch_price(ticker)
+                stock_str = "$" + str(round(stock_px, 2)) if stock_px else "unknown"
+            except Exception:
+                stock_str = "unknown"
+
+            dte = None
+            try:
+                parts = expiry.split("/")
+                m2, d2, y2 = parts
+                y2     = "20" + y2 if len(y2) == 2 else y2
+                exp_dt = datetime(int(y2), int(m2), int(d2), tzinfo=ZoneInfo("America/New_York"))
+                dte    = (exp_dt - now_et).days
+            except Exception:
+                pass
+            dte_str = str(dte) + "d" if dte is not None else "unknown"
+
+            if entry_px > 0 and curr_px > 0:
+                if is_sto:
+                    pnl_pct = round((entry_px - curr_px) / entry_px * 100, 1)
+                    pnl_usd = round((entry_px - curr_px) * contracts * 100, 0)
+                else:
+                    pnl_pct = round((curr_px - entry_px) / entry_px * 100, 1)
+                    pnl_usd = round((curr_px - entry_px) * contracts * 100, 0)
+                total_pnl += pnl_usd
+                sign     = "+" if pnl_pct >= 0 else ""
+                sign_usd = "+" if pnl_usd >= 0 else ""
+                pnl_str  = sign + str(pnl_pct) + "% ($" + sign_usd + str(int(pnl_usd)) + ")"
+            else:
+                pnl_str = "unknown"
+                pnl_usd = 0
+
+            prompt = (
+                "Evaluate this options position. Reply ONLY in this format:\n"
+                "VERDICT: HOLD or TRIM or CLOSE\n"
+                "REASON: one sentence max 20 words\n\n"
+                "POSITION: " + ticker + " " + strike + opt_type +
+                " expiring " + expiry + " (" + dte_str + " left)\n"
+                "TYPE: " + ("Put Sell STO" if is_sto else "Long BTO") + "\n"
+                "ENTRY: $" + str(entry_px) + " | CURRENT: $" + str(curr_px) +
+                " | PNL: " + pnl_str + "\n"
+                "STOCK: " + stock_str + " | VIX: " + vix_str + "\n"
+                "ORIGINAL SCORE: " + str(score) + "/7 " + str(verdict_orig)
+            )
+
+            try:
+                resp         = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=80,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                raw          = resp.content[0].text.strip()
+                raw_lines    = raw.splitlines()
+                v_line       = next((l for l in raw_lines if "VERDICT:" in l), "VERDICT: HOLD")
+                r_line       = next((l for l in raw_lines if "REASON:" in l), "REASON: Monitor position.")
+                verdict_eval = v_line.replace("VERDICT:", "").strip()
+                reason_eval  = r_line.replace("REASON:", "").strip()
+            except Exception as he:
+                verdict_eval = "HOLD"
+                reason_eval  = "Evaluation error: " + str(he)[:40]
+
+            if verdict_eval == "CLOSE":
+                emoji = "red_circle"
+            elif verdict_eval == "TRIM":
+                emoji = "yellow_circle"
+            else:
+                emoji = "green_circle"
+
+            acct_count = t.get("_acct_count", 1)
+            if account_filter:
+                acct_str = " [" + account + "]" if account else ""
+            elif acct_count > 1:
+                acct_str = " (" + str(acct_count) + " accts)"
+            else:
+                acct_str = " [" + account + "]" if account else ""
+
+            results.append((emoji, ticker, strike, opt_type, dte_str, acct_str,
+                             verdict_eval, pnl_str, stock_str, reason_eval))
+
+        # Build output
+        EMOJIS = {"red_circle": "\U0001f534", "yellow_circle": "\U0001f7e1",
+                  "green_circle": "\U0001f7e2"}
+        sep    = chr(10) + "\u2500" * 20 + chr(10)
+        lines  = ["=== Position Review " + now_et.strftime("%b %d %I:%M%p ET") + " ==="]
+        for (em, tk, sk, ot, dt, ac, verd, pnl, stk, rsn) in results:
+            e = EMOJIS.get(em, "")
+            lines.append(e + " " + tk + " " + sk + ot + " [" + dt + "]" + ac + " -- " + verd)
+            lines.append("   " + pnl + " | " + stk)
+            lines.append("   -> " + rsn)
+        lines.append("-" * 20)
+        sign = "+" if total_pnl >= 0 else ""
+        lines.append("Total open P&L: " + sign + "$" + str(int(total_pnl)))
+        send_reply(chr(10).join(lines), from_chat_id)
+
+    except Exception as e:
+        send_reply("Evaluate error: " + str(e), from_chat_id)
+
+
 def handle_command(text: str, from_chat_id: str):
     text = text.strip()
     cmd  = text.split()[0].lower().lstrip("/")
@@ -98,6 +241,15 @@ def handle_command(text: str, from_chat_id: str):
         handle_oi_all(from_chat_id)
     elif cmd == "sentiment" and args:
         handle_sentiment(args[0].upper(), from_chat_id)
+
+    elif cmd in ("evaluate", "eval", "review"):
+        # /evaluate          — all accounts, deduped by ticker+strike
+        # /evaluate @rh_ira  — specific account only
+        acct_filter = args[0].lstrip("@").lower() if args else None
+        handle_evaluate_command(from_chat_id, account_filter=acct_filter)
+
+    elif cmd in ("evaluate", "eval", "review"):
+        handle_evaluate_command(from_chat_id)
 
     elif cmd == "price" and args:
         # /price TICKER — real-time stock price

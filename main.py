@@ -203,6 +203,23 @@ def remind_open_journal_trades():
     except Exception as e:
         print(f"[REMINDER] Error: {e}")
 
+def check_railway_balance():
+    """Alert if Railway balance is low. Update RAILWAY_BALANCE var after each top-up."""
+    try:
+        balance_str = os.environ.get("RAILWAY_BALANCE","")
+        if not balance_str:
+            return
+        balance    = float(balance_str)
+        daily_cost = float(os.environ.get("RAILWAY_DAILY_COST","0.37"))
+        days_left  = round(balance / daily_cost, 1) if daily_cost > 0 else 99
+        print(f"[RAILWAY] Balance: ${balance:.2f} (~{days_left}d remaining)")
+        if balance < 3.0:
+            send_sms(f"Railway balance critically low: ${balance:.2f} (~{days_left}d left) -- top up now!")
+        elif balance < 7.0:
+            send_sms(f"Railway balance low: ${balance:.2f} (~{days_left}d left) -- consider topping up")
+    except Exception as e:
+        print(f"[RAILWAY] Balance check error: {e}")
+
 def preload_earnings_calendar():
     """Pre-load 2-week earnings calendar at 8:30AM to speed up alert processing."""
     try:

@@ -210,6 +210,8 @@ Scans all watchlist tickers every 5 minutes (market hours) for M5/M10/M15/M30/H1
 |---------|-------------|
 | `/status` | Stream status, open positions, today's alerts, Railway balance |
 | `/price TICKER` | Real-time stock price |
+| `/evaluate` | AI review of all open positions — HOLD / TRIM / CLOSE (deduped) |
+| `/evaluate @rh_ira` | Evaluate specific account only |
 | `/positions` | All open positions with current P&L |
 | `/watchlist` | Active watchlist with DTE |
 | `/portfolio` | Portfolio summary by account |
@@ -308,6 +310,38 @@ RAILWAY_DAILY_COST        = 0.37
 | Massive/Polygon (key 2) | Technical scanner candles (round-robin) | Paid |
 | Bullflow.io | Real-time SSE options flow | Paid |
 | Anthropic Haiku | Scoring, vision parsing, company descriptions | Pay-per-use |
+
+---
+
+## Position Evaluation (/evaluate)
+
+On-demand AI review of all open positions using Claude Haiku. Each position is evaluated against current market conditions, DTE, P&L, and original thesis.
+
+```
+/evaluate          — all accounts, deduped by ticker+strike
+/evaluate @rh_ira  — IRA account only
+/evaluate @rh_brok — brokerage account only
+```
+
+**Output format:**
+```
+=== Position Review May 31 04:15PM ET ===
+🟢 NVDA 190C [21d] (2 accts) — HOLD
+   +45% | $214.50
+   -> Thesis intact, strong momentum, healthy DTE remaining
+
+🟡 PLTR 130C [47d] — TRIM
+   +12% | $156.54
+   -> Take partial profits, earnings mismatch unresolved
+
+🔴 TSLA 500C [3d] — CLOSE
+   -38% | $1.64
+   -> 3 DTE, deep OTM, no recovery path before expiry
+--------------------
+Total open P&L: +$4,250
+```
+
+Costs ~$0.001 per position (Haiku). Max 10 positions per call.
 
 ---
 
