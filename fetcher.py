@@ -944,11 +944,27 @@ def fetch_float_and_short(ticker: str) -> dict:
         result["company_name"] = data.get("name","")
         result["sector"]       = data.get("finnhubIndustry","") or data.get("ggroup","")
         result["industry"]     = data.get("gsubind","") or data.get("naicsNationalIndustry","")
-        # Description — take first sentence only
+        # Description — generate via Haiku if not available from Finnhub
         desc = data.get("description","") or ""
         if desc:
             first = desc.split(".")[0].strip()
             result["company_desc"] = first[:200] if first else desc[:200]
+        else:
+            # Generate one-liner via Claude Haiku
+            try:
+                import anthropic as _ant
+                _client = _ant.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY",""))
+                name    = result.get("company_name","")
+                sector  = result.get("sector","")
+                _resp   = _client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=60,
+                    messages=[{"role":"user","content":
+                        f"Give me a single sentence (max 15 words) describing what {name or ticker} ({ticker}) does. Just the sentence, no preamble."}]
+                )
+                result["company_desc"] = _resp.content[0].text.strip().rstrip(".")
+            except Exception as _de:
+                result["company_desc"] = sector or ""
     # Short interest via Massive/Polygon (not Finnhub — requires paid tier)
     si_data = fetch_short_interest(ticker)
     if si_data and si_data.get("short_pct"):
@@ -1349,12 +1365,12 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
     # Float + short interest
     float_data = fetch_float_and_short(ticker) or {}
     data["float_shares"]   = float_data.get("float_shares")
-    data["short_interest"] = float_data.get("short_interest")
-    data["days_to_cover"]  = float_data.get("days_to_cover") or data.get("days_to_cover")
-    data["company_name"]   = float_data.get("company_name")
-    data["company_desc"]   = float_data.get("company_desc")
-    data["sector"]         = float_data.get("sector")
-    data["industry"]       = float_data.get("industry")
+    data["short_interest"]   = float_data.get("short_interest")
+    data["days_to_cover"]    = float_data.get("days_to_cover") or data.get("days_to_cover")
+    data["company_name"]     = float_data.get("company_name")
+    data["company_desc"]     = float_data.get("company_desc")
+    data["company_sector"]   = float_data.get("sector")    # renamed to avoid collision with sector dict
+    data["company_industry"] = float_data.get("industry")
 
     # Polygon short interest (more reliable, bi-weekly FINRA data)
     if not data.get("short_interest"):

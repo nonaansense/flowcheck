@@ -23,15 +23,32 @@ def send_sms(message: str, verdict: str = None) -> bool:
 
     return main_ok or send_twilio(message)
 
+def escape_html(text: str) -> str:
+    """Escape HTML special chars but preserve <a href> tags."""
+    import re as _re
+    # Extract all <a href="...">...</a> tags first
+    links = []
+    def save_link(m):
+        links.append(m.group(0))
+        return f"\x00LINK{len(links)-1}\x00"
+    text = _re.sub(r'<a href="[^"]*">[^<]*</a>', save_link, text)
+    # Escape remaining HTML special chars
+    text = text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    # Restore links
+    for i, link in enumerate(links):
+        text = text.replace(f"\x00LINK{i}\x00", link)
+    return text
+
 def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
     if len(message) > 4000:
         base_url = os.environ.get("BASE_URL", "")
         message  = message[:3950] + f"\n...\n{base_url}/history"
+    message = escape_html(message)
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
             json={"chat_id": chat_id, "text": message,
-                  "parse_mode": "HTML", "disable_web_page_preview": False},
+                  "parse_mode": "HTML", "disable_web_page_preview": True},
             timeout=15
         )
         if r.status_code == 200:

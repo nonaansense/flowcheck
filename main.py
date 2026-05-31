@@ -585,8 +585,8 @@ def build_sms(trade: dict, data: dict, result: dict,
     # ══════════════════════════════════════════
     company_name = data.get("company_name","") or ticker
     company_desc = data.get("company_desc","")
-    sector       = data.get("sector","")
-    industry     = data.get("industry","")
+    sector       = data.get("company_sector","")
+    industry     = data.get("company_industry","")
     earn_date    = data.get("next_earnings","")
 
     context_lines = []

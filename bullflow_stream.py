@@ -451,8 +451,8 @@ def start_stream_thread(process_fn, send_sms_fn=None):
         f.write(str(os.getpid()))
     # Delay startup to allow old container to shut down during rolling deploy
     import time as _st
-    _st.sleep(8)
-    # Re-check lock after delay — another process may have started
+    _st.sleep(15)  # 15s — enough for Railway to kill old container
+    # Re-check lock after delay
     try:
         with open(_LOCK_FILE) as f:
             pid = int(f.read().strip())
@@ -460,6 +460,7 @@ def start_stream_thread(process_fn, send_sms_fn=None):
             print(f"[BULLFLOW] Another process ({pid}) took over — aborting")
             return None
     except: pass
+    print(f"[BULLFLOW] Lock confirmed for PID {os.getpid()} — starting stream")
     key = os.environ.get("BULLFLOW_API_KEY","")
     if not key:
         print("[BULLFLOW] No API key — stream disabled")
