@@ -821,7 +821,7 @@ def build_sms(trade: dict, data: dict, result: dict,
 
         # Line 4: key thesis point if available
         if one_liner:
-            short_lines.append(f"→ {cap(one_liner, 80)}")
+            short_lines.append(f"→ {cap(one_liner, 120)}")
 
         # Line 5: entry if we have fill price
         if op_float and op_float > 0:
@@ -833,19 +833,24 @@ def build_sms(trade: dict, data: dict, result: dict,
 
         # Line 6: stop + target + sizing compact
         try:
-            tgt = calc_exit_target(int(final_score), data)
-            ss  = risk.get("smart_stop",{}) if risk else {}
+            tgt      = calc_exit_target(int(float(final_score or 5)), data)
+            ss       = (risk.get("smart_stop",{}) or {}) if risk else {}
             stop_str = f"🛑 ${ss['stop_price']}" if ss.get("stop_price") else ""
             tgt_str  = f"🎯 +{tgt['target']}%" if not is_put_sell else "🎯 50-80% decay"
-            from outcomes import get_stats
-            stats    = get_stats()
-            win_rate = stats.get("win_rate") if stats.get("total",0) >= 5 else None
-            sizing   = calc_position_size(op_float, verdict, win_rate=win_rate, score=final_score) if op_float else None
-            sz_str   = f"{sizing['contracts']} contract{'s' if sizing['contracts']!=1 else ''} @ ${op_float:.2f}" if sizing and op_float else ""
-            compact  = " · ".join([p for p in [stop_str, tgt_str, sz_str] if p])
+            sz_str   = ""
+            if op_float and op_float > 0:
+                from outcomes import get_stats
+                stats    = get_stats()
+                win_rate = stats.get("win_rate") if stats.get("total",0) >= 5 else None
+                sizing   = calc_position_size(op_float, verdict, win_rate=win_rate, score=final_score)
+                if sizing:
+                    contr  = sizing.get("contracts",0)
+                    sz_str = f"{contr} contract{'s' if contr!=1 else ''} @ ${op_float:.2f}"
+            compact = " · ".join([p for p in [stop_str, tgt_str, sz_str] if p])
             if compact:
                 short_lines.append(compact)
-        except: pass
+        except Exception as _ce:
+            print(f"[BUILD_SMS] Compact stop/target error: {_ce}")
 
         # Line 7: VIX + market quick
         short_lines.append(f"VIX {vix_str} · SPY {spy_str}")
