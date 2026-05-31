@@ -933,8 +933,25 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         # Add to technical watchlist if WATCH or TRADE (skip test trades)
         dte = data.get("days_to_expiry")
         if trade.get("_test"):
-            analysis_id = trade.get("analysis_id", len(analyses) + 1)
-            print(f"[PROCESS] Test trade — skipping watchlist/position/analyses (id={analysis_id})")
+            analysis_id = trade.get("analysis_id", len(analyses))
+            # Save test trade to analyses so /analysis/{id} works
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            analyses.append({
+                "id":        analysis_id,
+                "tweet":     tweet,
+                "tweet_url": tweet_url,
+                "trade":     trade,
+                "result":    result,
+                "data":      data,
+                "intel":     intel,
+                "risk":      risk,
+                "pattern":   pattern,
+                "time":      now_et.strftime("%H:%M"),
+                "date":      now_et.strftime("%Y-%m-%d"),
+                "verdict":   result.get("verdict","?"),
+                "score":     result.get("final_score","?"),
+            })
+            print(f"[PROCESS] Test trade saved to analyses (id={analysis_id})")
         elif dte is None or int(dte) >= 1:
             if result.get("verdict") in ("WATCH", "TRADE"):
                 add_to_watchlist(ticker, trade, result, data, send_sms_fn=send_sms)
@@ -1955,9 +1972,30 @@ async def test_polygon():
 
 @app.get("/analysis/{analysis_id}")
 async def analysis_detail(analysis_id: int):
-    if analysis_id >= len(analyses):
-        return HTMLResponse("<h1>Analysis not found</h1>", status_code=404)
-    a      = analyses[analysis_id]
+    # First check in-memory analyses
+    a = None
+    for entry in analyses:
+        if entry.get("id") == analysis_id:
+            a = entry
+            break
+    # Fall back to Supabase if not in memory
+    if a is None:
+        try:
+            from storage import load_data
+            all_analyses = load_data("analyses_today") or []
+            for entry in all_analyses:
+                if entry.get("id") == analysis_id:
+                    a = entry
+                    break
+        except:
+            pass
+    if a is None:
+        return HTMLResponse(
+            f"<h1 style='font-family:sans-serif;padding:40px'>Analysis #{analysis_id} not found</h1>"
+            f"<p style='font-family:sans-serif;padding:0 40px'>This analysis may have expired or the server was redeployed. "
+            f"<a href='/'>View recent analyses</a></p>",
+            status_code=404
+        )
     trade  = a.get("trade",{})
     result = a.get("result",{})
     data   = a.get("data",{})
