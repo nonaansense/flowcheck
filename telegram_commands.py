@@ -169,6 +169,21 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
             else:
                 pnl_str = "unknown"
 
+            # Calculate ITM/OTM explicitly so Haiku doesn't guess
+            itm_otm_str = "unknown"
+            try:
+                stock_num  = float(stock_str.replace("$","")) if stock_str != "?" else None
+                strike_num = float(strike)
+                if stock_num:
+                    if "C" in opt_type.upper():
+                        diff_pct   = round((stock_num - strike_num) / strike_num * 100, 1)
+                        itm_otm_str = ("ITM " if diff_pct > 0 else "OTM ") + str(abs(diff_pct)) + "%"
+                    else:
+                        diff_pct   = round((strike_num - stock_num) / strike_num * 100, 1)
+                        itm_otm_str = ("ITM " if diff_pct > 0 else "OTM ") + str(abs(diff_pct)) + "%"
+            except Exception:
+                pass
+
             prompt = (
                 "Evaluate this options position. Reply ONLY:\n"
                 "VERDICT: HOLD or TRIM or CLOSE\n"
@@ -176,10 +191,11 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                 "POSITION: " + ticker + " " + strike + opt_type +
                 " exp " + expiry + " (" + dte_str + " left)\n"
                 "TYPE: " + ("STO put sell" if is_sto else "BTO long") + "\n"
-                "ENTRY: $" + str(entry_px) + " | NOW: $" + str(curr_px) +
+                "OPTION PRICE: entry $" + str(entry_px) + " -> now $" + str(curr_px) +
                 " | PNL: " + pnl_str + "\n"
-                "STOCK: " + stock_str + " | VIX: " + vix_str + "\n"
-                "SCORE: " + str(score) + "/7 " + str(verdict_orig)
+                "STOCK: " + stock_str + " | STRIKE: $" + strike +
+                " | STATUS: " + itm_otm_str + "\n"
+                "VIX: " + vix_str + " | ORIGINAL SCORE: " + str(score) + "/7"
             )
 
             try:
@@ -272,11 +288,11 @@ def handle_command(text: str, from_chat_id: str):
     elif cmd == "sentiment" and args:
         handle_sentiment(args[0].upper(), from_chat_id)
 
-    elif cmd in ("evaluate", "eval", "review"):
-        # /evaluate                  — all positions, deduped
-        # /evaluate NVDA             — specific ticker only
-        # /evaluate NVDA @rh_ira     — specific ticker + account
-        # /evaluate @rh_ira          — specific account only
+    elif cmd in ("eval", "evaluate", "review"):
+        # /eval                  — all positions, deduped
+        # /eval NVDA             — specific ticker only
+        # /eval NVDA @rh_ira     — specific ticker + account
+        # /eval @rh_ira          — specific account only
         tkr_f  = None
         act_f  = None
         for arg in args:

@@ -210,8 +210,8 @@ Scans all watchlist tickers every 5 minutes (market hours) for M5/M10/M15/M30/H1
 |---------|-------------|
 | `/status` | Stream status, open positions, today's alerts, Railway balance |
 | `/price TICKER` | Real-time stock price |
-| `/evaluate` | AI review of all open positions — HOLD / TRIM / CLOSE (deduped) |
-| `/evaluate @rh_ira` | Evaluate specific account only |
+| `/eval` | AI review of all open positions — HOLD / TRIM / CLOSE (deduped) |
+| `/eval @rh_ira` | Evaluate specific account only |
 | `/positions` | All open positions with current P&L |
 | `/watchlist` | Active watchlist with DTE |
 | `/portfolio` | Portfolio summary by account |
@@ -318,9 +318,9 @@ RAILWAY_DAILY_COST        = 0.37
 On-demand AI review of all open positions using Claude Haiku. Each position is evaluated against current market conditions, DTE, P&L, and original thesis.
 
 ```
-/evaluate          — all accounts, deduped by ticker+strike
-/evaluate @rh_ira  — IRA account only
-/evaluate @rh_brok — brokerage account only
+/eval               — all accounts, deduped by ticker+strike
+/eval @rh_ira       — IRA account only
+/eval @rh_brok      — brokerage account only
 ```
 
 **Output format:**
