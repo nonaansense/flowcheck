@@ -843,9 +843,10 @@ def build_sms(trade: dict, data: dict, result: dict,
                 stats    = get_stats()
                 win_rate = stats.get("win_rate") if stats.get("total",0) >= 5 else None
                 sizing   = calc_position_size(op_float, verdict, win_rate=win_rate, score=final_score)
-                if sizing:
-                    contr  = sizing.get("contracts",0)
-                    sz_str = f"{contr} contract{'s' if contr!=1 else ''} @ ${op_float:.2f}"
+                if sizing and not sizing.get("error"):
+                    contr  = sizing.get("recommended", sizing.get("contracts", 0))
+                    if contr and contr > 0:
+                        sz_str = f"{contr} contract{'s' if contr!=1 else ''} @ ${op_float:.2f}"
             compact = " · ".join([p for p in [stop_str, tgt_str, sz_str] if p])
             if compact:
                 short_lines.append(compact)
