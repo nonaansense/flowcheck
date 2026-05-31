@@ -2098,6 +2098,39 @@ async def analysis_detail(analysis_id: int):
     if intel.get("roll",{}).get("is_roll"):
         intel_html += f'<div style="padding:4px 0;color:#a78bfa">🔄 {intel["roll"].get("roll_label","")}</div>'
 
+    # Entry price + sizing for web page
+    op_float_web = None
+    raw_op = a.get("trade",{}).get("avg_fill_price") or data.get("flow_fill_price")
+    if raw_op:
+        try:
+            op_check = float(str(raw_op).replace("K","000").replace("M","000000"))
+            if op_check <= 5000:
+                op_str = str(raw_op).strip().upper()
+                if op_str.endswith("K"):   op_float_web = float(op_str[:-1]) * 1000
+                elif op_str.endswith("M"): op_float_web = float(op_str[:-1]) * 1000000
+                else:                      op_float_web = float(op_str)
+        except: pass
+    op_float = op_float_web
+
+    sz_web  = ""
+    tgt_web = ""
+    try:
+        from outcomes import get_stats
+        from position_sizing import calc_position_size, format_sizing_for_sms
+        stats    = get_stats()
+        win_rate = stats.get("win_rate") if stats.get("total",0) >= 5 else None
+        if op_float_web:
+            sizing  = calc_position_size(op_float_web, verdict, win_rate=win_rate, score=float(score or 0))
+            if sizing:
+                contr   = sizing.get("contracts",0)
+                total   = round(op_float_web * contr * 100, 0)
+                risk_pct= sizing.get("risk_pct",0)
+                sz_web  = f"{contr} contract{'s' if contr!=1 else ''} @ ${op_float_web:.2f} = ${total:,.0f} ({risk_pct:.1f}% of account)"
+        from main import calc_exit_target
+        tgt_data = calc_exit_target(int(float(score or 5)), data)
+        tgt_web  = f"<div class='row'><span class='row-label'>Target</span><span>🎯 +{tgt_data['target']}% | {tgt_data['stop']}</span></div><div class='row'><span class='row-label'>Scale</span><span>{tgt_data['scale']}</span></div>"
+    except: pass
+
     # Support/resistance
     sr      = data.get("support_resistance",{}) or {}
     sr_html = ""
@@ -2206,8 +2239,11 @@ a{{color:#60a5fa;text-decoration:none}}
 <!-- ENTRY -->
 <div class="sec">
   <div class="sec-title">Entry</div>
+  {"<div class='row'><span class='row-label'>Flow Fill</span><span>💰 $" + str(round(op_float,2)) + "</span></div>" if op_float else ""}
+  {"<div class='row'><span class='row-label'>Entry Limit</span><span>$" + str(round(op_float*1.03,2)) + "</span></div>" if op_float else ""}
+  {"<div class='row'><span class='row-label'>Position Size</span><span>" + sz_web + "</span></div>" if sz_web else ""}
   {"<div class='row'><span class='row-label'>Stop</span><span>🛑 $" + str(stop_px) + " (" + str(stop_rsn) + ")</span></div>" if stop_px else ""}
-  {"<div class='row'><span class='row-label'>Target</span><span>🎯 Capture 50-80% premium decay</span></div>" if is_ps else ""}
+  {"<div class='row'><span class='row-label'>Target</span><span>🎯 Capture 50-80% premium decay</span></div>" if is_ps else tgt_web}
   {sr_html}
 </div>
 
