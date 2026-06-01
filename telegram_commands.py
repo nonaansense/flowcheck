@@ -337,7 +337,11 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                 acct_str = " [" + account + "]" if account else ""
 
             legs_badge = " [spread]" if is_spread else ""
-            line1 = em + " " + ticker + " " + strike + opt_type + " [" + dte_str + "]" + legs_badge + acct_str + " -- " + verdict_eval
+            if is_spread and long_s and short_s:
+                spread_title = "Long $" + str(long_s) + opt_type + " / Short $" + str(short_s) + opt_type
+            else:
+                spread_title = strike + opt_type
+            line1 = em + " " + ticker + " " + spread_title + " [" + dte_str + "]" + legs_badge + acct_str + " -- " + verdict_eval
             line2 = "   " + pnl_str + " | " + stock_str
             line3 = "   -> " + reason_eval
             results.append(line1 + "\n" + line2 + "\n" + line3)
