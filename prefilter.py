@@ -38,6 +38,7 @@ MIN_OI        = cfg("FILTER_MIN_OI",        500)
 MIN_DTE       = cfg("FILTER_MIN_DTE",       7)
 MAX_DTE       = cfg("FILTER_MAX_DTE",       90)
 MAX_OTM_PCT   = cfg("FILTER_MAX_OTM",       20.0)
+MAX_ITM_PCT   = cfg("FILTER_MAX_ITM",       10.0)  # Skip deep ITM options
 MAX_CHASING   = cfg("FILTER_MAX_CHASING",   50.0)  # option already up this %
 
 def get_now_et():
@@ -75,6 +76,8 @@ def check_otm(data: dict) -> tuple:
     otm = float(otm)
     if otm > MAX_OTM_PCT:
         return False, f"OTM {otm:.1f}% > maximum {MAX_OTM_PCT}% (too far OTM)"
+    if otm < -MAX_ITM_PCT:
+        return False, f"ITM {abs(otm):.1f}% > maximum {MAX_ITM_PCT}% (too deep ITM)"
     return True, f"OTM {otm:.1f}% ✅"
 
 def check_chasing(data: dict) -> tuple:

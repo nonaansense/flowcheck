@@ -158,7 +158,98 @@ def send_eod_summary(analyses: list):
     send_sms(msg)
 
 def verify_eod_positions(analyses: list):
-    """4:15 PM — log OI check reminder."""
-    today_all = load_all_today(analyses)
-    watches   = [a for a in today_all if a.get("result",{}).get("verdict")=="WATCH"]
-    print(f"[EOD-OI] {len(watches)} WATCH positions to review at close")
+    """
+    4:15 PM — verify OI on today's TRADE alerts via Tradier.
+    Checks if open interest increased confirming flow was real positioning.
+    Sends Telegram alert for any confirmed or suspicious signals.
+    """
+    import os, requests
+    from sms import send_sms
+    from zoneinfo import ZoneInfo
+
+    today_all  = load_all_today(analyses)
+    trades     = [a for a in today_all if a.get("result",{}).get("verdict") == "TRADE"]
+
+    if not trades:
+        print("[EOD-OI] No TRADE alerts today to verify")
+        return
+
+    tradier_token = os.environ.get("TRADIER_TOKEN","")
+    if not tradier_token:
+        print("[EOD-OI] No TRADIER_TOKEN — skipping OI verification")
+        return
+
+    print(f"[EOD-OI] Verifying OI for {len(trades)} TRADE alerts...")
+    confirmations = []
+    warnings      = []
+
+    for a in trades[:10]:
+        t      = a.get("trade",{})
+        ticker = t.get("ticker","")
+        strike = t.get("strike","")
+        expiry = t.get("expiry","")
+        otype  = (t.get("option_type","call") or "call").lower()
+        orig_oi = float(t.get("open_interest",0) or 0)
+        orig_vol = float(t.get("vol_oi_ratio",0) or 0)
+        score  = a.get("result",{}).get("final_score","?")
+
+        if not ticker or not strike or not expiry:
+            continue
+
+        try:
+            # Convert expiry to YYYY-MM-DD
+            from datetime import datetime as _dt
+            exp_str = None
+            for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+                try:
+                    exp_str = _dt.strptime(expiry.strip(), fmt).strftime("%Y-%m-%d")
+                    break
+                except: pass
+            if not exp_str:
+                continue
+
+            r = requests.get(
+                "https://api.tradier.com/v1/markets/options/chains",
+                params={"symbol": ticker, "expiration": exp_str, "greeks": "false"},
+                headers={"Authorization": f"Bearer {tradier_token}", "Accept": "application/json"},
+                timeout=10
+            )
+            if r.status_code != 200:
+                print(f"[EOD-OI] Tradier {r.status_code} for {ticker}")
+                continue
+
+            options = (r.json().get("options") or {}).get("option") or []
+            strike_f = float(strike)
+            for opt in options:
+                if (abs(float(opt.get("strike",0)) - strike_f) < 0.01 and
+                    opt.get("option_type","").lower() == otype):
+                    eod_oi  = int(opt.get("open_interest",0) or 0)
+                    eod_vol = int(opt.get("volume",0) or 0)
+                    oi_diff = eod_oi - orig_oi if orig_oi > 0 else 0
+                    oi_pct  = round(oi_diff / orig_oi * 100, 1) if orig_oi > 0 else 0
+
+                    line = (f"{ticker} {strike}{otype[0].upper()} {expiry} | "
+                            f"OI: {int(orig_oi):,} → {eod_oi:,} ({'+' if oi_diff>=0 else ''}{oi_diff:,}) | "
+                            f"Vol: {eod_vol:,} | Score: {score}/7")
+
+                    if oi_diff > 100:
+                        confirmations.append(f"✅ {line} — OI CONFIRMED new positioning")
+                    elif oi_diff < -100:
+                        warnings.append(f"⚠️ {line} — OI DECREASED (may be roll/close)")
+                    else:
+                        print(f"[EOD-OI] {line} — OI flat, inconclusive")
+                    break
+
+        except Exception as e:
+            print(f"[EOD-OI] Error for {ticker}: {e}")
+
+    # Send Telegram summary
+    if confirmations or warnings:
+        lines = [f"📊 EOD OI Verification — {len(trades)} trades checked"]
+        lines.extend(confirmations)
+        lines.extend(warnings)
+        msg = chr(10).join(lines)
+        send_sms(msg)
+        print(f"[EOD-OI] Sent verification for {len(confirmations)} confirmed, {len(warnings)} warnings")
+    else:
+        print(f"[EOD-OI] OI verification complete — no significant changes")

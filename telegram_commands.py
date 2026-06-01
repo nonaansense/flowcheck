@@ -492,14 +492,18 @@ def handle_command(text: str, from_chat_id: str):
             from storage import load_data as _ld4
             from datetime import datetime
             from zoneinfo import ZoneInfo
-            history  = _ld4("flow_history", "/tmp/flow_history.json", []) or []
+            from flow_intelligence import load_flow_history
+            history  = load_flow_history() or []
             today    = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-            # Filter by ticker and today
-            ticker_flows = [
-                f for f in history
-                if f.get("ticker","").upper() == tkr_f2
-                and (f.get("date","") == today or f.get("timestamp","")[:10] == today)
-            ]
+            # Filter by ticker and today — guard against non-dict entries
+            ticker_flows = []
+            for f in history:
+                if not isinstance(f, dict):
+                    continue
+                f_ticker = (f.get("ticker","") or "").upper()
+                f_date   = (f.get("date","") or f.get("timestamp","")[:10] or "")
+                if f_ticker == tkr_f2 and f_date == today:
+                    ticker_flows.append(f)
             # Also check analyses for today
             analyses_data = _ld4("analyses_today", "/tmp/analyses.json", []) or []
             for a in analyses_data:

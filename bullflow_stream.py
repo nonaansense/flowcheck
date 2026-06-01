@@ -244,6 +244,7 @@ def setup_flowcheck_filters():
     min_dte     = int(os.environ.get("FILTER_MIN_DTE", 7))
     max_dte     = int(os.environ.get("FILTER_MAX_DTE", 90))
     max_otm     = float(os.environ.get("FILTER_MAX_OTM", 20.0))
+    max_itm     = float(os.environ.get("FILTER_MAX_ITM", 10.0))  # Filter deep ITM options
 
     # Blocklist — only exclude instruments that are almost always hedges/protection
     # NOT excluding SPY/QQQ calls — those can be genuine directional
@@ -266,11 +267,12 @@ def setup_flowcheck_filters():
         "dteMin":        min_dte,        # No same-week lotto tickets
         "dteMax":        max_dte,        # No multi-year LEAPs
         "otmPercentMax": max_otm,        # No deep OTM lotto tickets
+        "itmPercentMax": max_itm,        # No deep ITM options (SPCE 3C type)
         "quickFilters":  ["Stocks"],     # Stocks only — excludes SPX/SPXW/RUT/NDX
     }
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
-    print(f"[BULLFLOW] Filter: ${min_premium:,} + Stocks + DTE {min_dte}-{max_dte} + OTM≤{max_otm}%")
+    print(f"[BULLFLOW] Filter: ${min_premium:,} + Stocks + DTE {min_dte}-{max_dte} + OTM≤{max_otm}% + ITM≤{max_itm}%")
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
 
