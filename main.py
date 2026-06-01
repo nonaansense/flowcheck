@@ -2856,32 +2856,46 @@ async def backtest_bullflow(date: str = "2026-05-28", speed: int = 60):
         return {"status": "❌ No BULLFLOW_API_KEY"}
 
     def run_backtest_stream():
-        import requests as _req
+        import requests as _req, json as _json, asyncio as _aio
+        from bullflow_stream import build_trade_from_alert
         url = f"https://api.bullflow.io/v1/streaming/backtesting?key={key}&date={date}&speed={speed}"
-        print(f"[BACKTEST] Connecting to {url}")
+        print(f"[BACKTEST] Connecting: date={date} speed={speed}x")
+        count = 0
         try:
-            with _req.get(url, stream=True, timeout=300) as r:
-                print(f"[BACKTEST] Connected: {r.status_code}")
+            with _req.get(url, stream=True, timeout=600,
+                          headers={"Accept": "text/event-stream"}) as r:
+                print(f"[BACKTEST] Connected: HTTP {r.status_code}")
                 for line in r.iter_lines():
                     if not line:
                         continue
                     if isinstance(line, bytes):
                         line = line.decode("utf-8")
-                    if line.startswith("data:"):
-                        raw = line[5:].strip()
-                        try:
-                            import json as _json
-                            alert = _json.loads(raw)
-                            # Process through same pipeline as live stream
-                            from bullflow_stream import process_bullflow_alert
-                            import asyncio as _aio
-                            loop = _aio.new_event_loop()
-                            loop.run_until_complete(process_bullflow_alert(alert, analyses))
-                            loop.close()
-                        except Exception as _pe:
-                            print(f"[BACKTEST] Parse error: {_pe}")
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw or raw == "{}":
+                        continue
+                    try:
+                        alert = _json.loads(raw)
+                        trade = build_trade_from_alert(alert)
+                        if not trade:
+                            continue
+                        trade["_backtest"] = True
+                        trade["_backtest_date"] = date
+                        loop = _aio.new_event_loop()
+                        loop.run_until_complete(
+                            process_alert("", "", trade)
+                        )
+                        loop.close()
+                        count += 1
+                        if count % 10 == 0:
+                            print(f"[BACKTEST] Processed {count} alerts")
+                    except Exception as _pe:
+                        print(f"[BACKTEST] Alert error: {_pe}")
         except Exception as e:
             print(f"[BACKTEST] Stream error: {e}")
+        print(f"[BACKTEST] Done — {count} alerts processed for {date}")
+        send_sms(f"[BACKTEST] Done — {count} alerts processed for {date}")
 
     t = threading.Thread(target=run_backtest_stream, name="bullflow-backtest", daemon=True)
     t.start()
