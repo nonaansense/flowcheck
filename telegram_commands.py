@@ -151,6 +151,7 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                 from_chat_id
             )
 
+        print(f"[EVAL] Evaluating {len(page_trades)} positions ({range_start}-{range_end_actual} of {total_count})")
         for t in page_trades:
             ticker     = t.get("ticker", "?")
             strike     = str(t.get("strike", "?"))
@@ -185,13 +186,42 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
 
             # Spread-aware P&L
             is_spread = (t.get("is_spread") or bool(t.get("spread_type"))
-                          or t.get("legs","single") == "spread")
-            if is_spread and t.get("long_strike") and t.get("short_strike"):
+                          or t.get("legs","single") == "spread"
+                          or "/" in str(t.get("strike","")))
+
+            # Auto-parse long/short from strike field if format is "1100/1200"
+            long_s  = t.get("long_strike")
+            short_s = t.get("short_strike")
+            if not long_s or not short_s:
+                raw_strike = str(t.get("strike",""))
+                if "/" in raw_strike:
+                    parts_s = raw_strike.split("/")
+                    # Lower strike = long for calls (bought), higher = short (sold)
+                    try:
+                        s1 = float(parts_s[0].replace("C","").replace("P","").strip())
+                        s2 = float(parts_s[1].replace("C","").replace("P","").strip())
+                        opt_lo = (t.get("option_type","call") or "call").lower()
+                        if "call" in opt_lo:
+                            long_s  = str(int(min(s1,s2)) if min(s1,s2)==int(min(s1,s2)) else min(s1,s2))
+                            short_s = str(int(max(s1,s2)) if max(s1,s2)==int(max(s1,s2)) else max(s1,s2))
+                        else:
+                            long_s  = str(int(max(s1,s2)) if max(s1,s2)==int(max(s1,s2)) else max(s1,s2))
+                            short_s = str(int(min(s1,s2)) if min(s1,s2)==int(min(s1,s2)) else min(s1,s2))
+                    except: pass
+
+            # Infer debit/credit from order_type if spread_type not set
+            if not t.get("spread_type"):
+                ot_lower = (t.get("order_type","BTO") or "BTO").upper()
+                is_debit_default = ot_lower == "BTO"  # BTO = debit spread, STO = credit spread
+            else:
+                is_debit_default = "debit" in (t.get("spread_type","") or "")
+
+            if is_spread and long_s and short_s:
                 try:
                     from fetcher import fetch_spread_value as _fsv
-                    is_debit2 = "debit" in (t.get("spread_type","") or "")
+                    is_debit2 = is_debit_default
                     sv        = _fsv(ticker, t.get("option_type","call"), expiry,
-                                     str(t["long_strike"]), str(t["short_strike"]), is_debit2)
+                                     long_s, short_s, is_debit2)
                     net_val   = sv.get("net_value")
                     entry_net = float(t.get("credit",0) or t.get("entry_price",0) or 0)
                     lp        = sv.get("long_price","?")
@@ -262,6 +292,7 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                 "VIX: " + vix_str + " | ORIGINAL SCORE: " + str(score) + "/7"
             )
 
+            print(f"[EVAL] Scoring {ticker} {strike}{opt_type} [{dte_str}] PNL={pnl_str} {itm_otm_str}")
             try:
                 resp     = client.messages.create(
                     model="claude-haiku-4-5-20251001",
@@ -300,6 +331,7 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
         sign  = "+" if total_pnl >= 0 else ""
         total = "Total P&L: " + sign + "$" + str(int(total_pnl))
         msg   = hdr + "\n" + "\n\n".join(results) + "\n" + sep + "\n" + total
+        print(f"[EVAL] Sending result: {len(results)} positions, {len(msg)} chars")
         send_reply(msg, from_chat_id)
 
     except Exception as e:

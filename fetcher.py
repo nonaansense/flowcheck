@@ -964,7 +964,12 @@ def fetch_option_mid(ticker: str, strike: str, opt_type: str, expiry: str) -> fl
                 if bid > 0 and ask > 0:
                     last = round((bid + ask) / 2, 2)
             if last:
+                print(f"[FETCHER] Option mid {ticker} {strike}: ${last}")
                 return round(float(last), 2)
+            else:
+                print(f"[FETCHER] Option mid {ticker} {strike}: no price in payload")
+        else:
+            print(f"[FETCHER] Option mid {ticker} {strike}: HTTP {r.status_code} — {r.text[:100]}")
     except Exception as e:
         print(f"[FETCHER] Option mid error {ticker} {strike}: {e}")
     return None
