@@ -868,9 +868,10 @@ def build_sms(trade: dict, data: dict, result: dict,
                     contr  = sizing.get("recommended", sizing.get("contracts", 0))
                     if contr and contr > 0:
                         sz_str = f"{contr} contract{'s' if contr!=1 else ''} @ ${op_float:.2f}"
-            compact = " · ".join([p for p in [stop_str, tgt_str, sz_str] if p])
-            if compact:
-                short_lines.append(compact)
+            if stop_str:
+                short_lines.append(stop_str)
+            if tgt_str or sz_str:
+                short_lines.append(" · ".join([p for p in [tgt_str, sz_str] if p]))
         except Exception as _ce:
             print(f"[BUILD_SMS] Compact stop/target error: {_ce}")
 

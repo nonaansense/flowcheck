@@ -434,7 +434,7 @@ def handle_command(text: str, from_chat_id: str):
             )
     elif cmd == "oi" and not args:
         handle_oi_all(from_chat_id)
-    elif cmd == "sentiment" and args:
+    elif cmd in ("sent", "sentiment") and args:
         handle_sentiment(args[0].upper(), from_chat_id)
 
     elif cmd in ("eval", "evaluate", "review"):
@@ -484,6 +484,81 @@ def handle_command(text: str, from_chat_id: str):
             send_reply(chr(10).join(lines), from_chat_id)
         except Exception as e:
             send_reply("Count error: " + str(e), from_chat_id)
+
+    elif cmd in ("flow", "flows") and args:
+        # /flow NVDA — show today's top flows for a ticker from stored history
+        tkr_f2 = args[0].upper()
+        try:
+            from storage import load_data as _ld4
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            history  = _ld4("flow_history", "/tmp/flow_history.json", []) or []
+            today    = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            # Filter by ticker and today
+            ticker_flows = [
+                f for f in history
+                if f.get("ticker","").upper() == tkr_f2
+                and (f.get("date","") == today or f.get("timestamp","")[:10] == today)
+            ]
+            # Also check analyses for today
+            analyses_data = _ld4("analyses_today", "/tmp/analyses.json", []) or []
+            for a in analyses_data:
+                t = a.get("trade",{})
+                if (t.get("ticker","").upper() == tkr_f2 and
+                    a.get("date","") == today and
+                    a not in ticker_flows):
+                    ticker_flows.append({
+                        "ticker":     t.get("ticker",""),
+                        "strike":     t.get("strike",""),
+                        "option_type":t.get("option_type",""),
+                        "expiry":     t.get("expiry",""),
+                        "premium":    t.get("premium",0),
+                        "fill_type":  t.get("fill_type",""),
+                        "vol_oi":     t.get("vol_oi_ratio",0),
+                        "is_sweep":   t.get("is_sweep",False),
+                        "source":     t.get("source",""),
+                        "score":      a.get("result",{}).get("final_score","?"),
+                        "verdict":    a.get("result",{}).get("verdict","?"),
+                        "time":       a.get("time",""),
+                    })
+
+            if not ticker_flows:
+                send_reply("No flows found for " + tkr_f2 + " today.", from_chat_id)
+            else:
+                # Sort by premium descending
+                ticker_flows.sort(key=lambda x: float(x.get("premium",0) or 0), reverse=True)
+                total_prem = sum(float(f.get("premium",0) or 0) for f in ticker_flows)
+                total_str  = ("$" + str(round(total_prem/1000000,1)) + "M"
+                              if total_prem >= 1000000
+                              else "$" + str(round(total_prem/1000,0)) + "K")
+                lines = ["=== " + tkr_f2 + " Flow Today — " +
+                         datetime.now(ZoneInfo("America/New_York")).strftime("%b %d") + " ==="]
+                for i, f in enumerate(ticker_flows[:10], 1):
+                    otype   = (f.get("option_type","call") or "call")[0].upper()
+                    strike  = f.get("strike","?")
+                    expiry  = f.get("expiry","?")
+                    prem    = float(f.get("premium",0) or 0)
+                    prem_s  = ("$" + str(round(prem/1000000,1)) + "M"
+                               if prem >= 1000000
+                               else "$" + str(int(prem/1000)) + "K")
+                    fill    = (f.get("fill_type","") or "").replace("_"," ")
+                    vol_oi  = f.get("vol_oi",0) or f.get("vol_oi_ratio",0) or 0
+                    sweep   = " ⚡Sweep" if f.get("is_sweep") else ""
+                    src     = " 🅱" if f.get("source") == "bullflow" else " 🐦" if f.get("source") == "flowgod" else ""
+                    score   = f.get("score","")
+                    verdict = f.get("verdict","")
+                    sc_str  = " [" + str(score) + "/7 " + str(verdict) + "]" if score else ""
+                    tm_str  = " @" + str(f.get("time","")) if f.get("time") else ""
+                    vol_str = " · " + str(round(float(vol_oi),1)) + "x Vol/OI" if vol_oi else ""
+                    lines.append(
+                        str(i) + ". " + strike + otype + " " + expiry +
+                        " · " + prem_s + " " + fill + vol_str + sweep + src + sc_str + tm_str
+                    )
+                lines.append("─" * 20)
+                lines.append("Total: " + total_str + " across " + str(len(ticker_flows)) + " flows")
+                send_reply(chr(10).join(lines), from_chat_id)
+        except Exception as e:
+            send_reply("Flow search error: " + str(e), from_chat_id)
 
     elif cmd == "price" and args:
         # /price TICKER — real-time stock price
@@ -1517,7 +1592,7 @@ def handle_help(reply_chat_id: str):
         '/history — today' + chr(39) + 's alerts link',
         '',
         'RESEARCH',
-        '/sentiment TICKER — price, SMAs, RSI, news, flow, insiders',
+        '/sent TICKER — price, SMAs, RSI, news, flow, insiders',
         '/sectors — sector ETF reference list',
         '/oi all — OI confirmation for all yesterday' + chr(39) + 's TRADE/WATCH alerts',
         '/oi TICKER STRIKE C/P EXPIRY — OI for specific option',
@@ -1536,6 +1611,7 @@ def handle_help(reply_chat_id: str):
         '/export [@ACCOUNT] — CSV for Excel',
         '/debrief — AI analysis of your trades',
         '/journal — open trade journal web page',
+        '/flow TICKER — today\'s top flows for a ticker (from stream history)',
         '/eval [@account] [TICKER] [range] — AI position review: HOLD/TRIM/CLOSE',
         '/count — open position count by account',
         '/status — stream health + today alert count',
@@ -1635,6 +1711,11 @@ def handle_journal_help(reply_chat_id: str):
         '',
         'TIME FORMAT — all times ET',
         '  10:34AM   2:30PM   10:34   14:30',
+        '',
+        'FLOW SEARCH',
+        '/flow NVDA — search today\'s captured flows for a specific ticker',
+        '  Shows strike, expiry, premium, fill type, vol/OI, score',
+        '  Sources: Bullflow SSE + FlowGod alerts captured today',
         '',
         'WEB JOURNAL',
         '/journal (or /jv) — opens trade journal in browser',
