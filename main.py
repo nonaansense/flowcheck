@@ -915,13 +915,19 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         else:
             # Run blocking IO in thread pool with timeout
             def _process():
-                return extract_trade_from_tweet(tweet, tweet_url)
+                try:
+                    return extract_trade_from_tweet(tweet, tweet_url)
+                except Exception as _ve:
+                    import traceback
+                    print(f"[VISION] Exception in extract_trade_from_tweet: {_ve}")
+                    print(traceback.format_exc()[-500:])
+                    return None
 
             try:
                 with concurrent.futures.ThreadPoolExecutor() as pool:
                     trade = await asyncio.wait_for(
                         loop.run_in_executor(pool, _process),
-                        timeout=30.0  # 30s max for vision/parse
+                        timeout=30.0
                     )
             except asyncio.TimeoutError:
                 print(f"[PROCESS] Vision parse timeout for {tweet[:50]}")
