@@ -1757,27 +1757,34 @@ async def test_tasty():
 async def sync_bullflow_filters():
     """Recreate Bullflow custom alert with current Railway filter settings."""
     try:
-        import os as _os
+        import os as _os, requests as _req
         _os.environ["BULLFLOW_FORCE_RECREATE"] = "true"
-        from bullflow_stream import setup_flowcheck_filters
-        setup_flowcheck_filters()
+        from bullflow_stream import setup_flowcheck_filters, create_custom_alert
+        result = setup_flowcheck_filters()
         _os.environ.pop("BULLFLOW_FORCE_RECREATE", None)
         key = _os.environ.get("BULLFLOW_API_KEY","")
-        import requests as _req
         r = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
-        alerts = r.json().get("alerts",[]) if r.status_code == 200 else []
+        alerts = []
+        raw    = {}
+        if r.status_code == 200:
+            raw    = r.json()
+            alerts = raw.get("alerts", raw.get("data", []))
         return {
-            "status": "✅ Done",
+            "status":        "✅ Done" if alerts else "⚠️ Alert may not have been created — check raw",
             "custom_alerts": len(alerts),
-            "alerts": [a.get("alertName") for a in alerts],
+            "alerts":        [a.get("alertName","?") for a in alerts] if alerts else [],
+            "raw_response":  str(raw)[:300],
             "filters": {
                 "min_premium": _os.environ.get("FILTER_MIN_PREMIUM","500000"),
                 "min_dte":     _os.environ.get("FILTER_MIN_DTE","7"),
                 "max_dte":     _os.environ.get("FILTER_MAX_DTE","90"),
+                "max_otm":     _os.environ.get("FILTER_MAX_OTM","20"),
+                "max_itm":     _os.environ.get("FILTER_MAX_ITM","10"),
             }
         }
     except Exception as e:
-        return {"status": f"❌ Error: {str(e)}"}
+        import traceback
+        return {"status": f"❌ Error: {str(e)}", "trace": traceback.format_exc()[-300:]}
 
 @app.get("/test-bullflow")
 async def test_bullflow():

@@ -225,15 +225,27 @@ def setup_flowcheck_filters():
             timeout=10
         )
         if r.status_code == 200:
-            existing = r.json().get("alerts",[])
-            fc_alerts = [a for a in existing if "FlowCheck" in a.get("alertName","")]
+            existing       = r.json().get("alerts",[])
+            fc_alerts      = [a for a in existing if "FlowCheck" in a.get("alertName","")]
             force_recreate = os.environ.get("BULLFLOW_FORCE_RECREATE","").lower() == "true"
+
             if fc_alerts and not force_recreate:
                 print(f"[BULLFLOW] Custom alert already exists ({len(fc_alerts)}) — skipping creation")
                 return
-            if len(fc_alerts) > 1:
-                print(f"[BULLFLOW] Warning: {len(fc_alerts)} duplicate alerts found — delete extras in Bullflow dashboard")
-                return
+
+            # Delete ALL existing FlowCheck alerts before recreating
+            if fc_alerts and force_recreate:
+                for old_alert in fc_alerts:
+                    aid = old_alert.get("id") or old_alert.get("_id") or old_alert.get("alertId")
+                    if aid:
+                        try:
+                            dr = requests.delete(
+                                f"https://api.bullflow.io/v1/alerts/custom-alerts/{aid}?key={key}",
+                                timeout=10
+                            )
+                            print(f"[BULLFLOW] Deleted old alert {aid}: {dr.status_code}")
+                        except Exception as _de:
+                            print(f"[BULLFLOW] Could not delete {aid}: {_de}")
     except Exception as e:
         print(f"[BULLFLOW] Could not check existing alerts: {e}")
 
@@ -267,7 +279,7 @@ def setup_flowcheck_filters():
         "dteMin":        min_dte,        # No same-week lotto tickets
         "dteMax":        max_dte,        # No multi-year LEAPs
         "otmPercentMax": max_otm,        # No deep OTM lotto tickets
-        "itmPercentMax": max_itm,        # No deep ITM options (SPCE 3C type)
+        # Note: itmPercentMax not supported by Bullflow API — ITM filter applied in prefilter.py
         "quickFilters":  ["Stocks"],     # Stocks only — excludes SPX/SPXW/RUT/NDX
     }
     if exclude_etf:
