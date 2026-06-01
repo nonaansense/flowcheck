@@ -507,7 +507,11 @@ def handle_command(text: str, from_chat_id: str):
             # Also check analyses for today
             analyses_data = _ld4("analyses_today", "/tmp/analyses.json", []) or []
             for a in analyses_data:
-                t = a.get("trade",{})
+                if not isinstance(a, dict):
+                    continue
+                t = a.get("trade",{}) or {}
+                if not isinstance(t, dict):
+                    continue
                 if (t.get("ticker","").upper() == tkr_f2 and
                     a.get("date","") == today and
                     a not in ticker_flows):
