@@ -217,6 +217,7 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                 is_debit_default = "debit" in (t.get("spread_type","") or "")
 
             if is_spread and long_s and short_s:
+                print(f"[EVAL] Spread detected: {ticker} long={long_s} short={short_s} debit={is_debit_default} expiry={expiry}")
                 try:
                     from fetcher import fetch_spread_value as _fsv
                     is_debit2 = is_debit_default
@@ -226,6 +227,7 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                     entry_net = float(t.get("credit",0) or t.get("entry_price",0) or 0)
                     lp        = sv.get("long_price","?")
                     sp2       = sv.get("short_price","?")
+                    print(f"[EVAL] Spread result: long={lp} short={sp2} net={net_val} entry_net={entry_net}")
                     stock_str = "L$" + str(lp) + "/S$" + str(sp2)
                     if net_val is not None and entry_net > 0:
                         if is_debit2:
@@ -409,6 +411,12 @@ def handle_command(text: str, from_chat_id: str):
                 tkr_f = arg.upper()
         handle_evaluate_command(from_chat_id, ticker_filter=tkr_f, account_filter=act_f,
                                  range_start=rng_start, range_end=rng_end)
+
+    elif cmd in ("journal", "jv", "journal-view"):
+        import os as _os
+        base_url = _os.environ.get("BASE_URL","https://web-production-19e44.up.railway.app")
+        send_reply("Trade Journal" + chr(10) + base_url + "/journal-view", from_chat_id)
+
 
     elif cmd in ("count", "cnt"):
         try:
@@ -1478,6 +1486,7 @@ def handle_help(reply_chat_id: str):
         '/accounts — all accounts with P&L overview',
         '/export [@ACCOUNT] — CSV for Excel',
         '/debrief — AI analysis of your trades',
+        '/journal — open trade journal web page',
         '/eval [@account] [TICKER] [range] — AI position review: HOLD/TRIM/CLOSE',
         '/count — open position count by account',
         '/status — stream health + today alert count',
@@ -1577,6 +1586,9 @@ def handle_journal_help(reply_chat_id: str):
         '',
         'TIME FORMAT — all times ET',
         '  10:34AM   2:30PM   10:34   14:30',
+        '',
+        'WEB JOURNAL',
+        '/journal (or /jv) — opens trade journal in browser',
         '',
         'POSITION EVALUATION',
         '/eval                   — evaluate all open positions (AI: HOLD/TRIM/CLOSE)',

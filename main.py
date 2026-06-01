@@ -1458,6 +1458,7 @@ async def journal_edit_api(request: Request):
                         "option_type", "entry_date", "entry_time",
                         "exit_date", "exit_time", "exit_price", "pnl_total", "pnl_pct", "fc_score", "fc_verdict",
                         "last_price", "long_strike", "short_strike", "spread_type",
+                        "legs", "is_spread",
                     }
                     if field not in allowed:
                         return {"success": False, "error": f"Field '{field}' not editable. Allowed: {sorted(allowed)}"}
@@ -1486,6 +1487,11 @@ async def journal_edit_api(request: Request):
                             acct_list = ", ".join(accounts.keys())
                             return {"success": False, "error": f"Unknown account. Valid: {acct_list}"}
                     t[field] = value
+                    # Keep is_spread in sync with legs
+                    if field == "legs":
+                        t["is_spread"] = (value == "spread")
+                    if field == "is_spread":
+                        t["legs"] = "spread" if value else "single"
                     updated  = True
                     break
             if updated:
