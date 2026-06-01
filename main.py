@@ -2619,6 +2619,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             f"<td data-edit='expiry' data-trade-id='{tid}'>{t.get('expiry','')}</td>"
             f"<td data-edit='contracts' data-trade-id='{tid}'>{remaining}/{t.get('contracts','?')}</td>"
             f"<td data-edit='entry_price' data-trade-id='{tid}'>${t.get('entry_price') or t.get('credit','')}</td>"
+            f"<td data-edit='legs' data-trade-id='{tid}' style='color:{"#f59e0b" if t.get("legs","single")=="spread" or t.get("is_spread") else "#64748b"}'>{"🔀 spread" if t.get("legs","single")=="spread" or t.get("is_spread") else "single"}</td>"
             + lp_cell + pnl_cell +
             f"<td>${t.get('total_cost','')}</td>"
             f"<td data-edit='entry_date' data-trade-id='{tid}'>{t.get('entry_date','')} {t.get('entry_time','')}</td>"
@@ -2707,6 +2708,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             "<div class='scroll'><table>"
             "<tr>" + acc_th +
             "<th>Ticker</th><th>Type</th><th>Contract</th><th>Expiry</th><th>Qty</th>"
+            "<th>Legs</th>"
             "<th>Entry $</th><th>Last $</th><th>Open P&amp;L</th>"
             "<th>Cost</th><th>Entry Time</th><th>FlowCheck</th><th>Note</th><th>Actions</th></tr>"
             + rows_open +
@@ -2720,6 +2722,7 @@ async def journal_page(account: str = None, sort: str = "desc"):
             "<div class='scroll'><table>"
             "<tr>" + acc_th +
             "<th>Ticker</th><th>Type</th><th>Contract</th><th>Expiry</th><th>Qty</th>"
+            "<th>Legs</th>"
             "<th>Entry $</th><th>Exit $</th><th>P&amp;L</th>"
             "<th>Entry Time</th><th>Exit Time</th><th>Held</th>"
             "<th>Peak</th><th>Max DD</th><th>Left on Table</th>"
