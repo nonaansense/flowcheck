@@ -35,8 +35,8 @@ def cfg(key: str, default):
 
 MIN_PREMIUM   = cfg("FILTER_MIN_PREMIUM",   150_000)
 MIN_OI        = cfg("FILTER_MIN_OI",        500)
-MIN_DTE       = cfg("FILTER_MIN_DTE",       7)
-MAX_DTE       = cfg("FILTER_MAX_DTE",       90)
+MIN_DTE       = cfg("FILTER_MIN_DTE",       2)
+MAX_DTE       = cfg("FILTER_MAX_DTE",       120)
 MAX_OTM_PCT   = cfg("FILTER_MAX_OTM",       20.0)
 MAX_ITM_PCT   = cfg("FILTER_MAX_ITM",       10.0)  # Skip deep ITM options
 MAX_CHASING   = cfg("FILTER_MAX_CHASING",   50.0)  # option already up this %
@@ -91,20 +91,8 @@ def check_chasing(data: dict) -> tuple:
     return True, "Not chasing ✅"
 
 def check_timing(data: dict) -> tuple:
-    """Reject pre-10AM and post-3:30PM (with exceptions)."""
-    now_et = get_now_et()
-    t      = now_et.time()
-    dte    = int(data.get("dte") or data.get("days_to_expiry") or 30)
-
-    # Before 10:00 AM — no entries
-    if t < dtime(10, 0):
-        return False, f"Before 10:00 AM ET ({t.strftime('%I:%M%p')}) — no entries"
-
-    # After 3:30 PM — only allow if DTE < 30 (late day stealth signal)
-    if t > dtime(15, 30) and dte >= 30:
-        return False, f"After 3:30 PM ET — only DTE<30 allowed"
-
-    return True, f"Timing OK ({t.strftime('%I:%M%p')} ET) ✅"
+    """Allow all market hours flows. Bullflow filters timing at source."""
+    return True, "Timing OK ✅"
 
 def check_earnings(data: dict) -> tuple:
     """Skip if earnings within 2 days."""

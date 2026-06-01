@@ -2843,6 +2843,55 @@ async def watchlist():
         }
     }
 
+@app.get("/backtest-bullflow")
+async def backtest_bullflow(date: str = "2026-05-28", speed: int = 60):
+    """
+    Replay Bullflow historical alerts for a given date via SSE backtesting endpoint.
+    Usage: /backtest-bullflow?date=2026-05-28&speed=60
+    speed = replay multiplier (60 = 60x faster than real-time)
+    """
+    import threading
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key:
+        return {"status": "❌ No BULLFLOW_API_KEY"}
+
+    def run_backtest_stream():
+        import requests as _req
+        url = f"https://api.bullflow.io/v1/streaming/backtesting?key={key}&date={date}&speed={speed}"
+        print(f"[BACKTEST] Connecting to {url}")
+        try:
+            with _req.get(url, stream=True, timeout=300) as r:
+                print(f"[BACKTEST] Connected: {r.status_code}")
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    if line.startswith("data:"):
+                        raw = line[5:].strip()
+                        try:
+                            import json as _json
+                            alert = _json.loads(raw)
+                            # Process through same pipeline as live stream
+                            from bullflow_stream import process_bullflow_alert
+                            import asyncio as _aio
+                            loop = _aio.new_event_loop()
+                            loop.run_until_complete(process_bullflow_alert(alert, analyses))
+                            loop.close()
+                        except Exception as _pe:
+                            print(f"[BACKTEST] Parse error: {_pe}")
+        except Exception as e:
+            print(f"[BACKTEST] Stream error: {e}")
+
+    t = threading.Thread(target=run_backtest_stream, name="bullflow-backtest", daemon=True)
+    t.start()
+    return {
+        "status": f"✅ Backtest stream started",
+        "date": date,
+        "speed": f"{speed}x",
+        "note": "Alerts will appear in Telegram as they replay. Check Railway logs for progress."
+    }
+
 @app.post("/backtest")
 async def backtest_endpoint(request: Request):
     """

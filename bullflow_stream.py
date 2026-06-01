@@ -253,8 +253,8 @@ def setup_flowcheck_filters():
 
     # Get filter thresholds from env
     min_premium = int(os.environ.get("FILTER_MIN_PREMIUM", 150000))
-    min_dte     = int(os.environ.get("FILTER_MIN_DTE", 7))
-    max_dte     = int(os.environ.get("FILTER_MAX_DTE", 90))
+    min_dte     = int(os.environ.get("FILTER_MIN_DTE", 2))
+    max_dte     = int(os.environ.get("FILTER_MAX_DTE", 120))
     max_otm     = float(os.environ.get("FILTER_MAX_OTM", 20.0))
     max_itm     = float(os.environ.get("FILTER_MAX_ITM", 10.0))  # Filter deep ITM options
 

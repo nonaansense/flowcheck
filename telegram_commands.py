@@ -495,14 +495,16 @@ def handle_command(text: str, from_chat_id: str):
             from flow_intelligence import load_flow_history
             history  = load_flow_history() or []
             today    = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-            # Filter by ticker and today — guard against non-dict entries
+            # Filter by ticker and date — guard against non-dict entries
             ticker_flows = []
             for f in history:
                 if not isinstance(f, dict):
                     continue
                 f_ticker = (f.get("ticker","") or "").upper()
-                f_date   = (f.get("date","") or f.get("timestamp","")[:10] or "")
-                if f_ticker == tkr_f2 and f_date == today:
+                f_date   = (f.get("date","") or (f.get("timestamp","") or "")[:10] or "")
+                ticker_match = (tkr_f2 is None or f_ticker == tkr_f2)
+                date_match   = (f_date == search_date)
+                if ticker_match and date_match:
                     ticker_flows.append(f)
             # Also check analyses for today
             analyses_data = _ld4("analyses_today", "/tmp/analyses.json", []) or []
@@ -531,7 +533,7 @@ def handle_command(text: str, from_chat_id: str):
                     })
 
             if not ticker_flows:
-                send_reply("No flows found for " + tkr_f2 + " today.", from_chat_id)
+                send_reply("No flows found for " + (tkr_f2 or "any ticker") + " on " + search_date + ".", from_chat_id)
             else:
                 # Sort by premium descending
                 ticker_flows.sort(key=lambda x: float(x.get("premium",0) or 0), reverse=True)
@@ -539,8 +541,12 @@ def handle_command(text: str, from_chat_id: str):
                 total_str  = ("$" + str(round(total_prem/1000000,1)) + "M"
                               if total_prem >= 1000000
                               else "$" + str(round(total_prem/1000,0)) + "K")
-                lines = ["=== " + tkr_f2 + " Flow Today — " +
-                         datetime.now(ZoneInfo("America/New_York")).strftime("%b %d") + " ==="]
+                from datetime import datetime as _dt5
+                try:
+                    hdr_date = _dt5.strptime(search_date, "%Y-%m-%d").strftime("%b %d")
+                except: hdr_date = search_date
+                hdr_ticker = tkr_f2 if tkr_f2 else "All Tickers"
+                lines = ["=== " + hdr_ticker + " Flow — " + hdr_date + " ==="]
                 for i, f in enumerate(ticker_flows[:10], 1):
                     otype   = (f.get("option_type","call") or "call")[0].upper()
                     strike  = f.get("strike","?")
