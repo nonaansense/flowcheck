@@ -932,44 +932,50 @@ def fetch_greeks(ticker: str, strike: str, opt_type: str,
     return None
 
 def fetch_option_mid(ticker: str, strike: str, opt_type: str, expiry: str) -> float | None:
-    """Fetch current mid price of a single option leg via Polygon snapshot."""
-    key = massive_key()
-    if not key or not expiry or not strike:
+    """Fetch current mid price of a single option leg via Tradier (free tier)."""
+    tradier_token = os.environ.get("TRADIER_TOKEN","")
+    if not tradier_token or not expiry or not strike:
         return None
     try:
-        parts = expiry.split("/")
-        if len(parts) != 3:
+        from datetime import datetime as _dt3
+        exp_str = None
+        for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                exp_str = _dt3.strptime(expiry.strip(), fmt).strftime("%Y-%m-%d")
+                break
+            except: pass
+        if not exp_str:
+            print(f"[FETCHER] Option mid {ticker}: bad expiry format {expiry}")
             return None
-        m, d, y = parts
-        y       = "20"+y if len(y)==2 else y
-        exp_str = f"{y}{m.zfill(2)}{d.zfill(2)}"
-        cp      = "C" if "call" in opt_type.lower() else "P"
-        s_int   = int(float(strike) * 1000)
-        sym     = f"O:{ticker.upper()}{exp_str}{cp}{s_int:08d}"
 
-        r = requests.get(
-            f"https://api.polygon.io/v3/snapshot/options/{ticker.upper()}/{sym}",
-            params={"apiKey": key},
-            timeout=8
+        cp = "call" if "call" in opt_type.lower() else "put"
+        r  = requests.get(
+            "https://api.tradier.com/v1/markets/options/chains",
+            params={"symbol": ticker.upper(), "expiration": exp_str, "greeks": "false"},
+            headers={"Authorization": f"Bearer {tradier_token}", "Accept": "application/json"},
+            timeout=10
         )
         if r.status_code == 200:
-            data = r.json().get("results", {})
-            day  = data.get("day", {}) or {}
-            # Use last close or mid of bid/ask
-            last = day.get("close") or day.get("last_price")
-            if not last:
-                q = data.get("last_quote", {}) or {}
-                bid = float(q.get("bid", 0) or 0)
-                ask = float(q.get("ask", 0) or 0)
-                if bid > 0 and ask > 0:
-                    last = round((bid + ask) / 2, 2)
-            if last:
-                print(f"[FETCHER] Option mid {ticker} {strike}: ${last}")
-                return round(float(last), 2)
-            else:
-                print(f"[FETCHER] Option mid {ticker} {strike}: no price in payload")
+            options  = (r.json().get("options") or {}).get("option") or []
+            strike_f = float(strike)
+            for opt in options:
+                if (abs(float(opt.get("strike", 0)) - strike_f) < 0.01 and
+                    opt.get("option_type","").lower() == cp):
+                    bid = float(opt.get("bid", 0) or 0)
+                    ask = float(opt.get("ask", 0) or 0)
+                    last = float(opt.get("last", 0) or 0)
+                    if bid > 0 and ask > 0:
+                        mid = round((bid + ask) / 2, 2)
+                    elif last > 0:
+                        mid = last
+                    else:
+                        mid = None
+                    if mid:
+                        print(f"[FETCHER] Option mid {ticker} {strike}{cp[0].upper()} via Tradier: ${mid}")
+                        return mid
+            print(f"[FETCHER] Option mid {ticker} {strike}: not found in Tradier chain")
         else:
-            print(f"[FETCHER] Option mid {ticker} {strike}: HTTP {r.status_code} — {r.text[:100]}")
+            print(f"[FETCHER] Option mid {ticker} {strike}: Tradier HTTP {r.status_code}")
     except Exception as e:
         print(f"[FETCHER] Option mid error {ticker} {strike}: {e}")
     return None
