@@ -127,7 +127,8 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
         results   = []
         total_pnl = 0.0
 
-        total_count = len(open_trades)
+        raw_count   = len(all_open)   # total raw positions before dedup
+        total_count = len(open_trades) # after dedup/filter
         # Apply range (1-indexed)
         range_end_actual = min(range_end, total_count)
         slice_start      = max(0, range_start - 1)
@@ -135,19 +136,28 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
         page_trades      = open_trades[slice_start:slice_end]
 
         # Hint about remaining positions
+        dedup_note = (" (" + str(raw_count) + " raw, " + str(total_count) + " unique)" 
+                      if raw_count != total_count and not account_filter and not ticker_filter else "")
         if total_count > range_end:
             remaining = total_count - range_end
             send_reply(
-                str(total_count) + " total positions | showing " +
+                str(total_count) + " unique positions" + dedup_note + " | showing " +
                 str(range_start) + "-" + str(range_end_actual) +
-                " | Use /eval " + str(range_end + 1) + "-" + str(min(range_end + 20, total_count)) +
-                " for next " + str(min(remaining, 20)),
+                " | /eval " + str(range_end + 1) + "-" + str(min(range_end + 20, total_count)) +
+                " for next " + str(min(remaining, 20)) +
+                " | /eval @acct for per-account view",
                 from_chat_id
             )
         elif total_count > 20 and range_start == 1:
             send_reply(
-                str(total_count) + " positions — showing 1-20 | /eval 21-" +
-                str(total_count) + " for rest",
+                str(total_count) + " unique positions" + dedup_note +
+                " — showing 1-20 | /eval 21-" + str(total_count) + " for rest",
+                from_chat_id
+            )
+        elif dedup_note:
+            send_reply(
+                str(total_count) + " unique positions" + dedup_note +
+                " | /eval @acct for per-account breakdown",
                 from_chat_id
             )
 
