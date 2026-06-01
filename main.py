@@ -904,19 +904,23 @@ def build_sms(trade: dict, data: dict, result: dict,
     return body
 
 # ── Process alert ─────────────────────────────────────────────────────
-async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = None):
+async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = None, source: str = ""):
     try:
         import asyncio, concurrent.futures
         loop = asyncio.get_event_loop()
 
         # Use pre-parsed trade if provided (test mode or Bullflow)
+        print(f"[PROCESS] process_alert called: tweet={str(tweet)[:50]} pre_parsed={bool(pre_parsed_trade)}")
         if pre_parsed_trade:
             trade = pre_parsed_trade
         else:
             # Run blocking IO in thread pool with timeout
             def _process():
                 try:
-                    return extract_trade_from_tweet(tweet, tweet_url)
+                    print(f"[VISION] Starting extract_trade_from_tweet for: {str(tweet)[:50]}")
+                    result = extract_trade_from_tweet(tweet, tweet_url)
+                    print(f"[VISION] extract_trade_from_tweet returned: {result}")
+                    return result
                 except Exception as _ve:
                     import traceback
                     print(f"[VISION] Exception in extract_trade_from_tweet: {_ve}")
@@ -935,6 +939,10 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         if not trade or not trade.get("ticker"):
             print("[WEBHOOK] Could not extract trade from text or image — skipping")
             return
+
+        # Tag source if passed explicitly
+        if source and not trade.get("source"):
+            trade["source"] = source
 
         ticker = trade.get("ticker")
         print(f"[PROCESS] Starting analysis for {ticker}...")
@@ -2030,7 +2038,7 @@ async def webhook(request: Request):
     # Cleanup old entries
     app.state.fg_dedup = {k:v for k,v in app.state.fg_dedup.items() if now_ts-v < 3600}
 
-    asyncio.create_task(process_alert(tweet, tweet_url, {"source": "flowgod"}))
+    asyncio.create_task(process_alert(tweet, tweet_url, None, source="flowgod"))
     print(f"[WEBHOOK] Queued background processing for {ticker}")
     return {"status":"queued","ticker":ticker,"message":"Processing in background — SMS incoming"}
 
