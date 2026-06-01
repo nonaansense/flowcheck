@@ -931,6 +931,75 @@ def fetch_greeks(ticker: str, strike: str, opt_type: str,
         print(f"[FETCHER] Greeks error: {e}")
     return None
 
+def fetch_option_mid(ticker: str, strike: str, opt_type: str, expiry: str) -> float | None:
+    """Fetch current mid price of a single option leg via Polygon snapshot."""
+    key = massive_key()
+    if not key or not expiry or not strike:
+        return None
+    try:
+        parts = expiry.split("/")
+        if len(parts) != 3:
+            return None
+        m, d, y = parts
+        y       = "20"+y if len(y)==2 else y
+        exp_str = f"{y}{m.zfill(2)}{d.zfill(2)}"
+        cp      = "C" if "call" in opt_type.lower() else "P"
+        s_int   = int(float(strike) * 1000)
+        sym     = f"O:{ticker.upper()}{exp_str}{cp}{s_int:08d}"
+
+        r = requests.get(
+            f"https://api.polygon.io/v3/snapshot/options/{ticker.upper()}/{sym}",
+            params={"apiKey": key},
+            timeout=8
+        )
+        if r.status_code == 200:
+            data = r.json().get("results", {})
+            day  = data.get("day", {}) or {}
+            # Use last close or mid of bid/ask
+            last = day.get("close") or day.get("last_price")
+            if not last:
+                q = data.get("last_quote", {}) or {}
+                bid = float(q.get("bid", 0) or 0)
+                ask = float(q.get("ask", 0) or 0)
+                if bid > 0 and ask > 0:
+                    last = round((bid + ask) / 2, 2)
+            if last:
+                return round(float(last), 2)
+    except Exception as e:
+        print(f"[FETCHER] Option mid error {ticker} {strike}: {e}")
+    return None
+
+
+def fetch_spread_value(ticker: str, opt_type: str, expiry: str,
+                       long_strike: str, short_strike: str,
+                       is_debit: bool) -> dict:
+    """
+    Fetch current net value of a vertical spread.
+    Returns dict with long_price, short_price, net_value, pnl_pct (given entry credit/debit).
+    """
+    long_px  = fetch_option_mid(ticker, long_strike, opt_type, expiry)
+    short_px = fetch_option_mid(ticker, short_strike, opt_type, expiry)
+
+    result = {
+        "long_strike":  long_strike,
+        "short_strike": short_strike,
+        "long_price":   long_px,
+        "short_price":  short_px,
+        "net_value":    None,
+    }
+
+    if long_px is not None and short_px is not None:
+        if is_debit:
+            # Debit spread: bought long, sold short — current value = long - short
+            result["net_value"] = round(long_px - short_px, 2)
+        else:
+            # Credit spread: sold short, bought long — current value = short - long
+            result["net_value"] = round(short_px - long_px, 2)
+        print(f"[FETCHER] Spread {ticker} {long_strike}/{short_strike}: long={long_px} short={short_px} net={result['net_value']}")
+
+    return result
+
+
 def fetch_float_and_short(ticker: str) -> dict:
     """Fetch float shares, company profile and short interest."""
     data   = fh_get("/stock/profile2", {"symbol": ticker})

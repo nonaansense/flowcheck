@@ -449,6 +449,7 @@ def add_entry(ticker: str, strike: str, opt_type: str, expiry: str,
         "fees":           float(fees) if fees else 0.0,
         "reg_fees":       float(reg_fees) if reg_fees else 0.0,
         # Spread fields
+        "legs":           "spread" if spread_type else "single",
         "is_spread":      spread_type is not None,
         "spread_type":    spread_type,
         "short_strike":   short_strike,
@@ -955,7 +956,7 @@ def edit_trade(ticker: str, field: str, value: str,
             except:
                 return False, "spread_width must be a number e.g. 10", None
         else:
-            valid = "entry_date, entry_time, exit_date, exit_time, entry_price, contracts, expiry, strike, note, option_type, account_id, fc_score, fc_verdict, long_strike, short_strike, credit, spread_width"
+            valid = "entry_date, entry_time, exit_date, exit_time, entry_price, contracts, expiry, strike, note, option_type, account_id, fc_score, fc_verdict, long_strike, short_strike, credit, spread_width, legs, spread_type"
             return False, "Unknown field: " + field + ". Valid: " + valid, None
 
         save_journal(journal)
@@ -1809,10 +1810,11 @@ def get_journal_summary(account_id: str = None) -> str:
             else:
                 ot     = t.get("order_type","BTO")
                 ot_str = (" " + ot) if ot else " BTO"
+                legs_tag = " [spread]" if t.get("legs","single") == "spread" or t.get("is_spread") else ""
                 lines.append(
                     t["ticker"] + " " + t["strike"] + otype + " " + t["expiry"] +
                     dte_str + " x" + str(remaining) + "/" + str(t["contracts"]) +
-                    " @ $" + str(t["entry_price"]) + ot_str + acc_label
+                    " @ $" + str(t["entry_price"]) + ot_str + legs_tag + acc_label
                 )
             lines.append(
                 "  In: " + t["entry_date"] + " " + t["entry_time"] +

@@ -55,8 +55,9 @@ def get_updates() -> list:
     return []
 
 
-def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=None):
-    """Evaluate open positions: HOLD, TRIM, or CLOSE. Filters by ticker/account."""
+def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=None,
+                             range_start=1, range_end=20):
+    """Evaluate open positions: HOLD, TRIM, or CLOSE. Filters by ticker/account/range."""
     import os
     import anthropic as _ant
     from storage import load_data
@@ -66,8 +67,11 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
 
     # Build status message
     parts = []
-    if ticker_filter:   parts.append(ticker_filter.upper())
-    if account_filter:  parts.append("@" + account_filter)
+    if ticker_filter:  parts.append(ticker_filter.upper())
+    if account_filter: parts.append("@" + account_filter)
+    rng_str = str(range_start) + "-" + str(range_end)
+    if range_start != 1 or range_end != 20:
+        parts.append("pos " + rng_str)
     label = " + ".join(parts) if parts else "all positions"
     send_reply("Evaluating " + label + "...", from_chat_id)
 
@@ -124,9 +128,30 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
         total_pnl = 0.0
 
         total_count = len(open_trades)
-        if total_count > 20:
-            send_reply(str(total_count) + " positions found — evaluating first 20. Use /eval TICKER for specific ones.", from_chat_id)
-        for t in open_trades[:20]:
+        # Apply range (1-indexed)
+        range_end_actual = min(range_end, total_count)
+        slice_start      = max(0, range_start - 1)
+        slice_end        = range_end_actual
+        page_trades      = open_trades[slice_start:slice_end]
+
+        # Hint about remaining positions
+        if total_count > range_end:
+            remaining = total_count - range_end
+            send_reply(
+                str(total_count) + " total positions | showing " +
+                str(range_start) + "-" + str(range_end_actual) +
+                " | Use /eval " + str(range_end + 1) + "-" + str(min(range_end + 20, total_count)) +
+                " for next " + str(min(remaining, 20)),
+                from_chat_id
+            )
+        elif total_count > 20 and range_start == 1:
+            send_reply(
+                str(total_count) + " positions — showing 1-20 | /eval 21-" +
+                str(total_count) + " for rest",
+                from_chat_id
+            )
+
+        for t in page_trades:
             ticker     = t.get("ticker", "?")
             strike     = str(t.get("strike", "?"))
             opt_type   = ((t.get("option_type", "call") or "call").upper() + " ")[0]
@@ -158,7 +183,38 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                 pass
             dte_str = str(dte) + "d" if dte is not None else "?"
 
-            if entry_px > 0 and curr_px > 0:
+            # Spread-aware P&L
+            is_spread = (t.get("is_spread") or bool(t.get("spread_type"))
+                          or t.get("legs","single") == "spread")
+            if is_spread and t.get("long_strike") and t.get("short_strike"):
+                try:
+                    from fetcher import fetch_spread_value as _fsv
+                    is_debit2 = "debit" in (t.get("spread_type","") or "")
+                    sv        = _fsv(ticker, t.get("option_type","call"), expiry,
+                                     str(t["long_strike"]), str(t["short_strike"]), is_debit2)
+                    net_val   = sv.get("net_value")
+                    entry_net = float(t.get("credit",0) or t.get("entry_price",0) or 0)
+                    lp        = sv.get("long_price","?")
+                    sp2       = sv.get("short_price","?")
+                    stock_str = "L$" + str(lp) + "/S$" + str(sp2)
+                    if net_val is not None and entry_net > 0:
+                        if is_debit2:
+                            pnl_usd = round((net_val - entry_net) * contracts * 100, 0)
+                            pnl_pct = round((net_val - entry_net) / entry_net * 100, 1)
+                        else:
+                            pnl_usd = round((entry_net - net_val) * contracts * 100, 0)
+                            pnl_pct = round((entry_net - net_val) / entry_net * 100, 1)
+                        total_pnl += pnl_usd
+                        sign     = "+" if pnl_pct >= 0 else ""
+                        sign_usd = "+" if pnl_usd >= 0 else ""
+                        pnl_str  = sign + str(pnl_pct) + "% (" + sign_usd + "$" + str(int(pnl_usd)) + ")"
+                    elif net_val is not None:
+                        pnl_str = "net $" + str(net_val) + " (no entry cost)"
+                    else:
+                        pnl_str = "spread legs unavailable"
+                except Exception as _se:
+                    pnl_str = "spread error: " + str(_se)[:30]
+            elif entry_px > 0 and curr_px > 0:
                 if is_sto:
                     pnl_pct = round((entry_px - curr_px) / entry_px * 100, 1)
                     pnl_usd = round((entry_px - curr_px) * contracts * 100, 0)
@@ -170,8 +226,7 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                 sign_usd = "+" if pnl_usd >= 0 else ""
                 pnl_str  = sign + str(pnl_pct) + "% (" + sign_usd + "$" + str(int(pnl_usd)) + ")"
             else:
-                pnl_str = "unknown"
-
+                pnl_str = "unknown (no price data)"
             # Calculate ITM/OTM explicitly so Haiku doesn't guess
             itm_otm_str = "unknown"
             try:
@@ -193,9 +248,15 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                 "REASON: one sentence max 20 words\n\n"
                 "POSITION: " + ticker + " " + strike + opt_type +
                 " exp " + expiry + " (" + dte_str + " left)\n"
-                "TYPE: " + ("STO put sell" if is_sto else "BTO long") + "\n"
+                "TYPE: " + (
+                "SPREAD " + (t.get("spread_type","").upper() or "VERTICAL") +
+                " | Long $" + str(t.get("long_strike","?")) +
+                " Short $" + str(t.get("short_strike","?"))
+                if is_spread else
+                ("STO put sell" if is_sto else "BTO long")
+            ) + "\n"
                 "OPTION PRICE: entry $" + str(entry_px) + " -> now $" + str(curr_px) +
-                " | PNL: " + pnl_str + "\n"
+                " | PNL: " + pnl_str + " (do not guess if unknown)\n"
                 "STOCK: " + stock_str + " | STRIKE: $" + strike +
                 " | STATUS: " + itm_otm_str + "\n"
                 "VIX: " + vix_str + " | ORIGINAL SCORE: " + str(score) + "/7"
@@ -227,13 +288,15 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
             else:
                 acct_str = " [" + account + "]" if account else ""
 
-            line1 = em + " " + ticker + " " + strike + opt_type + " [" + dte_str + "]" + acct_str + " -- " + verdict_eval
+            legs_badge = " [spread]" if is_spread else ""
+            line1 = em + " " + ticker + " " + strike + opt_type + " [" + dte_str + "]" + legs_badge + acct_str + " -- " + verdict_eval
             line2 = "   " + pnl_str + " | " + stock_str
             line3 = "   -> " + reason_eval
             results.append(line1 + "\n" + line2 + "\n" + line3)
 
         sep   = "-" * 20
-        hdr   = "=== Evaluate: " + label + " | " + now_et.strftime("%b %d %I:%M%p ET") + " ==="
+        rng_label = " [" + str(range_start) + "-" + str(range_end_actual) + "/" + str(total_count) + "]" if total_count > 20 else ""
+        hdr   = "=== Evaluate: " + label + rng_label + " | " + now_et.strftime("%b %d %I:%M%p ET") + " ==="
         sign  = "+" if total_pnl >= 0 else ""
         total = "Total P&L: " + sign + "$" + str(int(total_pnl))
         msg   = hdr + "\n" + "\n\n".join(results) + "\n" + sep + "\n" + total
@@ -292,18 +355,28 @@ def handle_command(text: str, from_chat_id: str):
         handle_sentiment(args[0].upper(), from_chat_id)
 
     elif cmd in ("eval", "evaluate", "review"):
-        # /eval                  — all positions, deduped
+        # /eval                  — all positions 1-20, deduped
+        # /eval 1-20             — positions 1-20
+        # /eval 21-40            — positions 21-40
         # /eval NVDA             — specific ticker only
         # /eval NVDA @rh_ira     — specific ticker + account
         # /eval @rh_ira          — specific account only
-        tkr_f  = None
-        act_f  = None
+        tkr_f   = None
+        act_f   = None
+        rng_start = 1
+        rng_end   = 20
+        import re as _re
         for arg in args:
             if arg.startswith("@"):
                 act_f = arg.lstrip("@").lower()
-            elif arg.upper() == arg and len(arg) <= 5:
+            elif _re.match(r"^[0-9]+-[0-9]+$", arg):
+                parts3 = arg.split("-")
+                rng_start = int(parts3[0])
+                rng_end   = int(parts3[1])
+            elif arg.upper() == arg and len(arg) <= 5 and arg.isalpha():
                 tkr_f = arg.upper()
-        handle_evaluate_command(from_chat_id, ticker_filter=tkr_f, account_filter=act_f)
+        handle_evaluate_command(from_chat_id, ticker_filter=tkr_f, account_filter=act_f,
+                                 range_start=rng_start, range_end=rng_end)
 
     elif cmd in ("count", "cnt"):
         try:
@@ -366,10 +439,14 @@ def handle_command(text: str, from_chat_id: str):
         except Exception as e:
             send_reply(f"Status error: {e}", from_chat_id)
     elif cmd == "entry" and len(args) >= 6:
-        # /entry TICKER STRIKE C/P EXPIRY CONTRACTS PRICE [DATE] [TIME]
-        # Log now:   /entry FLNC 23 C 06/18/26 3 2.85
-        # Log later: /entry FLNC 23 C 06/18/26 3 2.85 2026-05-27 10:34AM
-        handle_entry(args, from_chat_id)
+        # Single leg: /entry TICKER STRIKE C/P EXPIRY CONTRACTS PRICE [@acct] [DATE] [TIME]
+        # Spread:     /entry TICKER LONG_STRIKE/SHORT_STRIKE C/P EXPIRY CONTRACTS NET_DEBIT spread:debit_call [@acct]
+        #             /entry MU 1100/1200 C 01/16/26 5 12.50 spread:debit_call @rh_trad
+        #             /entry AAPL 180/185 C 06/20/26 3 2.50 spread:credit_call @rh_ira
+        if len(args) >= 6 and any("spread:" in a.lower() for a in args):
+            handle_spread_entry(args, from_chat_id)
+        else:
+            handle_entry(args, from_chat_id)
     elif cmd == "exit" and len(args) >= 2:
         # /exit TICKER PRICE [CONTRACTS] [DATE] [TIME]
         # Close all:    /exit FLNC 4.20
@@ -598,6 +675,91 @@ def handle_backtest(tweet_url: str, tweet_time: str, reply_chat_id: str):
 def handle_history(reply_chat_id: str):
     base_url = os.environ.get("BASE_URL","")
     send_reply(f"📊 Today's alerts:\n{base_url}/history", reply_chat_id)
+
+def handle_spread_entry(args: list, reply_chat_id: str):
+    """
+    Log a spread entry.
+    Format: /entry TICKER LONG/SHORT C/P EXPIRY CONTRACTS NET_PRICE spread:TYPE [@acct] [DATE] [TIME]
+    Examples:
+      /entry MU 1100/1200 C 01/16/26 5 12.50 spread:debit_call @rh_trad
+      /entry NVDA 900/950 C 06/20/26 2 8.00 spread:debit_call
+      /entry AAPL 185/180 P 06/20/26 3 2.50 spread:credit_put @rh_ira
+    Spread types: debit_call, debit_put, credit_call, credit_put
+    """
+    try:
+        from trade_journal import add_entry, normalize_expiry
+        ticker    = args[0].upper()
+        strikes   = args[1]  # e.g. "1100/1200"
+        opt_type  = args[2].lower()
+        expiry    = args[3]
+        contracts = int(args[4])
+        net_price = float(args[5])
+
+        # Parse spread type
+        spread_type = None
+        for a in args:
+            if a.lower().startswith("spread:"):
+                spread_type = a.lower().replace("spread:","").strip()
+        if not spread_type:
+            spread_type = "debit_call" if "call" in opt_type else "debit_put"
+
+        # Parse strikes
+        if "/" in strikes:
+            parts2 = strikes.split("/")
+            long_s  = parts2[0].strip()
+            short_s = parts2[1].strip()
+        else:
+            send_reply("Spread format: LONG/SHORT e.g. 1100/1200", reply_chat_id)
+            return
+
+        is_debit = "debit" in spread_type
+        spread_width = round(abs(float(short_s) - float(long_s)), 2)
+
+        # Account, date, time
+        account_id = "default"
+        entry_date = entry_time = None
+        for i, a in enumerate(args):
+            if a.startswith("@"):
+                account_id = a[1:].lower()
+            elif len(a) == 10 and "-" in a and entry_date is None:
+                entry_date = a
+            elif (":" in a or a.endswith("AM") or a.endswith("PM")) and entry_time is None:
+                entry_time = a
+
+        # Use long_strike as primary strike for display
+        primary_strike = long_s if is_debit else short_s
+
+        trade = add_entry(
+            ticker, primary_strike, opt_type,
+            normalize_expiry(expiry), contracts, net_price,
+            entry_date, entry_time, account_id,
+            spread_type=spread_type,
+            short_strike=short_s,
+            long_strike=long_s,
+            spread_width=spread_width,
+            credit=net_price
+        )
+
+        otype = "C" if "call" in opt_type else "P"
+        max_p = trade.get("max_profit","?")
+        max_l = trade.get("max_loss","?")
+        lines = [
+            "Spread entry recorded:",
+            ticker + " " + spread_type.upper().replace("_"," ") + " " + expiry,
+            "  Long  $" + long_s + otype + " | Short $" + short_s + otype,
+            "  Width: $" + str(spread_width) + " | Net " +
+            ("debit" if is_debit else "credit") + ": $" + str(net_price) +
+            " x" + str(contracts),
+            "  Max profit: $" + str(max_p) + " | Max loss: $" + str(max_l),
+            "To close: /exit " + ticker + " CLOSE_PRICE",
+        ]
+        send_reply(chr(10).join(lines), reply_chat_id)
+
+    except Exception as e:
+        send_reply("Spread entry error: " + str(e) + chr(10) +
+                   "Format: /entry MU 1100/1200 C 01/16/26 5 12.50 spread:debit_call @rh_trad",
+                   reply_chat_id)
+
 
 def handle_entry(args: list, reply_chat_id: str):
     """
