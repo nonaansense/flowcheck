@@ -620,7 +620,13 @@ def build_sms(trade: dict, data: dict, result: dict,
 
     # OTM / DTE / sweep inline
     otm_pct  = data.get("otm_pct")
-    otm_str  = f"OTM {otm_pct:+.1f}%" if otm_pct is not None else ""
+    if otm_pct is not None:
+        if otm_pct > 0:
+            otm_str = f"OTM {otm_pct:.1f}%"   # OTM — positive, no sign needed
+        else:
+            otm_str = f"ITM {abs(otm_pct):.1f}%"  # ITM — show as ITM X%
+    else:
+        otm_str = ""
     dte_info = f"{dte}d DTE" if dte is not None else ""
     sweep_label = data.get("sweep_label","") if data.get("is_sweep") else ""
     sweep_emoji = data.get("sweep_emoji","") if data.get("is_sweep") else ""
