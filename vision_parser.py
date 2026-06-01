@@ -4,12 +4,40 @@ from anthropic import Anthropic
 def get_client():
     return Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-def extract_image_url(tweet_url: str) -> str | None:
-    """Try fxtwitter to get Bullflow screenshot URL."""
+def extract_image_url(tweet_url: str, tweet_text: str = "") -> str | None:
+    """Try multiple services to get tweet image URL."""
+
+    # Try 0: follow t.co link directly from tweet text — fastest path
+    import re as _re
+    tco_matches = _re.findall(r"https://t[.]co/[A-Za-z0-9]+", tweet_text or "")
+    for tco_url in tco_matches:
+        try:
+            r = requests.get(tco_url, timeout=10, allow_redirects=True)
+            final_url = r.url
+            # Check if it resolved to an image or pic.twitter.com
+            if any(x in final_url for x in ["pbs.twimg.com", "pic.twitter.com", "pic.x.com"]):
+                print(f"[VISION] Found image via t.co redirect: {final_url}")
+                return final_url
+            # Try fetching as image directly
+            if r.headers.get("content-type","").startswith("image/"):
+                print(f"[VISION] t.co resolved to image: {final_url}")
+                return final_url
+        except Exception as e:
+            print(f"[VISION] t.co expand error: {e}")
+
+    # Normalize URL
+    tweet_url = tweet_url.strip()
+    tweet_id  = None
+    m = _re.search(r"/status/([0-9]+)", tweet_url)
+    if m:
+        tweet_id = m.group(1)
+
+    # Try 1: fxtwitter API
     try:
         fx_url = tweet_url.replace("twitter.com","api.fxtwitter.com").replace("x.com","api.fxtwitter.com")
         print(f"[VISION] Trying fxtwitter: {fx_url}")
         r = requests.get(fx_url, timeout=15)
+        print(f"[VISION] fxtwitter status: {r.status_code}")
         if r.status_code == 200:
             data   = r.json()
             tweet  = data.get("tweet", {})
@@ -20,8 +48,28 @@ def extract_image_url(tweet_url: str) -> str | None:
                 if url:
                     print(f"[VISION] Found image via fxtwitter: {url}")
                     return url
+            print(f"[VISION] fxtwitter: no photos in response. Keys: {list(tweet.keys())}")
     except Exception as e:
         print(f"[VISION] fxtwitter error: {e}")
+
+    # Try 2: vxtwitter API
+    try:
+        vx_url = tweet_url.replace("twitter.com","api.vxtwitter.com").replace("x.com","api.vxtwitter.com")
+        print(f"[VISION] Trying vxtwitter: {vx_url}")
+        r = requests.get(vx_url, timeout=15)
+        print(f"[VISION] vxtwitter status: {r.status_code}")
+        if r.status_code == 200:
+            data   = r.json()
+            medias = data.get("media_extended", []) or data.get("mediaURLs", [])
+            if medias:
+                url = medias[0].get("url") if isinstance(medias[0], dict) else medias[0]
+                if url and ("pbs.twimg" in url or "twimg" in url):
+                    print(f"[VISION] Found image via vxtwitter: {url}")
+                    return url
+    except Exception as e:
+        print(f"[VISION] vxtwitter error: {e}")
+
+    print(f"[VISION] Could not extract image from {tweet_url}")
     return None
 
 def download_image(url: str) -> bytes | None:
@@ -115,29 +163,38 @@ def extract_trade_from_tweet(tweet_text: str, tweet_url: str) -> dict | None:
     trade = parse_tweet(tweet_text)
     if trade and trade.get("ticker") and trade.get("strike") and trade.get("expiry_raw"):
         print(f"[VISION] Text parse succeeded: {trade.get('ticker')}")
-        # Still try image to get fill data (ask_size, bid_size, OI, volume)
-        # unless we already have fill data from text
         has_fill_data = trade.get("ask_size") or trade.get("bid_size")
         if has_fill_data:
             return trade
-        print(f"[VISION] Fetching image for fill data (ask_size/bid_size)...")
+        print(f"[VISION] Fetching image for fill data...")
+    elif trade and trade.get("ticker"):
+        # Partial text parse — has ticker but no strike/expiry
+        # Try image first, fall back to returning partial trade
+        print(f"[VISION] Partial text parse — ticker={trade.get('ticker')} premium={trade.get('premium')} — trying image")
     else:
         print("[VISION] Text parse insufficient — trying image extraction")
 
     if not tweet_url:
-        print("[VISION] No tweet URL — cannot extract image")
-        return trade  # Return partial if we have ticker at least
+        print("[VISION] No tweet URL — returning partial trade")
+        if trade and trade.get("ticker"):
+            print(f"[VISION] Returning partial: {trade.get('ticker')} ${trade.get('premium','?')}")
+            return trade
+        return None
 
     print("[VISION] Extracting image from tweet URL...")
-    image_url = extract_image_url(tweet_url)
+    image_url = extract_image_url(tweet_url, tweet_text=tweet_text)
     if not image_url:
-        print("[VISION] Could not extract image URL")
-        return trade
+        print("[VISION] Could not extract image URL — returning partial")
+        if trade and trade.get("ticker"):
+            return trade
+        return None
 
     image_bytes = download_image(image_url)
     if not image_bytes:
-        print("[VISION] Could not download image")
-        return trade
+        print("[VISION] Could not download image — returning partial")
+        if trade and trade.get("ticker"):
+            return trade
+        return None
 
     vision_data = parse_image(image_bytes)
     if vision_data:
