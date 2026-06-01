@@ -1940,17 +1940,45 @@ async def storage_check():
 async def ping():
     return {"status": "ok"}
 
+@app.get("/webhook")
+async def webhook_get():
+    """IFTTT verification ping."""
+    return {"status": "ok", "message": "FlowCheck webhook ready"}
+
 @app.post("/webhook")
 async def webhook(request: Request):
+    tweet     = ""
+    tweet_url = ""
     try:
+        # Try JSON first
         body = await request.json()
-    except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}")
-        return {"status": "error", "message": str(e)}
+        # Support multiple field name formats from IFTTT
+        tweet     = (body.get("tweet") or body.get("text") or
+                     body.get("content") or body.get("message") or
+                     body.get("body") or body.get("TweetText") or "")
+        tweet_url = (body.get("tweet_url") or body.get("url") or
+                     body.get("link") or body.get("LinkToTweet") or
+                     body.get("TweetURL") or "")
+        print(f"[WEBHOOK] JSON body keys: {list(body.keys())}")
+    except Exception:
+        # Try form data
+        try:
+            form = await request.form()
+            tweet     = (form.get("tweet") or form.get("text") or
+                         form.get("content") or form.get("TweetText") or "")
+            tweet_url = (form.get("tweet_url") or form.get("url") or
+                         form.get("LinkToTweet") or "")
+            print(f"[WEBHOOK] Form data keys: {list(form.keys())}")
+        except Exception:
+            # Try raw body
+            try:
+                raw = await request.body()
+                print(f"[WEBHOOK] Raw body: {raw[:200]}")
+            except Exception as e:
+                print(f"[WEBHOOK ERROR] {e}")
+            return {"status": "error", "message": "Could not parse body"}
 
-    tweet     = body.get("tweet","")
-    tweet_url = body.get("tweet_url","")
-    print(f"[WEBHOOK] Received: {tweet[:80]}")
+    print(f"[WEBHOOK] Received: {str(tweet)[:80]}")
 
     # Update watchdog timestamp
     global last_webhook_ts

@@ -359,14 +359,8 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             symbol     = alert_data.get("symbol","")
                             premium    = alert_data.get("alertPremium",0)
 
-                            # Market hours check
-                            now_et = datetime.now(ET)
-                            if now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30):
-                                print(f"[BULLFLOW] Pre-market alert skipped: {symbol}")
-                                continue
-                            if now_et.hour >= 16:
-                                print(f"[BULLFLOW] After-hours alert skipped: {symbol}")
-                                continue
+                            # Allow all hours — Bullflow filters at source
+                            # After-hours and pre-market flow is valid signal
 
                             print(f"[BULLFLOW] Alert: {alert_id} {alert_type} {symbol} "
                                   f"${premium:,.0f} [{alert_name}]")
