@@ -262,37 +262,52 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
             # Calculate ITM/OTM explicitly so Haiku doesn't guess
             itm_otm_str = "unknown"
             try:
-                stock_num  = float(stock_str.replace("$","")) if stock_str != "?" else None
-                strike_num = float(strike)
-                if stock_num:
+                if is_spread:
+                    # For spreads use long strike vs stock price
+                    ref_strike = float(long_s) if long_s else float(strike.split("/")[0].replace("C","").replace("P","").strip())
+                else:
+                    ref_strike = float(strike)
+                # stock_str at this point may be "L$xxx/S$xxx" for spreads — get actual stock price
+                raw_stock_str = stock_str
+                if raw_stock_str.startswith("L$"):
+                    # Get fresh stock price for ITM/OTM calc
+                    try:
+                        from fetcher import fetch_price as _fp2
+                        _spx = _fp2(ticker)
+                        raw_stock_str = "$" + str(_spx) if _spx else "?"
+                    except: raw_stock_str = "?"
+                stock_num = float(raw_stock_str.replace("$","").replace(",","")) if raw_stock_str not in ("?","") else None
+                if stock_num and ref_strike:
                     if "C" in opt_type.upper():
-                        diff_pct   = round((stock_num - strike_num) / strike_num * 100, 1)
+                        diff_pct    = round((stock_num - ref_strike) / ref_strike * 100, 1)
                         itm_otm_str = ("ITM " if diff_pct > 0 else "OTM ") + str(abs(diff_pct)) + "%"
                     else:
-                        diff_pct   = round((strike_num - stock_num) / strike_num * 100, 1)
+                        diff_pct    = round((ref_strike - stock_num) / ref_strike * 100, 1)
                         itm_otm_str = ("ITM " if diff_pct > 0 else "OTM ") + str(abs(diff_pct)) + "%"
             except Exception:
                 pass
 
-            prompt = (
-                "Evaluate this options position. Reply ONLY:\n"
-                "VERDICT: HOLD or TRIM or CLOSE\n"
-                "REASON: one sentence max 20 words\n\n"
-                "POSITION: " + ticker + " " + strike + opt_type +
-                " exp " + expiry + " (" + dte_str + " left)\n"
-                "TYPE: " + (
-                "SPREAD " + (t.get("spread_type","").upper() or "VERTICAL") +
-                " | Long $" + str(t.get("long_strike","?")) +
-                " Short $" + str(t.get("short_strike","?"))
-                if is_spread else
-                ("STO put sell" if is_sto else "BTO long")
-            ) + "\n"
-                "OPTION PRICE: entry $" + str(entry_px) + " -> now $" + str(curr_px) +
-                " | PNL: " + pnl_str + " (do not guess if unknown)\n"
-                "STOCK: " + stock_str + " | STRIKE: $" + strike +
-                " | STATUS: " + itm_otm_str + "\n"
-                "VIX: " + vix_str + " | ORIGINAL SCORE: " + str(score) + "/7"
-            )
+            # Build clear prompt separating option price from stock price
+            type_str2 = ("STO put sell" if is_sto else "BTO long call/put")
+            if is_spread:
+                type_str2 = ("DEBIT SPREAD" if is_debit_default else "CREDIT SPREAD") +                     " | Long $" + str(long_s) + " / Short $" + str(short_s or t.get("short_strike","?"))
+
+            prompt = chr(10).join([
+                "Evaluate this options position. Reply ONLY in this format:",
+                "VERDICT: HOLD or TRIM or CLOSE",
+                "REASON: one sentence, max 20 words",
+                "",
+                "POSITION DETAILS:",
+                "Ticker: " + ticker,
+                "Option: " + strike + opt_type + " expiring " + expiry + " (" + dte_str + " left)",
+                "Type: " + type_str2,
+                "UNDERLYING STOCK PRICE: " + (raw_stock_str if is_spread else stock_str) + " (this is the stock, NOT the option)",
+                "Strike vs Stock: " + itm_otm_str + " — " + ("stock BELOW strike = OTM call" if "OTM" in itm_otm_str and "C" in opt_type.upper() else "stock ABOVE strike = ITM call" if "ITM" in itm_otm_str and "C" in opt_type.upper() else ""),
+                "OPTION P&L: entry $" + str(entry_px) + " -> current $" + str(curr_px) + " | " + pnl_str,
+                ("Spread leg prices: " + stock_str if is_spread else ""),
+                "VIX: " + vix_str,
+                "Original score: " + str(score) + "/7 " + str(verdict_orig),
+            ])
 
             print(f"[EVAL] Scoring {ticker} {strike}{opt_type} [{dte_str}] PNL={pnl_str} {itm_otm_str}")
             try:
