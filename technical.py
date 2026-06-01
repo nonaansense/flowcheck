@@ -230,10 +230,14 @@ def fetch_1min_candles(ticker: str, count: int = 120) -> list:
     poly_key = keys[int(_time.time()) % len(keys)]
 
     from datetime import datetime as _dt, timedelta as _td
-    now_et   = _dt.now()
-    # Get candles for today — from market open to now
+    from zoneinfo import ZoneInfo as _ZI2
+    now_et  = _dt.now(_ZI2("America/New_York"))
+    # Skip weekends — no candle data
+    if now_et.weekday() >= 5:
+        return []
+    # Get candles for most recent trading session
     from_dt  = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-    to_dt    = now_et
+    to_dt    = now_et if now_et.hour >= 9 else now_et - _td(days=1)
 
     from_str = from_dt.strftime("%Y-%m-%dT%H:%M:%S")
     to_str   = to_dt.strftime("%Y-%m-%dT%H:%M:%S")

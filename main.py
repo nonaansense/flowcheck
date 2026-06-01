@@ -1188,10 +1188,12 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
             rot = intel["sector_rotation"]
             send_sms(rot["alert"])  # alert already contains emoji
 
-        # WATCH → TRADE upgrade notification
-        if result.get("verdict") == "TRADE":
+        # WATCH → TRADE upgrade notification — skip test trades
+        if result.get("verdict") == "TRADE" and not trade.get("_test"):
             try:
-                ticker_key = f"{ticker}_{strike}_{otype}"
+                _strike = str(trade.get("strike",""))
+                _otype  = (trade.get("option_type","call") or "call")[0].upper()
+                ticker_key = f"{ticker}_{_strike}_{_otype}"
                 for prior in analyses[-50:]:
                     pt = prior.get("trade",{})
                     pr = prior.get("result",{})
@@ -1202,11 +1204,11 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                         prior["_upgraded"] = True
                         base_url_up = os.environ.get("BASE_URL","https://flowcheck-production.up.railway.app")
                         send_sms(
-                            f"🔄 UPGRADE: {ticker} {strike}{otype} — was WATCH ({pr.get('final_score','?')}/7)" + chr(10) +
-                            f"Now TRADE ({result.get('final_score','?')}/7) — {src_badge if 'src_badge' in dir() else ''}" + chr(10) +
+                            f"🔄 UPGRADE: {ticker} {_strike}{_otype} — was WATCH ({pr.get('final_score','?')}/7)" + chr(10) +
+                            f"Now TRADE ({result.get('final_score','?')}/7)" + chr(10) +
                             f"📋 {base_url_up}/analysis/{prior.get('id',0)}"
                         )
-                        print(f"[UPGRADE] {ticker} {strike}{otype} upgraded WATCH→TRADE")
+                        print(f"[UPGRADE] {ticker} {_strike}{_otype} upgraded WATCH→TRADE")
                         break
             except Exception as _ue:
                 print(f"[UPGRADE] Error: {_ue}")
