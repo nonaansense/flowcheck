@@ -344,7 +344,27 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
             line1 = em + " " + ticker + " " + spread_title + " [" + dte_str + "]" + legs_badge + acct_str + " -- " + verdict_eval
             line2 = "   " + pnl_str + " | " + stock_str
             line3 = "   -> " + reason_eval
-            results.append(line1 + "\n" + line2 + "\n" + line3)
+
+            # For losing positions, fetch recent news to explain reversal
+            news_lines = []
+            try:
+                is_losing = pnl_usd < -50 if isinstance(pnl_usd, (int, float)) else False
+                if is_losing:
+                    from news_check import fetch_recent_news
+                    articles = fetch_recent_news(ticker, hours=72)[:2]
+                    for art in articles:
+                        headline = art.get("headline","")[:70]
+                        url      = art.get("url","")
+                        if headline and url:
+                            news_lines.append('   📰 <a href="' + url + '">' + headline + '</a>')
+                        elif headline:
+                            news_lines.append("   📰 " + headline)
+            except Exception: pass
+
+            result_block = line1 + "\n" + line2 + "\n" + line3
+            if news_lines:
+                result_block += "\n" + "\n".join(news_lines)
+            results.append(result_block)
 
         sep   = "-" * 20
         rng_label = " [" + str(range_start) + "-" + str(range_end_actual) + "/" + str(total_count) + "]" if total_count > 20 else ""
