@@ -2046,6 +2046,23 @@ async def webhook(request: Request):
 
     print(f"[WEBHOOK] Received: {str(tweet)[:80]}")
 
+    # Filter FlowGod commentary tweets — not flow alerts
+    # These are price observations, not options flow
+    _COMMENTARY = [
+        "all time high", "up %", "up today", "down today",
+        "holy sh", "lol", "wtf", "nice move", "ripping",
+        "halted", "just went", "look at", "can't believe",
+        "remember when", "told you", "called it",
+    ]
+    _tweet_lower = (tweet or "").lower()
+    if any(phrase in _tweet_lower for phrase in _COMMENTARY):
+        # Also check it doesn't have option-like content
+        import re as _re_wh
+        has_option = bool(_re_wh.search(r'\$?\d+[CP]|\d+\.\d+[CP]|call|put|strike|exp', _tweet_lower))
+        if not has_option:
+            print(f"[WEBHOOK] Commentary tweet — skipping (no options data)")
+            return {"status": "skipped", "reason": "commentary"}
+
     # Update watchdog timestamp
     global last_webhook_ts
     last_webhook_ts = time.time()
