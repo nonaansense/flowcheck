@@ -39,6 +39,14 @@ MIN_DTE       = cfg("FILTER_MIN_DTE",       2)
 MAX_DTE       = cfg("FILTER_MAX_DTE",       120)
 MAX_OTM_PCT   = cfg("FILTER_MAX_OTM",       20.0)
 MAX_ITM_PCT   = cfg("FILTER_MAX_ITM",       10.0)  # Skip deep ITM options
+
+# Sector/industry exclusions — comma-separated, case-insensitive
+# Default blocks biotech/pharma (binary FDA risk), REITs, cannabis
+_EXCLUDE_SECTORS_RAW = os.environ.get(
+    "FILTER_EXCLUDE_SECTORS",
+    "Biotechnology,Pharmaceutical,Drug Manufacturers,REIT,Real Estate,Cannabis,Medical Cannabis"
+)
+EXCLUDE_SECTORS = [s.strip().lower() for s in _EXCLUDE_SECTORS_RAW.split(",") if s.strip()]
 MAX_CHASING   = cfg("FILTER_MAX_CHASING",   50.0)  # option already up this %
 
 def get_now_et():
@@ -68,6 +76,26 @@ def check_dte(data: dict) -> tuple:
     if dte > MAX_DTE:
         return False, f"DTE {dte} > maximum {MAX_DTE} (too long)"
     return True, f"DTE {dte} ✅"
+
+def check_sector(ticker: str) -> tuple:
+    """Reject tickers in excluded sectors (biotech, REIT, cannabis, etc)."""
+    if not EXCLUDE_SECTORS:
+        return True, "No sector filter"
+    if not ticker:
+        return True, "No ticker"
+    try:
+        from fetcher import fetch_float_and_short
+        profile = fetch_float_and_short(ticker) or {}
+        sector   = (profile.get("sector","") or "").lower()
+        industry = (profile.get("industry","") or "").lower()
+        combined = sector + " " + industry
+        for excl in EXCLUDE_SECTORS:
+            if excl in combined:
+                return False, f"Excluded sector/industry: {profile.get('sector','')} / {profile.get('industry','')}"
+    except Exception as e:
+        print(f"[PREFILTER] Sector check error for {ticker}: {e}")
+    return True, "Sector OK ✅"
+
 
 def check_otm(data: dict) -> tuple:
     otm = data.get("otm_percentage") or data.get("otm_pct")

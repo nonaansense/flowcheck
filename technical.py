@@ -696,17 +696,47 @@ def run_technical_scan(send_sms_fn):
                 flow_option_price=watch_entry.get("flow_option_price"),
             )
 
+            # Filter signals not alerted in last 30 min
+            new_signals = []
             for signal in signals:
                 tf = signal["timeframe"]
-                # Don't re-alert same ticker+timeframe within 30 minutes
                 last_alert = watch_entry["alerted"].get(tf, 0)
                 if time.time() - last_alert < 1800:
                     continue
+                new_signals.append(signal)
 
-                msg = build_entry_alert(watch_entry, signal)
-                send_sms_fn(msg)
-                watch_entry["alerted"][tf] = time.time()
-                print(f"[TECHNICAL] Alert sent: {ticker} {tf} — {signal['strength']}")
+            if new_signals:
+                # Group all timeframes into ONE message per ticker
+                strike   = watch_entry.get("strike","?")
+                opt_type = watch_entry.get("option_type","call")[0].upper()
+                expiry   = watch_entry.get("expiry","?")
+                score    = watch_entry.get("flow_score","?")
+                verdict  = watch_entry.get("verdict","WATCH")
+                v_emoji  = {"TRADE":"✅","WATCH":"👀"}.get(verdict,"👀")
+                # Best signal = highest timeframe (most reliable)
+                best     = max(new_signals, key=lambda s: ["M5","M10","M15","M30","H1"].index(s["timeframe"])
+                               if s["timeframe"] in ["M5","M10","M15","M30","H1"] else 0)
+                tfs      = " + ".join(s["timeframe"] for s in new_signals)
+                strength = best["strength"]
+                c        = best["candle"]
+                vwap     = best.get("vwap")
+
+                lines = [
+                    f"🎯 ENTRY: {ticker} {strength} [{tfs}]",
+                    f"{v_emoji} {ticker} {strike}{opt_type} {expiry} [{score}/7 {verdict}]",
+                ]
+                if vwap:
+                    vwap_diff = round(((c["close"]-vwap)/vwap)*100, 2)
+                    lines.append(f"VWAP: ${vwap:.2f} | Price {vwap_diff:+.2f}% above")
+                lines.append(f"Best setup: {best['timeframe']} — {', '.join(best['signals'][:2])}")
+                lines.append(f"→ Entry ~${c['close']:.2f} | Stop ${c['low']:.2f} | Target ${round(c['close']+(c['close']-c['low'])*2,2):.2f}")
+
+                msg = chr(10).join(lines)
+                from sms import send_telegram
+                send_telegram(msg)
+                for signal in new_signals:
+                    watch_entry["alerted"][signal["timeframe"]] = time.time()
+                print(f"[TECHNICAL] Alert sent: {ticker} [{tfs}] {strength}")
 
             # Polygon free tier: 5 calls/minute = 12s between calls
             time.sleep(13)
