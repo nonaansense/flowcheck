@@ -212,74 +212,77 @@ load_watchlist()
 
 def fetch_1min_candles(ticker: str, count: int = 120) -> list:
     """
-    Fetch 1-minute candles from Polygon.io (now Massive.com).
-    Free tier: unlimited calls, 5/minute rate limit.
+    Fetch 1-minute candles via Tradier time_and_sales endpoint.
+    Uses existing TRADIER_TOKEN — no extra cost or plan needed.
     Returns list oldest→newest.
     """
-    # Round-robin between two Massive API keys to double call limits
     import time as _time
-    keys = [k for k in [
-        os.environ.get("MASSIVE_API_KEY"),
-        os.environ.get("MASSIVE_API_KEY_2"),
-        os.environ.get("POLYGON_API_KEY"),
-    ] if k]
-    if not keys:
-        print("[TECHNICAL] No Massive/Polygon API key set")
-        return []
-    # Pick key based on current minute — alternates every call
-    poly_key = keys[int(_time.time()) % len(keys)]
-
     from datetime import datetime as _dt, timedelta as _td
     from zoneinfo import ZoneInfo as _ZI2
-    now_et  = _dt.now(_ZI2("America/New_York"))
-    # Skip weekends — no candle data
+
+    token = os.environ.get("TRADIER_TOKEN","")
+    if not token:
+        print("[TECHNICAL] No TRADIER_TOKEN — cannot fetch candles")
+        return []
+
+    now_et = _dt.now(_ZI2("America/New_York"))
+    # Skip weekends
     if now_et.weekday() >= 5:
         return []
-    # Get candles for most recent trading session
-    from_dt  = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-    to_dt    = now_et if now_et.hour >= 9 else now_et - _td(days=1)
 
-    from_str = from_dt.strftime("%Y-%m-%dT%H:%M:%S")
-    to_str   = to_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    # Tradier time_and_sales uses start/end in YYYY-MM-DD HH:MM format
+    from_dt  = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    to_dt    = now_et
+    start_str = from_dt.strftime("%Y-%m-%d %H:%M")
+    end_str   = to_dt.strftime("%Y-%m-%d %H:%M")
 
     try:
         r = requests.get(
-            f"https://api.polygon.io/v2/aggs/ticker/{ticker.upper()}/range/1/minute/{from_str}/{to_str}",
+            "https://api.tradier.com/v1/markets/timesales",
             params={
-                "adjusted": "true",
-                "sort":     "asc",
-                "limit":    count,
-                "apiKey":   poly_key,
+                "symbol":    ticker.upper(),
+                "interval":  "1min",
+                "start":     start_str,
+                "end":       end_str,
+                "session_filter": "open",
+            },
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept":        "application/json",
             },
             timeout=10
         )
         if r.status_code == 200:
-            data = r.json()
-            results = data.get("results", [])
-            if results:
-                candles = []
-                for bar in results:
+            data  = r.json()
+            series = (data.get("series") or {})
+            items  = series.get("data", []) if isinstance(series, dict) else []
+            if not items:
+                return []
+            if isinstance(items, dict):
+                items = [items]
+            candles = []
+            for bar in items[-count:]:
+                try:
                     candles.append({
-                        "timestamp": bar.get("t", 0) // 1000,  # ms → seconds
-                        "open":      float(bar["o"]),
-                        "high":      float(bar["h"]),
-                        "low":       float(bar["l"]),
-                        "close":     float(bar["c"]),
-                        "volume":    float(bar.get("v", 0)),
+                        "timestamp": int(_dt.strptime(bar["time"], "%Y-%m-%dT%H:%M:%S").timestamp()),
+                        "open":      float(bar.get("open",  bar.get("price", 0))),
+                        "high":      float(bar.get("high",  bar.get("price", 0))),
+                        "low":       float(bar.get("low",   bar.get("price", 0))),
+                        "close":     float(bar.get("close", bar.get("price", 0))),
+                        "volume":    float(bar.get("volume", 0)),
                     })
-                print(f"[TECHNICAL] {ticker}: {len(candles)} 1min candles via Polygon")
-                return candles
-            else:
-                print(f"[TECHNICAL] {ticker}: no candles from Polygon (market closed?)")
-        elif r.status_code == 403:
-            print(f"[TECHNICAL] Polygon 403 for {ticker} — check API key")
+                except Exception:
+                    continue
+            if candles:
+                print(f"[TECHNICAL] {ticker}: {len(candles)} 1min candles via Tradier")
+            return candles
         elif r.status_code == 429:
-            print(f"[TECHNICAL] Polygon rate limit — sleeping 12s")
-            time.sleep(12)
+            print(f"[TECHNICAL] Tradier rate limit for {ticker}")
+            _time.sleep(5)
         else:
-            print(f"[TECHNICAL] Polygon {r.status_code} for {ticker}")
+            print(f"[TECHNICAL] Tradier {r.status_code} for {ticker}")
     except Exception as e:
-        print(f"[TECHNICAL] Polygon candle error {ticker}: {e}")
+        print(f"[TECHNICAL] Tradier candle error {ticker}: {e}")
 
     return []
 
@@ -673,6 +676,7 @@ def run_technical_scan(send_sms_fn):
 
     for ticker, watch_entry in list(_watch_list.items()):
         try:
+            time.sleep(0.6)  # ~100 req/min — stays under Tradier 120/min limit
             # Update DTE remaining for cleanup logic
             expiry_raw = watch_entry.get("expiry_raw","")
             if expiry_raw:

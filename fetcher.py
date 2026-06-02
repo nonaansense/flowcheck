@@ -1047,7 +1047,10 @@ def fetch_float_and_short(ticker: str) -> dict:
                     result["company_desc"] = generated
                     print(f"[FETCHER] Company desc for {ticker}: {generated[:60]}")
                 else:
-                    result["company_desc"] = result.get("sector","")
+                    # Fall back to sector + industry
+                    sector   = result.get("sector","")
+                    industry = result.get("industry","")
+                    result["company_desc"] = industry or sector or ""
             except Exception as _de:
                 print(f"[FETCHER] Company desc error for {ticker}: {_de}")
                 result["company_desc"] = result.get("sector","")

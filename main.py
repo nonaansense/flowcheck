@@ -448,9 +448,11 @@ def build_sms(trade: dict, data: dict, result: dict,
     risk  = risk  or {}
 
     ticker    = trade.get("ticker","?")
-    strike    = trade.get("strike","?")
-    otype     = trade.get("option_type","call")[0].upper()
-    expiry    = trade.get("expiry","?")
+    strike    = str(trade.get("strike","") or "?")
+    otype     = ((trade.get("option_type","call") or "call")[0]).upper()
+    expiry    = str(trade.get("expiry","") or "?")
+    if strike in ("None","none",""): strike = "?"
+    if expiry in ("None","none",""): expiry = "?"
     dte       = data.get("days_to_expiry")
     dte_str   = f" [{dte}d]" if dte is not None else ""
 
@@ -821,8 +823,9 @@ def build_sms(trade: dict, data: dict, result: dict,
     # FOOTER
     # ══════════════════════════════════════════
     lines.append("")
-    if tweet_url:
-        lines.append(f"🐦 {tweet_url}")
+    effective_tweet_url = tweet_url or trade.get("tweet_url","")
+    if effective_tweet_url:
+        lines.append(f"🐦 {effective_tweet_url}")
     lines.append(f"🔗 {base_url.rstrip('/')}/analysis/{analysis_id}")
 
     # WATCH/SKIP get a compact format — full details at analysis URL
@@ -916,17 +919,13 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         loop = asyncio.get_event_loop()
 
         # Use pre-parsed trade if provided (test mode or Bullflow)
-        print(f"[PROCESS] process_alert called: tweet={str(tweet)[:50]} pre_parsed={bool(pre_parsed_trade)}")
         if pre_parsed_trade:
             trade = pre_parsed_trade
         else:
             # Run blocking IO in thread pool with timeout
             def _process():
                 try:
-                    print(f"[VISION] Starting extract_trade_from_tweet for: {str(tweet)[:50]}")
-                    result = extract_trade_from_tweet(tweet, tweet_url)
-                    print(f"[VISION] extract_trade_from_tweet returned: {result}")
-                    return result
+                    return extract_trade_from_tweet(tweet, tweet_url)
                 except Exception as _ve:
                     import traceback
                     print(f"[VISION] Exception in extract_trade_from_tweet: {_ve}")
@@ -946,9 +945,20 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
             print("[WEBHOOK] Could not extract trade from text or image — skipping")
             return
 
+        # Skip if critical fields missing — prevents NoneC None alerts
+        _strike = str(trade.get("strike","") or "")
+        _expiry = str(trade.get("expiry_raw","") or trade.get("expiry","") or "")
+        if not _strike or _strike in ("None","?","") or not _expiry or _expiry in ("None","?",""):
+            print(f"[WEBHOOK] Incomplete trade data (strike={_strike} expiry={_expiry}) — skipping")
+            return
+
         # Tag source if passed explicitly
         if source and not trade.get("source"):
             trade["source"] = source
+
+        # Always store tweet_url on trade so build_sms can access it
+        if tweet_url and not trade.get("tweet_url"):
+            trade["tweet_url"] = tweet_url
 
         ticker = trade.get("ticker")
         print(f"[PROCESS] Starting analysis for {ticker}...")
