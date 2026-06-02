@@ -1077,8 +1077,26 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         elif dte is None or int(dte) >= 1:
             if result.get("verdict") in ("WATCH", "TRADE"):
                 add_to_watchlist(ticker, trade, result, data, send_sms_fn=send_sms)
-            if result.get("verdict") == "TRADE":
-                add_position(trade, data, result)
+            if result.get("verdict") == "TRADE" and not trade.get("_test"):
+                # Only track exit signals for positions actually in the journal
+                # Check if this ticker+strike is in open journal positions
+                try:
+                    from storage import load_data as _ld_es
+                    journal = _ld_es("journal", "/tmp/journal.json", {"trades":[]})
+                    open_trades = [t for t in journal.get("trades",[])
+                                   if t.get("status","").upper() != "CLOSED"]
+                    in_journal = any(
+                        str(t.get("ticker","")).upper() == str(ticker).upper() and
+                        str(t.get("strike","")) == str(trade.get("strike",""))
+                        for t in open_trades
+                    )
+                    if in_journal:
+                        add_position(trade, data, result)
+                    else:
+                        print(f"[EXIT] {ticker} not in journal — skipping exit tracking")
+                except Exception as _ee:
+                    print(f"[EXIT] Journal check error: {_ee}")
+                    add_position(trade, data, result)
         else:
             print(f"[PROCESS] Skipping watchlist/position — option expired (DTE={dte})")
 
