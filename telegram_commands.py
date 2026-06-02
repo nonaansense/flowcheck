@@ -26,7 +26,7 @@ FLOWCHECK_KEYBOARD = {
     "keyboard": [
         ["📊 /eval",      "📓 /journal",   "🔢 /count"],
         ["📈 /flow ...",  "💹 /price ...", "😐 /sent ..."],
-        ["⚙️ /status",    "📋 /positions", "❓ /help"],
+        ["⚙️ /status",    "🔬 /test",      "❓ /help"],
     ],
     "resize_keyboard":   True,
     "persistent":        True,
@@ -662,6 +662,7 @@ def handle_command(text: str, from_chat_id: str):
             open_ct  = len([t for t in journal.get("trades",[]) if t.get("status","").upper() != "CLOSED"])
             today    = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
             analyses = _ld("analyses_today", "/tmp/analyses.json", []) or []
+            analyses = [a for a in analyses if isinstance(a, dict)]
             trades_t = sum(1 for a in analyses if a.get("date","")==today and a.get("verdict","")=="TRADE")
             watches_t= sum(1 for a in analyses if a.get("date","")==today and a.get("verdict","")=="WATCH")
             balance  = __import__('os').environ.get("RAILWAY_BALANCE","?")
@@ -809,6 +810,9 @@ def handle_command(text: str, from_chat_id: str):
     elif cmd in ("kb", "keyboard"):
         send_keyboard(from_chat_id)
 
+    elif cmd in ("test", "ping", "healthcheck"):
+        handle_test_command(from_chat_id)
+
     else:
         send_reply(
             "Unknown command. Send /help for list of commands.",
@@ -919,6 +923,122 @@ def handle_backtest(tweet_url: str, tweet_time: str, reply_chat_id: str):
 def handle_history(reply_chat_id: str):
     base_url = os.environ.get("BASE_URL","")
     send_reply(f"📊 Today's alerts:\n{base_url}/history", reply_chat_id)
+
+def handle_test_command(reply_chat_id: str):
+    """Run connectivity checks on all external services."""
+    import os, requests as _req, time as _time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    send_reply("🔍 Running system checks...", reply_chat_id)
+    lines = ["=== FlowCheck System Status ===",
+             datetime.now(ZoneInfo("America/New_York")).strftime("%b %d %I:%M%p ET")]
+    ok = "✅"
+    fail = "❌"
+    warn = "⚠️"
+
+    # 1. Telegram (already working if we got here)
+    lines.append(ok + " Telegram bot — connected")
+
+    # 2. Supabase
+    try:
+        from storage import load_data
+        load_data("outcomes", "/tmp/outcomes.json", {})
+        lines.append(ok + " Supabase — connected")
+    except Exception as e:
+        lines.append(fail + " Supabase — " + str(e)[:40])
+
+    # 3. Finnhub (stock price)
+    try:
+        from fetcher import fetch_price
+        px = fetch_price("AAPL")
+        lines.append((ok if px else warn) + " Finnhub — " + ("$" + str(px) if px else "no price returned"))
+    except Exception as e:
+        lines.append(fail + " Finnhub — " + str(e)[:40])
+
+    # 4. Tradier
+    try:
+        token = os.environ.get("TRADIER_TOKEN","")
+        if token:
+            r = _req.get("https://api.tradier.com/v1/markets/quotes",
+                         params={"symbols":"AAPL","greeks":"false"},
+                         headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+                         timeout=8)
+            lines.append((ok if r.status_code == 200 else warn) +
+                         " Tradier — HTTP " + str(r.status_code))
+        else:
+            lines.append(warn + " Tradier — no token set")
+    except Exception as e:
+        lines.append(fail + " Tradier — " + str(e)[:40])
+
+    # 5. Anthropic / Haiku
+    try:
+        import anthropic as _ant
+        client = _ant.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY",""))
+        resp   = client.messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=5,
+            messages=[{"role":"user","content":"ping"}]
+        )
+        lines.append(ok + " Anthropic Haiku — connected")
+    except Exception as e:
+        lines.append(fail + " Anthropic — " + str(e)[:40])
+
+    # 6. Bullflow stream
+    try:
+        key = os.environ.get("BULLFLOW_API_KEY","")
+        if key:
+            r = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
+            alerts = r.json().get("alerts",[]) if r.status_code == 200 else []
+            lines.append((ok if alerts else warn) +
+                         " Bullflow — " + str(len(alerts)) + " custom alert(s)")
+        else:
+            lines.append(warn + " Bullflow — no API key")
+    except Exception as e:
+        lines.append(fail + " Bullflow — " + str(e)[:40])
+
+    # 7. Massive API
+    try:
+        key2 = os.environ.get("MASSIVE_API_KEY","")
+        if key2:
+            r = _req.get("https://api.polygon.io/v2/last/trade/AAPL",
+                         params={"apiKey": key2}, timeout=8)
+            lines.append((ok if r.status_code == 200 else warn) +
+                         " Massive API — HTTP " + str(r.status_code))
+        else:
+            lines.append(warn + " Massive API — no key")
+    except Exception as e:
+        lines.append(fail + " Massive API — " + str(e)[:40])
+
+    # 8. VIX / Yahoo
+    try:
+        from fetcher import fetch_vix
+        vix = fetch_vix()
+        lines.append((ok if vix else warn) + " VIX/Yahoo — " + (str(round(vix,1)) if vix else "failed"))
+    except Exception as e:
+        lines.append(fail + " VIX/Yahoo — " + str(e)[:40])
+
+    # 9. Railway balance
+    try:
+        bal = os.environ.get("RAILWAY_BALANCE","")
+        if bal:
+            lines.append(ok + " Railway balance — $" + str(bal))
+        else:
+            lines.append(warn + " Railway balance — not set")
+    except Exception as e:
+        lines.append(fail + " Railway — " + str(e)[:40])
+
+    # 10. Webhook (IFTTT)
+    last_wh = os.environ.get("LAST_WEBHOOK_TS","")
+    if last_wh:
+        import time as _t
+        age = round((_t.time() - float(last_wh)) / 60, 0)
+        lines.append((ok if age < 120 else warn) +
+                     " IFTTT/Webhook — last received " + str(int(age)) + "min ago")
+    else:
+        lines.append(warn + " IFTTT/Webhook — no recent activity recorded")
+
+    send_reply(chr(10).join(lines), reply_chat_id)
+
 
 def handle_spread_entry(args: list, reply_chat_id: str):
     """
@@ -1693,6 +1813,7 @@ def handle_help(reply_chat_id: str):
         '/journal — open trade journal web page',
         '/flow TICKER — today\'s top flows for a ticker (from stream history)',
         '/eval [@account] [TICKER] [range] — AI position review: HOLD/TRIM/CLOSE',
+        '/test — system connectivity check (Telegram, Supabase, APIs)',
         '/count — open position count by account',
         '/status — stream health + today alert count',
         '/price TICKER — real-time stock price',
@@ -2391,7 +2512,7 @@ def poll_commands():
             continue
 
         # Handle both /commands and keyboard button presses (emoji prefix)
-        KB_EMOJIS = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓")
+        KB_EMOJIS = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓","🔬")
         if text.startswith("/") or text.startswith(KB_EMOJIS):
             try:
                 handle_command(text, from_id)

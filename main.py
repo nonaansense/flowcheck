@@ -2013,6 +2013,7 @@ async def webhook(request: Request):
     # Update watchdog timestamp
     global last_webhook_ts
     last_webhook_ts = time.time()
+    os.environ["LAST_WEBHOOK_TS"] = str(last_webhook_ts)
 
     # Reject webhooks on market holidays
     if not is_market_open():
