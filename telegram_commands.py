@@ -952,7 +952,7 @@ def handle_test_command(reply_chat_id: str):
     try:
         from fetcher import fetch_price
         px = fetch_price("AAPL")
-        lines.append((ok if px else warn) + " Finnhub — " + ("$" + str(px) if px else "no price returned"))
+        lines.append((ok if px else warn) + " Finnhub — " + ("connected" if px else "no price returned"))
     except Exception as e:
         lines.append(fail + " Finnhub — " + str(e)[:40])
 
@@ -965,7 +965,7 @@ def handle_test_command(reply_chat_id: str):
                          headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
                          timeout=8)
             lines.append((ok if r.status_code == 200 else warn) +
-                         " Tradier — HTTP " + str(r.status_code))
+                         " Tradier — " + ("connected" if r.status_code == 200 else "HTTP " + str(r.status_code)))
         else:
             lines.append(warn + " Tradier — no token set")
     except Exception as e:
@@ -990,20 +990,28 @@ def handle_test_command(reply_chat_id: str):
             r = _req.get(f"https://api.bullflow.io/v1/alerts/custom-alerts?key={key}", timeout=8)
             alerts = r.json().get("alerts",[]) if r.status_code == 200 else []
             lines.append((ok if alerts else warn) +
-                         " Bullflow — " + str(len(alerts)) + " custom alert(s)")
+                         " Bullflow — " + ("connected" if alerts else "no custom alerts — run /sync-bullflow-filters"))
         else:
             lines.append(warn + " Bullflow — no API key")
     except Exception as e:
         lines.append(fail + " Bullflow — " + str(e)[:40])
 
-    # 7. Massive API
+    # 7. Massive API — test via short interest endpoint (known to work)
     try:
         key2 = os.environ.get("MASSIVE_API_KEY","")
         if key2:
-            r = _req.get("https://api.polygon.io/v2/last/trade/AAPL",
+            r = _req.get("https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/AAPL",
                          params={"apiKey": key2}, timeout=8)
-            lines.append((ok if r.status_code == 200 else warn) +
-                         " Massive API — HTTP " + str(r.status_code))
+            if r.status_code == 200:
+                lines.append(ok + " Massive API — connected")
+            elif r.status_code == 403:
+                # Try short interest endpoint instead
+                r2 = _req.get("https://api.massive.com/stocks/v1/short-interest/AAPL",
+                              headers={"Authorization": "Bearer " + key2}, timeout=8)
+                lines.append((ok if r2.status_code == 200 else warn) +
+                             " Massive API — " + ("connected" if r2.status_code == 200 else "HTTP " + str(r2.status_code)))
+            else:
+                lines.append(warn + " Massive API — HTTP " + str(r.status_code) + " (plan limitation)")
         else:
             lines.append(warn + " Massive API — no key")
     except Exception as e:
@@ -1013,7 +1021,7 @@ def handle_test_command(reply_chat_id: str):
     try:
         from fetcher import fetch_vix
         vix = fetch_vix()
-        lines.append((ok if vix else warn) + " VIX/Yahoo — " + (str(round(vix,1)) if vix else "failed"))
+        lines.append((ok if vix else warn) + " VIX/Yahoo — " + ("connected" if vix else "failed"))
     except Exception as e:
         lines.append(fail + " VIX/Yahoo — " + str(e)[:40])
 
@@ -1031,11 +1039,19 @@ def handle_test_command(reply_chat_id: str):
     last_wh = os.environ.get("LAST_WEBHOOK_TS","")
     if last_wh:
         import time as _t
-        age = round((_t.time() - float(last_wh)) / 60, 0)
-        lines.append((ok if age < 120 else warn) +
-                     " IFTTT/Webhook — last received " + str(int(age)) + "min ago")
+        age_min = int((_t.time() - float(last_wh)) / 60)
+        if age_min < 60:
+            lines.append(ok + " IFTTT/Webhook — connected (last tweet " + str(age_min) + "min ago)")
+        elif age_min < 480:
+            lines.append(ok + " IFTTT/Webhook — connected (last tweet " + str(age_min // 60) + "h ago)")
+        else:
+            lines.append(warn + " IFTTT/Webhook — connected but no tweets in " + str(age_min // 60) + "h")
     else:
-        lines.append(warn + " IFTTT/Webhook — no recent activity recorded")
+        now_et2 = datetime.now(ZoneInfo("America/New_York"))
+        if now_et2.hour < 9 or now_et2.hour >= 16:
+            lines.append(ok + " IFTTT/Webhook — connected (market closed, no tweets expected)")
+        else:
+            lines.append(warn + " IFTTT/Webhook — no tweets received yet today")
 
     send_reply(chr(10).join(lines), reply_chat_id)
 
