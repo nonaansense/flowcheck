@@ -416,6 +416,16 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                 print(f"[BULLFLOW] Premium ${premium:,.0f} < ${min_prem:,.0f} skip")
                                 continue
 
+                            # ── Prefilter: ITM, sector, DTE, OTM ──────────
+                            try:
+                                from prefilter import prefilter as _pf
+                                _pf_result = _pf(trade)
+                                if not _pf_result.get("pass"):
+                                    print(f"[BULLFLOW] {trade['ticker']} filtered: {_pf_result.get('reason','')}")
+                                    continue
+                            except Exception as _pfe:
+                                print(f"[BULLFLOW] Prefilter error: {_pfe}")
+
                             # Build a synthetic tweet text for the pipeline
                             tweet = (f"${trade['ticker']} - ${premium:,.0f} "
                                     f"{trade['option_type'].title()} "
@@ -424,7 +434,6 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             # Feed into FlowCheck pipeline from background thread
                             import asyncio
                             try:
-                                # Create new event loop for this thread call
                                 loop = asyncio.new_event_loop()
                                 loop.run_until_complete(process_fn(tweet, None, trade))
                                 loop.close()

@@ -38,7 +38,9 @@ MIN_OI        = cfg("FILTER_MIN_OI",        500)
 MIN_DTE       = cfg("FILTER_MIN_DTE",       2)
 MAX_DTE       = cfg("FILTER_MAX_DTE",       120)
 MAX_OTM_PCT   = cfg("FILTER_MAX_OTM",       20.0)
-MAX_ITM_PCT   = cfg("FILTER_MAX_ITM",       10.0)  # Skip deep ITM options
+MAX_ITM_PCT      = cfg("FILTER_MAX_ITM",       10.0)  # Default ITM max (fallback)
+MAX_ITM_PCT_CALL = cfg("FILTER_MAX_ITM_CALL",  5.0)   # Calls: prefer ATM/OTM only
+MAX_ITM_PCT_PUT  = cfg("FILTER_MAX_ITM_PUT",   30.0)  # Puts: deep ITM = real conviction
 
 # Sector/industry exclusions — comma-separated, case-insensitive
 # Default blocks biotech/pharma (binary FDA risk), REITs, cannabis
@@ -101,11 +103,21 @@ def check_otm(data: dict) -> tuple:
     otm = data.get("otm_percentage") or data.get("otm_pct")
     if otm is None:
         return True, "OTM unknown — passing"
-    otm = float(otm)
+    otm      = float(otm)
+    opt_type = (data.get("option_type","call") or "call").lower()
+
     if otm > MAX_OTM_PCT:
         return False, f"OTM {otm:.1f}% > maximum {MAX_OTM_PCT}% (too far OTM)"
-    if otm < -MAX_ITM_PCT:
-        return False, f"ITM {abs(otm):.1f}% > maximum {MAX_ITM_PCT}% (too deep ITM)"
+
+    # Separate ITM limits for calls vs puts
+    if "put" in opt_type:
+        max_itm = MAX_ITM_PCT_PUT   # Puts: deep ITM = real conviction, allow more
+    else:
+        max_itm = MAX_ITM_PCT_CALL  # Calls: prefer ATM/OTM, strict limit
+
+    if otm < -max_itm:
+        return False, f"{'Call' if 'call' in opt_type else 'Put'} ITM {abs(otm):.1f}% > max {max_itm}%"
+
     return True, f"OTM {otm:.1f}% ✅"
 
 def check_chasing(data: dict) -> tuple:
