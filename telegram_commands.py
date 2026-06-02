@@ -26,7 +26,7 @@ FLOWCHECK_KEYBOARD = {
     "keyboard": [
         ["📊 /eval",      "📓 /journal",   "🔢 /count"],
         ["📈 /flow ...",  "💹 /price ...", "😐 /sent ..."],
-        ["⚙️ /status",    "🔬 /test",      "❓ /help"],
+        ["🔬 /test",      "⚙️ /status",    "❓ /help"],
     ],
     "resize_keyboard":   True,
     "persistent":        True,
@@ -809,6 +809,21 @@ def handle_command(text: str, from_chat_id: str):
         send_keyboard(from_chat_id)
     elif cmd in ("kb", "keyboard"):
         send_keyboard(from_chat_id)
+
+    elif cmd == "stop":
+        token = bot_token()
+        cid   = from_chat_id or chat_id()
+        if token and cid:
+            import requests as _rq
+            _rq.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={
+                    "chat_id":      cid,
+                    "text":         "⌨️ Keyboard hidden. Send /start or /kb to restore.",
+                    "reply_markup": {"remove_keyboard": True},
+                },
+                timeout=10
+            )
 
     elif cmd in ("test", "ping", "healthcheck"):
         handle_test_command(from_chat_id)
