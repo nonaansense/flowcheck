@@ -80,12 +80,14 @@ def save_analyses():
         today      = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
         today_data = [a for a in analyses if a.get("date") == today]
 
-        # Also save yesterday's analyses separately for pre-market OI check
-        yesterday  = (datetime.now(ZoneInfo("America/New_York")).date() - __import__("datetime").timedelta(days=1)).isoformat()
-        yest_data  = [a for a in analyses if a.get("date") == yesterday]
+        # Always save yesterday's analyses for pre-market carryover check
+        from datetime import timedelta as _td2
+        yesterday  = (datetime.now(ZoneInfo("America/New_York")).date() - _td2(days=1)).isoformat()
+        yest_data  = [a for a in analyses if isinstance(a, dict) and a.get("date") == yesterday]
         if yest_data:
             import json as _j
             db_set("analyses_yesterday", _j.dumps({"date": yesterday, "analyses": yest_data}))
+            print(f"[PERSIST] Saved {len(yest_data)} yesterday analyses to Supabase")
         serializable = []
         for a in today_data:
             try:

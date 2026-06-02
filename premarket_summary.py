@@ -31,6 +31,35 @@ def load_all_today(in_memory: list) -> list:
         pass
     return [a for a in all_items if a.get("date") == today_str]
 
+
+def load_yesterday_analyses() -> list:
+    """Load yesterday's analyses from Supabase for carryover check."""
+    from storage import load_data, db_get
+    import json as _j
+    yesterday = (datetime.now(ZoneInfo("America/New_York")).date() -
+                 __import__("datetime").timedelta(days=1)).isoformat()
+    # Try analyses_yesterday key first (saved by save_analyses)
+    try:
+        raw = db_get("analyses_yesterday")
+        if raw:
+            data = _j.loads(raw) if isinstance(raw, str) else raw
+            items = data.get("analyses", [])
+            if items:
+                print(f"[PERSIST] Loaded {len(items)} yesterday analyses from Supabase")
+                return [a for a in items if isinstance(a, dict)]
+    except Exception as e:
+        print(f"[PERSIST] Yesterday load error: {e}")
+
+    # Fallback: try analyses_today key with yesterday's date
+    try:
+        data = load_data("analyses_today", ANALYSES_FILE, {"date":"","analyses":[]})
+        if data.get("date") == yesterday:
+            items = data.get("analyses", [])
+            return [a for a in items if isinstance(a, dict)]
+    except:
+        pass
+    return []
+
 def send_premarket_summary(analyses: list):
     now_et    = datetime.now(ZoneInfo("America/New_York"))
     day_label = now_et.strftime("%a %b %d")
@@ -53,9 +82,18 @@ def send_premarket_summary(analyses: list):
     else:
         lines.append("✅ No major macro events today — clean trading day.")
 
-    # Carryover + OI confirmation
-    today_all = load_all_today(analyses)
-    watches   = [a for a in today_all if a.get("result",{}).get("verdict") in ("WATCH","TRADE")]
+    # Carryover + OI confirmation — load YESTERDAY'S alerts, not today's
+    yesterday_analyses = load_yesterday_analyses()
+    # Also check in-memory for any that have yesterday's date
+    yesterday_str = (now_et.date() - __import__("datetime").timedelta(days=1)).isoformat()
+    in_mem_yest   = [a for a in analyses if isinstance(a, dict) and a.get("date","") == yesterday_str]
+    # Merge, dedup by id
+    seen_ids = {a.get("id") for a in yesterday_analyses}
+    for a in in_mem_yest:
+        if a.get("id") not in seen_ids:
+            yesterday_analyses.append(a)
+    watches   = [a for a in yesterday_analyses if isinstance(a, dict) and
+                 a.get("result",{}).get("verdict") in ("WATCH","TRADE")]
     lines.append("")
     lines.append(f"🔄 CARRYOVER FROM YESTERDAY ({len(watches)})")
 
