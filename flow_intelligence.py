@@ -84,6 +84,33 @@ def add_flow_to_history(trade: dict, data: dict, result: dict):
 
 # ── 1. Rolling Position Detection ─────────────────────────────────────
 
+def _normalize_expiry(exp: str) -> str:
+    """Normalize expiry to YYYY-MM-DD for comparison."""
+    if not exp:
+        return ""
+    import re as _re2
+    # Already YYYY-MM-DD
+    if _re2.match(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", exp):
+        return exp[:10]
+    months = {"january":"01","february":"02","march":"03","april":"04","may":"05","june":"06",
+               "july":"07","august":"08","september":"09","october":"10","november":"11","december":"12"}
+    exp_l = exp.lower().strip()
+    for m, n in months.items():
+        if m in exp_l:
+            nums = _re2.findall(r"[0-9]+", exp_l)
+            if len(nums) >= 2:
+                day = nums[0].zfill(2)
+                yr  = nums[1] if len(nums[1]) == 4 else "20" + nums[1]
+                return f"{yr}-{n}-{day}"
+    # MM/DD/YY or MM/DD/YYYY
+    parts = _re2.split(r"[/\-]", exp.strip())
+    if len(parts) == 3:
+        m2, d2, y2 = parts[0], parts[1], parts[2]
+        y2 = "20" + y2 if len(y2) == 2 else y2
+        return f"{y2}-{m2.zfill(2)}-{d2.zfill(2)}"
+    return exp
+
+
 def detect_roll(trade: dict, history: list) -> dict:
     """
     Detect if this flow is a roll from a previous position.
@@ -97,15 +124,20 @@ def detect_roll(trade: dict, history: list) -> dict:
     if not ticker or not strike:
         return {}
 
+    # Normalize current expiry for comparison
+    curr_expiry_norm = _normalize_expiry(expiry_raw or trade.get("expiry",""))
+
     cutoff = (datetime.now() - timedelta(days=14)).isoformat()
     recent = [
         f for f in history
-        if f.get("ticker")      == ticker
-        and f.get("strike")     == strike
-        and f.get("option_type")== opt_type
-        and f.get("expiry_raw") != expiry_raw
+        if f.get("ticker")       == ticker
+        and f.get("strike")      == strike
+        and f.get("option_type") == opt_type
+        and _normalize_expiry(f.get("expiry_raw","") or f.get("expiry","")) != curr_expiry_norm
+        and _normalize_expiry(f.get("expiry_raw","") or f.get("expiry","")) != ""
+        and curr_expiry_norm != ""
         and f.get("timestamp","") >= cutoff
-        and f.get("fill_type")  in ("FULL_ASK","MOSTLY_ASK")
+        and f.get("fill_type")   in ("FULL_ASK","MOSTLY_ASK")
     ]
 
     if recent:
