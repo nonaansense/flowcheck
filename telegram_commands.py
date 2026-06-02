@@ -423,11 +423,8 @@ def handle_command(text: str, from_chat_id: str):
     # Handle keyboard button presses — extract command from "emoji /cmd" format
     import re as _re3
     kb_match = _re3.search(r"/([a-z_]+)", text.lower())
-    if kb_match and (text.startswith("📊") or text.startswith("📓") or
-                     text.startswith("🔢") or text.startswith("📈") or
-                     text.startswith("💹") or text.startswith("😐") or
-                     text.startswith("⚙") or text.startswith("📋") or
-                     text.startswith("❓")):
+    _KB = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓","🔬")
+    if kb_match and any(text.startswith(e) for e in _KB):
         # Buttons with "..." need a ticker — prompt instead of running
         if "..." in text:
             cmd_name = kb_match.group(1)
