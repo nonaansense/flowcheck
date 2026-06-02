@@ -209,11 +209,13 @@ def prefilter(data: dict) -> dict:
         "filters": {filter_name: (pass, reason), ...}
       }
     """
+    ticker = data.get("ticker","")
     filters = {
         "premium":   check_premium(data),
         "oi":        check_oi(data),
         "dte":       check_dte(data),
         "otm":       check_otm(data),
+        "sector":    check_sector(ticker),
         "chasing":   check_chasing(data),
         "timing":    check_timing(data),
         "earnings":  check_earnings(data),

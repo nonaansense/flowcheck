@@ -397,6 +397,22 @@ async def startup():
     except Exception as _be:
         print(f"[STARTUP] Bullflow stream error: {_be}")
 
+    # Cleanup: remove exit tracker entries not in journal
+    try:
+        from exit_signals import load_positions, save_positions
+        from storage import load_data as _ld_clean
+        _jrnl   = _ld_clean("journal", "/tmp/journal.json", {"trades":[]})
+        _open_t = [t for t in _jrnl.get("trades",[]) if t.get("status","").upper() != "CLOSED"]
+        _jkeys  = {(str(t.get("ticker","")).upper(), str(t.get("strike",""))) for t in _open_t}
+        _pos    = load_positions()
+        _before = len(_pos)
+        _pos    = [p for p in _pos if (str(p.get("ticker","")).upper(), str(p.get("strike",""))) in _jkeys]
+        if len(_pos) < _before:
+            save_positions(_pos)
+            print(f"[STARTUP] Removed {_before-len(_pos)} exit tracker entries not in journal")
+    except Exception as _ce:
+        print(f"[STARTUP] Exit tracker cleanup error: {_ce}")
+
 # ── SMS builder ───────────────────────────────────────────────────────
 def calc_exit_target(final_score: int, data: dict) -> dict:
     """Calculate exit target and stop strategy based on flow conviction and DTE."""
