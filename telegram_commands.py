@@ -2544,7 +2544,8 @@ def poll_commands():
 
         # Handle both /commands and keyboard button presses (emoji prefix)
         KB_EMOJIS = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓","🔬")
-        if text.startswith("/") or text.startswith(KB_EMOJIS):
+        is_kb_btn = any(text.startswith(e) for e in KB_EMOJIS)
+        if text.startswith("/") or is_kb_btn:
             try:
                 handle_command(text, from_id)
             except Exception as e:
