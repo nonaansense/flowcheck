@@ -24,26 +24,42 @@ def get_daily_pnl_summary() -> str:
     ]
 
     # Open positions with unrealized P&L
+    # Use last_price (option price) from journal — set by EOD pricer at 4:30PM
+    # Fall back to unrealized_pnl/unrealized_pct if already calculated
     unrealized = []
     for t in open_t:
         ticker = t.get("ticker","")
         if not ticker:
             continue
         try:
-            current = get_current_price(ticker)
-            if current:
-                entry  = float(t.get("entry_price",0) or 0)
-                contr  = int(t.get("contracts_remaining") or t.get("contracts",1))
-                if entry > 0:
-                    pct    = round(((current - entry) / entry) * 100, 1)
-                    dollar = round((current - entry) * contr * 100, 2)
-                    unrealized.append({
-                        "ticker":  ticker,
-                        "pct":     pct,
-                        "dollar":  dollar,
-                        "current": current,
-                        "account": t.get("account_id","default"),
-                    })
+            entry      = float(t.get("entry_price",0) or t.get("credit",0) or 0)
+            last_px    = float(t.get("last_price",0) or 0)
+            contr      = int(t.get("contracts_remaining") or t.get("contracts",1))
+            is_sto     = (t.get("order_type","") or "").upper() == "STO"
+
+            # Use pre-calculated P&L if available (set by EOD pricer)
+            if t.get("unrealized_pnl") is not None and t.get("unrealized_pct") is not None:
+                pct    = float(t.get("unrealized_pct",0) or 0)
+                dollar = float(t.get("unrealized_pnl",0) or 0)
+            elif last_px > 0 and entry > 0:
+                # Calculate from option prices (not stock price)
+                if is_sto:
+                    pct    = round((entry - last_px) / entry * 100, 1)
+                    dollar = round((entry - last_px) * contr * 100, 2)
+                else:
+                    pct    = round((last_px - entry) / entry * 100, 1)
+                    dollar = round((last_px - entry) * contr * 100, 2)
+            else:
+                # No option price data — skip rather than use stock price
+                continue
+
+            unrealized.append({
+                "ticker":  ticker,
+                "pct":     pct,
+                "dollar":  dollar,
+                "current": last_px,
+                "account": t.get("account_id","default"),
+            })
         except:
             pass
 
