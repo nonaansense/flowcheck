@@ -20,17 +20,41 @@ def bot_token():
 def chat_id():
     return os.environ.get("TELEGRAM_CHAT_ID")
 
-def send_reply(text: str, reply_chat_id: str = None):
+# ── Persistent reply keyboard ────────────────────────────────────────
+FLOWCHECK_KEYBOARD = {
+    "keyboard": [
+        ["📊 /eval",    "📓 /journal", "🔢 /count"],
+        ["📈 /flow",    "💹 /price",   "😐 /sent"],
+        ["⚙️ /status",  "📋 /positions","❓ /help"],
+    ],
+    "resize_keyboard":   True,
+    "persistent":        True,
+    "input_field_placeholder": "Type a command or tap a button...",
+}
+
+def send_reply(text: str, reply_chat_id: str = None, with_keyboard: bool = False):
     token = bot_token()
     cid   = reply_chat_id or chat_id()
     if not token or not cid:
         return
+    payload = {
+        "chat_id":                  cid,
+        "text":                     text,
+        "parse_mode":               "HTML",
+        "disable_web_page_preview": True,
+    }
+    if with_keyboard:
+        payload["reply_markup"] = FLOWCHECK_KEYBOARD
     requests.post(
         f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": cid, "text": text,
-              "parse_mode": "HTML", "disable_web_page_preview": True},
+        json=payload,
         timeout=10
     )
+
+
+def send_keyboard(reply_chat_id: str = None):
+    """Send or refresh the persistent reply keyboard."""
+    send_reply("⌨️ FlowCheck keyboard ready.", reply_chat_id, with_keyboard=True)
 
 _last_update_id = 0
 
@@ -394,6 +418,17 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
 
 def handle_command(text: str, from_chat_id: str):
     text = text.strip()
+
+    # Handle keyboard button presses — extract command from "emoji /cmd" format
+    import re as _re3
+    kb_match = _re3.search(r"/([a-z_]+)", text.lower())
+    if kb_match and (text.startswith("📊") or text.startswith("📓") or
+                     text.startswith("🔢") or text.startswith("📈") or
+                     text.startswith("💹") or text.startswith("😐") or
+                     text.startswith("⚙") or text.startswith("📋") or
+                     text.startswith("❓")):
+        text = "/" + kb_match.group(1)
+
     cmd  = text.split()[0].lower().lstrip("/")
     args = text.split()[1:] if len(text.split()) > 1 else []
 
@@ -485,95 +520,109 @@ def handle_command(text: str, from_chat_id: str):
         except Exception as e:
             send_reply("Count error: " + str(e), from_chat_id)
 
-    elif cmd in ("flow", "flows") and args:
-        # /flow NVDA — show today's top flows for a ticker from stored history
-        tkr_f2 = args[0].upper()
-        try:
-            from storage import load_data as _ld4
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
-            from flow_intelligence import load_flow_history
-            history  = load_flow_history() or []
-            today    = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-            # Filter by ticker and date — guard against non-dict entries
-            ticker_flows = []
-            for f in history:
-                if not isinstance(f, dict):
-                    continue
-                f_ticker = (f.get("ticker","") or "").upper()
-                f_date   = (f.get("date","") or (f.get("timestamp","") or "")[:10] or "")
-                ticker_match = (tkr_f2 is None or f_ticker == tkr_f2)
-                date_match   = (f_date == search_date)
-                if ticker_match and date_match:
-                    ticker_flows.append(f)
-            # Also check analyses for today
-            analyses_data = _ld4("analyses_today", "/tmp/analyses.json", []) or []
-            for a in analyses_data:
-                if not isinstance(a, dict):
-                    continue
-                t = a.get("trade",{}) or {}
-                if not isinstance(t, dict):
-                    continue
-                if (t.get("ticker","").upper() == tkr_f2 and
-                    a.get("date","") == today and
-                    a not in ticker_flows):
-                    ticker_flows.append({
-                        "ticker":     t.get("ticker",""),
-                        "strike":     t.get("strike",""),
-                        "option_type":t.get("option_type",""),
-                        "expiry":     t.get("expiry",""),
-                        "premium":    t.get("premium",0),
-                        "fill_type":  t.get("fill_type",""),
-                        "vol_oi":     t.get("vol_oi_ratio",0),
-                        "is_sweep":   t.get("is_sweep",False),
-                        "source":     t.get("source",""),
-                        "score":      a.get("result",{}).get("final_score","?"),
-                        "verdict":    a.get("result",{}).get("verdict","?"),
-                        "time":       a.get("time",""),
-                    })
+    elif cmd in ("flow", "flows"):
+        # /flow NVDA          — today's flows for NVDA
+        # /flow NVDA 05-30    — NVDA flows on May 30
+        # /flow 05-30         — all tickers on May 30
+        import re as _re2
+        tkr_f2     = None
+        date_f     = None
+        for arg in (args or []):
+            if _re2.match(r"^[0-9]{1,2}-[0-9]{1,2}$", arg):
+                yr     = datetime.now(ZoneInfo("America/New_York")).strftime("%Y")
+                date_f = yr + "-" + arg[:2].zfill(2) + "-" + arg[-2:].zfill(2)
+            elif _re2.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$", arg):
+                date_f = arg
+            elif arg.upper() not in ("ALL", "TODAY"):
+                tkr_f2 = arg.upper()
 
-            if not ticker_flows:
-                send_reply("No flows found for " + (tkr_f2 or "any ticker") + " on " + search_date + ".", from_chat_id)
-            else:
-                # Sort by premium descending
-                ticker_flows.sort(key=lambda x: float(x.get("premium",0) or 0), reverse=True)
-                total_prem = sum(float(f.get("premium",0) or 0) for f in ticker_flows)
-                total_str  = ("$" + str(round(total_prem/1000000,1)) + "M"
-                              if total_prem >= 1000000
-                              else "$" + str(round(total_prem/1000,0)) + "K")
-                from datetime import datetime as _dt5
-                try:
-                    hdr_date = _dt5.strptime(search_date, "%Y-%m-%d").strftime("%b %d")
-                except: hdr_date = search_date
-                hdr_ticker = tkr_f2 if tkr_f2 else "All Tickers"
-                lines = ["=== " + hdr_ticker + " Flow — " + hdr_date + " ==="]
-                for i, f in enumerate(ticker_flows[:10], 1):
-                    otype   = (f.get("option_type","call") or "call")[0].upper()
-                    strike  = f.get("strike","?")
-                    expiry  = f.get("expiry","?")
-                    prem    = float(f.get("premium",0) or 0)
-                    prem_s  = ("$" + str(round(prem/1000000,1)) + "M"
-                               if prem >= 1000000
-                               else "$" + str(int(prem/1000)) + "K")
-                    fill    = (f.get("fill_type","") or "").replace("_"," ")
-                    vol_oi  = f.get("vol_oi",0) or f.get("vol_oi_ratio",0) or 0
-                    sweep   = " ⚡Sweep" if f.get("is_sweep") else ""
-                    src     = " 🅱" if f.get("source") == "bullflow" else " 🐦" if f.get("source") == "flowgod" else ""
-                    score   = f.get("score","")
-                    verdict = f.get("verdict","")
-                    sc_str  = " [" + str(score) + "/7 " + str(verdict) + "]" if score else ""
-                    tm_str  = " @" + str(f.get("time","")) if f.get("time") else ""
-                    vol_str = " · " + str(round(float(vol_oi),1)) + "x Vol/OI" if vol_oi else ""
-                    lines.append(
-                        str(i) + ". " + strike + otype + " " + expiry +
-                        " · " + prem_s + " " + fill + vol_str + sweep + src + sc_str + tm_str
-                    )
-                lines.append("─" * 20)
-                lines.append("Total: " + total_str + " across " + str(len(ticker_flows)) + " flows")
-                send_reply(chr(10).join(lines), from_chat_id)
-        except Exception as e:
-            send_reply("Flow search error: " + str(e), from_chat_id)
+        today       = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        search_date = date_f or today
 
+        if not tkr_f2 and not date_f:
+            send_reply("Usage: /flow TICKER or /flow TICKER 05-30 or /flow 05-30", from_chat_id)
+        else:
+            try:
+                from flow_intelligence import load_flow_history
+                history      = load_flow_history() or []
+                ticker_flows = []
+                for f in history:
+                    if not isinstance(f, dict):
+                        continue
+                    f_ticker = (f.get("ticker","") or "").upper()
+                    f_date   = (f.get("date","") or (f.get("timestamp","") or "")[:10] or "")
+                    ticker_match = (tkr_f2 is None or f_ticker == tkr_f2)
+                    date_match   = (f_date == search_date)
+                    if ticker_match and date_match:
+                        ticker_flows.append(f)
+
+                # Also check analyses_today
+                from storage import load_data as _ld4
+                analyses_data = _ld4("analyses_today", "/tmp/analyses.json", []) or []
+                for a in analyses_data:
+                    if not isinstance(a, dict): continue
+                    t2 = a.get("trade",{}) or {}
+                    if not isinstance(t2, dict): continue
+                    f_ticker2 = (t2.get("ticker","") or "").upper()
+                    f_date2   = (a.get("date","") or "")
+                    ticker_match2 = (tkr_f2 is None or f_ticker2 == tkr_f2)
+                    date_match2   = (f_date2 == search_date)
+                    if ticker_match2 and date_match2:
+                        ticker_flows.append({
+                            "ticker":      t2.get("ticker",""),
+                            "strike":      t2.get("strike",""),
+                            "option_type": t2.get("option_type",""),
+                            "expiry":      t2.get("expiry",""),
+                            "premium":     t2.get("premium",0),
+                            "fill_type":   t2.get("fill_type",""),
+                            "vol_oi":      t2.get("vol_oi_ratio",0),
+                            "is_sweep":    t2.get("is_sweep",False),
+                            "source":      t2.get("source",""),
+                            "score":       a.get("result",{}).get("final_score",""),
+                            "verdict":     a.get("result",{}).get("verdict",""),
+                            "time":        a.get("time",""),
+                        })
+
+                if not ticker_flows:
+                    send_reply("No flows found for " + (tkr_f2 or "any ticker") +
+                               " on " + search_date + ".", from_chat_id)
+                else:
+                    ticker_flows.sort(key=lambda x: float(x.get("premium",0) or 0), reverse=True)
+                    total_prem = sum(float(f.get("premium",0) or 0) for f in ticker_flows)
+                    total_str  = ("$" + str(round(total_prem/1000000,1)) + "M"
+                                  if total_prem >= 1000000
+                                  else "$" + str(int(total_prem/1000)) + "K")
+                    try:
+                        from datetime import datetime as _dt5
+                        hdr_date = _dt5.strptime(search_date, "%Y-%m-%d").strftime("%b %d")
+                    except: hdr_date = search_date
+                    hdr_ticker = tkr_f2 if tkr_f2 else "All Tickers"
+                    lines = ["=== " + hdr_ticker + " Flow — " + hdr_date + " ==="]
+                    for i, f in enumerate(ticker_flows[:10], 1):
+                        otype   = (f.get("option_type","call") or "call")[0].upper()
+                        strike  = f.get("strike","?")
+                        expiry  = f.get("expiry","?")
+                        prem    = float(f.get("premium",0) or 0)
+                        prem_s  = ("$" + str(round(prem/1000000,1)) + "M"
+                                   if prem >= 1000000
+                                   else "$" + str(int(prem/1000)) + "K")
+                        fill    = (f.get("fill_type","") or "").replace("_"," ")
+                        vol_oi  = f.get("vol_oi",0) or f.get("vol_oi_ratio",0) or 0
+                        sweep   = " ⚡Sweep" if f.get("is_sweep") else ""
+                        src     = " 🅱" if f.get("source") == "bullflow" else " 🐦" if f.get("source") == "flowgod" else ""
+                        score   = f.get("score","")
+                        verdict = f.get("verdict","")
+                        sc_str  = " [" + str(score) + "/7 " + str(verdict) + "]" if score else ""
+                        vol_str = " · " + str(round(float(vol_oi),1)) + "x Vol/OI" if vol_oi else ""
+                        lines.append(
+                            str(i) + ". " + str(strike) + otype + " " + str(expiry) +
+                            " · " + prem_s + " " + fill + vol_str + sweep + src + sc_str
+                        )
+                    lines.append("─" * 20)
+                    lines.append("Total: " + total_str + " across " + str(len(ticker_flows)) + " flows")
+                    send_reply(chr(10).join(lines), from_chat_id)
+            except Exception as e:
+                send_reply("Flow search error: " + str(e), from_chat_id)
     elif cmd == "price" and args:
         # /price TICKER — real-time stock price
         ticker_p = args[0].upper()
@@ -743,6 +792,10 @@ def handle_command(text: str, from_chat_id: str):
         handle_tag(args[0].upper(), args[1:], from_chat_id)
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
+        send_keyboard(from_chat_id)
+    elif cmd in ("kb", "keyboard"):
+        send_keyboard(from_chat_id)
+
     else:
         send_reply(
             "Unknown command. Send /help for list of commands.",
