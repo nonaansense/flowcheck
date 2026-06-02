@@ -21,11 +21,12 @@ def chat_id():
     return os.environ.get("TELEGRAM_CHAT_ID")
 
 # ── Persistent reply keyboard ────────────────────────────────────────
+# Buttons that need arguments show a prompt — handled in handle_command
 FLOWCHECK_KEYBOARD = {
     "keyboard": [
-        ["📊 /eval",    "📓 /journal", "🔢 /count"],
-        ["📈 /flow",    "💹 /price",   "😐 /sent"],
-        ["⚙️ /status",  "📋 /positions","❓ /help"],
+        ["📊 /eval",      "📓 /journal",   "🔢 /count"],
+        ["📈 /flow ...",  "💹 /price ...", "😐 /sent ..."],
+        ["⚙️ /status",    "📋 /positions", "❓ /help"],
     ],
     "resize_keyboard":   True,
     "persistent":        True,
@@ -427,6 +428,17 @@ def handle_command(text: str, from_chat_id: str):
                      text.startswith("💹") or text.startswith("😐") or
                      text.startswith("⚙") or text.startswith("📋") or
                      text.startswith("❓")):
+        # Buttons with "..." need a ticker — prompt instead of running
+        if "..." in text:
+            cmd_name = kb_match.group(1)
+            prompts  = {
+                "flow":  "📈 Flow search — reply with:\n/flow TICKER\n/flow TICKER 05-30",
+                "price": "💹 Price check — reply with:\n/price TICKER",
+                "sent":  "😐 Sentiment — reply with:\n/sent TICKER",
+            }
+            msg = prompts.get(cmd_name, "Reply with /" + cmd_name + " TICKER")
+            send_reply(msg, from_chat_id)
+            return
         text = "/" + kb_match.group(1)
 
     cmd  = text.split()[0].lower().lstrip("/")
@@ -525,18 +537,20 @@ def handle_command(text: str, from_chat_id: str):
         # /flow NVDA 05-30    — NVDA flows on May 30
         # /flow 05-30         — all tickers on May 30
         import re as _re2
+        from datetime import datetime as _flow_dt
+        from zoneinfo import ZoneInfo as _flow_zi
         tkr_f2     = None
         date_f     = None
         for arg in (args or []):
             if _re2.match(r"^[0-9]{1,2}-[0-9]{1,2}$", arg):
-                yr     = datetime.now(ZoneInfo("America/New_York")).strftime("%Y")
+                yr     = _flow_dt.now(_flow_zi("America/New_York")).strftime("%Y")
                 date_f = yr + "-" + arg[:2].zfill(2) + "-" + arg[-2:].zfill(2)
             elif _re2.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$", arg):
                 date_f = arg
             elif arg.upper() not in ("ALL", "TODAY"):
                 tkr_f2 = arg.upper()
 
-        today       = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        today       = _flow_dt.now(_flow_zi("America/New_York")).strftime("%Y-%m-%d")
         search_date = date_f or today
 
         if not tkr_f2 and not date_f:
@@ -593,8 +607,7 @@ def handle_command(text: str, from_chat_id: str):
                                   if total_prem >= 1000000
                                   else "$" + str(int(total_prem/1000)) + "K")
                     try:
-                        from datetime import datetime as _dt5
-                        hdr_date = _dt5.strptime(search_date, "%Y-%m-%d").strftime("%b %d")
+                        hdr_date = _flow_dt.strptime(search_date, "%Y-%m-%d").strftime("%b %d")
                     except: hdr_date = search_date
                     hdr_ticker = tkr_f2 if tkr_f2 else "All Tickers"
                     lines = ["=== " + hdr_ticker + " Flow — " + hdr_date + " ==="]
