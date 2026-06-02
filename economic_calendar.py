@@ -51,7 +51,7 @@ def get_economic_events(date_str: str = None) -> list:
     try:
         dt     = datetime.strptime(date_str, "%Y-%m-%d")
         events = [e for e in RECURRING_EVENTS
-                  if e["month"]==dt.month and abs(e["day"]-dt.day)<=1]
+                  if e["month"]==dt.month and e["day"]==dt.day]
         _calendar_cache[date_str] = events
         return events
     except Exception as e:

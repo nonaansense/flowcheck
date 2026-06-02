@@ -93,9 +93,11 @@ def send_premarket_summary(analyses: list):
                 except Exception as e:
                     print(f"[PREMARKET] OI check error for {ticker}: {e}")
 
+            exp_disp = (t.get("expiry_short") or t.get("expiry","?") or "?")
+            if exp_disp in ("None","none",""): exp_disp = t.get("expiry","?")
             lines.append(
                 f"  {emoji} {ticker} {strike}{opt_type[0].upper()} "
-                f"{t.get('expiry_short','?')}{oi_str}"
+                f"{exp_disp}{oi_str}"
             )
     else:
         lines.append("  No carryover from yesterday")
@@ -135,13 +137,15 @@ def send_eod_summary(analyses: list):
         lines.append("\n✅ TRADES:")
         for a in trades[:3]:
             t = a["trade"]
-            lines.append(f"  {t.get('ticker')} {t.get('strike')}{t.get('option_type','C')[0].upper()} {t.get('expiry_short','?')} — {a['result'].get('one_liner','')[:50]}")
+            exp2 = t.get('expiry_short') or t.get('expiry','?')
+            lines.append(f"  {t.get('ticker')} {t.get('strike')}{t.get('option_type','C')[0].upper()} {exp2} — {a['result'].get('one_liner','')[:50]}")
 
     if watches:
         lines.append("\n👀 WATCHING:")
         for a in watches[:3]:
             t = a["trade"]
-            lines.append(f"  {t.get('ticker')} {t.get('strike')}{t.get('option_type','C')[0].upper()} {t.get('expiry_short','?')}")
+            exp3 = t.get('expiry_short') or t.get('expiry','?')
+            lines.append(f"  {t.get('ticker')} {t.get('strike')}{t.get('option_type','C')[0].upper()} {exp3}")
 
     lines.append("")
     lines.append(f"📅 TOMORROW: {tmw_label}")
