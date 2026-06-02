@@ -2390,7 +2390,9 @@ def poll_commands():
                 print("[CMD] Photo error: " + str(e))
             continue
 
-        if text.startswith("/"):
+        # Handle both /commands and keyboard button presses (emoji prefix)
+        KB_EMOJIS = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓")
+        if text.startswith("/") or text.startswith(KB_EMOJIS):
             try:
                 handle_command(text, from_id)
             except Exception as e:
