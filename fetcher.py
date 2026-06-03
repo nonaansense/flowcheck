@@ -705,6 +705,17 @@ def fetch_market_conditions() -> dict:
         elif pct > -2: cond["spy_trend"]=f"Flat {pct:+.1f}% (5d)";   cond["spy_emoji"]="⚠️"
         else:          cond["spy_trend"]=f"Downtrend {pct:+.1f}% (5d)"; cond["spy_emoji"]="🔴"; cond["market_score_adjustment"]-=1
 
+    # Stock 5d move — same Tiingo approach
+    try:
+        _stk_hist = fetch_price_history(ticker, days=7)
+        _stk_now  = stock_price  # current price already fetched
+        if _stk_hist and len(_stk_hist) >= 5 and _stk_now:
+            _stk_base = _stk_hist[-5]
+            _stk_5d   = round(((_stk_now - _stk_base) / _stk_base) * 100, 1)
+            cond["stock_5d_pct"] = _stk_5d
+    except Exception as _s5e:
+        pass
+
     adj = cond["market_score_adjustment"]
     if adj >= 0:    cond["market_bias"]="FAVORABLE";   cond["market_summary"]="Market conditions favor buying premium."
     elif adj >= -1: cond["market_bias"]="CAUTION";     cond["market_summary"]="Elevated volatility — be selective."

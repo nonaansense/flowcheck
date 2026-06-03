@@ -488,7 +488,9 @@ def build_sms(trade: dict, data: dict, result: dict,
 
     mkt     = data.get("market",{})
     vix_str = f"{mkt.get('vix','?')} {mkt.get('vix_label','')}" if mkt.get("vix") else "N/A"
-    spy_str = mkt.get("spy_trend","N/A") or "N/A"
+    spy_str       = mkt.get("spy_trend","N/A") or "N/A"
+    stock_5d_pct  = mkt.get("stock_5d_pct")
+    stock_5d_str  = f" · {ticker} 5d {stock_5d_pct:+.1f}%" if stock_5d_pct is not None else ""
 
     one_liner = result.get("one_liner","")
     imps      = result.get("improvements") or []
@@ -651,7 +653,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     lines += [
         f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}",
         f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict}",
-        f"VIX {vix_str} · SPY {spy_str}{regime_str}",
+        f"VIX {vix_str} · SPY {spy_str}{stock_5d_str}{regime_str}",
     ]
     if time_warning:
         lines.append(time_warning)
@@ -993,7 +995,7 @@ def build_sms(trade: dict, data: dict, result: dict,
             print(f"[BUILD_SMS] Compact stop/target error: {_ce}")
 
         # Line 7: VIX + market quick
-        short_lines.append(f"VIX {vix_str} · SPY {spy_str}")
+        short_lines.append(f"VIX {vix_str} · SPY {spy_str}{stock_5d_str}")
 
         # Line 8: earnings warning if relevant
         earn = data.get("expiry_timing_label","")
