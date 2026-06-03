@@ -2046,6 +2046,17 @@ async def webhook(request: Request):
 
     print(f"[WEBHOOK] Received: {str(tweet)[:80]}")
 
+    # Filter reply tweets — @mentions are conversations, not flow alerts
+    _tweet_stripped = (tweet or "").strip()
+    if _tweet_stripped.startswith("@"):
+        print(f"[WEBHOOK] Reply tweet — skipping")
+        return {"status": "skipped", "reason": "reply"}
+
+    # Filter empty tweets
+    if not _tweet_stripped:
+        print(f"[WEBHOOK] Empty tweet — skipping")
+        return {"status": "skipped", "reason": "empty"}
+
     # Filter FlowGod commentary tweets — not flow alerts
     # These are price observations, not options flow
     _COMMENTARY = [
@@ -2060,7 +2071,21 @@ async def webhook(request: Request):
         import re as _re_wh
         has_option = bool(_re_wh.search(r'\$?\d+[CP]|\d+\.\d+[CP]|call|put|strike|exp', _tweet_lower))
         if not has_option:
-            print(f"[WEBHOOK] Commentary tweet — skipping (no options data)")
+            # Forward to all-alerts channel as FYI
+            _all_chat = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+            _bot_tok  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+            if _all_chat and _bot_tok:
+                try:
+                    from sms import send_telegram as _stg
+                    _fyi_msg = "📢 " + str(ticker or "").upper() + chr(10) + str(tweet).strip()
+                    if tweet_url:
+                        _fyi_msg += chr(10) + "🐦 " + str(tweet_url)
+                    _stg(_fyi_msg, _bot_tok, _all_chat)
+                    print(f"[WEBHOOK] Commentary tweet — forwarded to all-alerts")
+                except Exception as _fe:
+                    print(f"[WEBHOOK] Commentary forward error: {_fe}")
+            else:
+                print(f"[WEBHOOK] Commentary tweet — skipping (TELEGRAM_ALL_CHAT_ID not set)")
             return {"status": "skipped", "reason": "commentary"}
 
     # Update watchdog timestamp
