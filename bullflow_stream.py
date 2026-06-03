@@ -158,6 +158,22 @@ def build_trade_from_alert(alert: dict) -> dict | None:
         est_contracts = int(premium / (fill_px * 100))
         trade["estimated_contracts"] = est_contracts
 
+    # Calculate OTM% from stock price if available in alert
+    spot = float(alert.get("spotPrice",0) or alert.get("stockPrice",0) or
+                 alert.get("underlyingPrice",0) or 0)
+    if spot > 0 and parsed.get("strike"):
+        try:
+            strike_f = float(parsed["strike"])
+            if "call" in parsed.get("option_type",""):
+                otm_pct = round((spot - strike_f) / strike_f * 100, 1)
+            else:
+                otm_pct = round((strike_f - spot) / strike_f * 100, 1)
+            # Bullflow convention: positive = OTM, negative = ITM
+            trade["otm_pct"] = -otm_pct  # negate: ITM = negative in our system
+            print(f"[BULLFLOW] OTM%: {otm_pct:+.1f}% (spot={spot} strike={strike_f})")
+        except Exception as _oe:
+            pass
+
     print(f"[BULLFLOW] Parsed: {parsed['ticker']} {parsed['strike']}"
           f"{parsed['option_type'][0].upper()} {parsed['expiry']} "
           f"${premium:,.0f} {fill_type} [{alert_nm}]")
@@ -476,7 +492,7 @@ def start_stream_thread(process_fn, send_sms_fn=None):
         f.write(str(os.getpid()))
     # Delay startup to allow old container to shut down during rolling deploy
     import time as _st
-    _st.sleep(15)  # 15s — enough for Railway to kill old container
+    _st.sleep(20)  # 15s — enough for Railway to kill old container
     # Re-check lock after delay
     try:
         with open(_LOCK_FILE) as f:

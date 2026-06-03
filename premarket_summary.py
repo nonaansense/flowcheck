@@ -150,6 +150,27 @@ def send_premarket_summary(analyses: list):
     lines.append(f"History: {base_url}/history")
 
     msg = "\n".join(lines)
+    # Haiku market brief
+    try:
+        import os as _os2, anthropic as _ant2
+        _cli2 = _ant2.Anthropic(api_key=_os2.environ.get("ANTHROPIC_API_KEY",""))
+        _vx2  = ""
+        try:
+            from fetcher import fetch_vix as _fv2
+            _v2 = _fv2()
+            _vx2 = f"VIX {round(_v2,1)}" if _v2 else ""
+        except: pass
+        _bp  = (f"Today is {now_et.strftime('%A %B %d, %Y')}. {_vx2}. "
+                f"In 2 sentences, give a concise setup brief for an options flow trader today. No disclaimers.")
+        _r2  = _ant2.Anthropic(api_key=_os2.environ.get("ANTHROPIC_API_KEY","")).messages.create(
+            model="claude-haiku-4-5-20251001", max_tokens=80,
+            messages=[{"role":"user","content":_bp}])
+        _b2  = _r2.content[0].text.strip()
+        if _b2:
+            msg += chr(10) + chr(10) + "🤖 " + _b2
+    except Exception as _be2:
+        print(f"[PREMARKET] Haiku brief error: {_be2}")
+
     print(f"[PREMARKET] Sending pre-market summary ({len(msg)} chars)")
     send_sms(msg)
 

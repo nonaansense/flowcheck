@@ -208,6 +208,22 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
             except Exception:
                 stock_str = "?"
 
+            # Fetch live option price during market hours (not spread — handled separately)
+            if not is_spread and entry_px > 0:
+                try:
+                    from datetime import datetime as _dt_mh
+                    from zoneinfo import ZoneInfo as _zi_mh
+                    _now_mh = _dt_mh.now(_zi_mh("America/New_York"))
+                    _is_mkt = (9 <= _now_mh.hour < 16 and _now_mh.weekday() < 5)
+                    if _is_mkt:
+                        from fetcher import fetch_option_mid as _fom
+                        _live_px = _fom(ticker, strike, t.get("option_type","call"), expiry)
+                        if _live_px:
+                            curr_px = _live_px
+                            print(f"[EVAL] Live option price {ticker} {strike}: ${_live_px}")
+                except Exception:
+                    pass
+
             dte = None
             try:
                 parts2 = expiry.split("/")
@@ -276,7 +292,7 @@ def handle_evaluate_command(from_chat_id, ticker_filter=None, account_filter=Non
                         sign_usd = "+" if pnl_usd >= 0 else ""
                         pnl_str  = sign + str(pnl_pct) + "% (" + sign_usd + "$" + str(int(pnl_usd)) + ")"
                     elif net_val is not None:
-                        pnl_str = "net $" + str(net_val) + " (no entry cost)"
+                        pnl_str = "net $" + str(net_val) + " — set credit in journal-view for P&L%"
                     else:
                         pnl_str = "spread legs unavailable"
                 except Exception as _se:
@@ -551,7 +567,14 @@ def handle_command(text: str, from_chat_id: str):
         search_date = date_f or today
 
         if not tkr_f2 and not date_f:
-            send_reply("Usage: /flow TICKER or /flow TICKER 05-30 or /flow 05-30", from_chat_id)
+            send_reply(
+                "Usage:\n"
+                "/flow NVDA — today's NVDA flows\n"
+                "/flow NVDA 06-02 — NVDA flows on Jun 2\n"
+                "/flow 06-02 — ALL tickers on Jun 2\n"
+                "/flow all — all tickers today",
+                from_chat_id
+            )
         else:
             try:
                 from flow_intelligence import load_flow_history

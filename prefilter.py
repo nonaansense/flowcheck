@@ -101,6 +101,25 @@ def check_sector(ticker: str) -> tuple:
 
 def check_otm(data: dict) -> tuple:
     otm = data.get("otm_percentage") or data.get("otm_pct")
+    # If OTM not provided, calculate from stock price + strike
+    if otm is None:
+        try:
+            strike = float(data.get("strike",0) or 0)
+            ticker = data.get("ticker","")
+            if strike > 0 and ticker:
+                from fetcher import fetch_price as _fp
+                spot = _fp(ticker)
+                if spot:
+                    opt_type = (data.get("option_type","call") or "call").lower()
+                    if "call" in opt_type:
+                        otm = round((spot - strike) / strike * 100, 1)
+                    else:
+                        otm = round((strike - spot) / strike * 100, 1)
+                    # Negative = ITM in our convention
+                    otm = -otm  # convert: positive OTM% from above = OTM, negate for our system
+                    print(f"[PREFILTER] Calculated OTM% for {ticker}: {otm:+.1f}%")
+        except Exception as _e:
+            pass
     if otm is None:
         return True, "OTM unknown — passing"
     otm      = float(otm)

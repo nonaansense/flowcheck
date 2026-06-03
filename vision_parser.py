@@ -1,14 +1,26 @@
 import os, re, requests
 from anthropic import Anthropic
 
+# Cache successful image URL extractions to avoid re-fetching same tweet
+_image_cache = {}
+
 def get_client():
     return Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 def extract_image_url(tweet_url: str, tweet_text: str = "") -> str | None:
     """Try multiple services to get tweet image URL."""
 
-    # Try 0: follow t.co link directly from tweet text — fastest path
+    # Check cache first
     import re as _re
+    _tweet_id_c = None
+    _m_c = _re.search(r"/status/([0-9]+)", tweet_url or "")
+    if _m_c:
+        _tweet_id_c = _m_c.group(1)
+        if _tweet_id_c in _image_cache:
+            print(f"[VISION] Cache hit for tweet {_tweet_id_c}")
+            return _image_cache[_tweet_id_c]
+
+    # Try 0: follow t.co link directly from tweet text — fastest path
     tco_matches = _re.findall(r"https://t[.]co/[A-Za-z0-9]+", tweet_text or "")
     for tco_url in tco_matches:
         try:
@@ -47,6 +59,7 @@ def extract_image_url(tweet_url: str, tweet_text: str = "") -> str | None:
                 url = photos[0].get("url")
                 if url:
                     print(f"[VISION] Found image via fxtwitter: {url}")
+                    if tweet_id: _image_cache[tweet_id] = url
                     return url
             print(f"[VISION] fxtwitter: no photos in response. Keys: {list(tweet.keys())}")
     except Exception as e:
@@ -65,9 +78,29 @@ def extract_image_url(tweet_url: str, tweet_text: str = "") -> str | None:
                 url = medias[0].get("url") if isinstance(medias[0], dict) else medias[0]
                 if url and ("pbs.twimg" in url or "twimg" in url):
                     print(f"[VISION] Found image via vxtwitter: {url}")
+                    if tweet_id: _image_cache[tweet_id] = url
                     return url
     except Exception as e:
         print(f"[VISION] vxtwitter error: {e}")
+
+    # Try 3: Twitter oEmbed API (no auth required)
+    if tweet_id:
+        try:
+            r = requests.get(
+                "https://publish.twitter.com/oembed",
+                params={"url": tweet_url, "omit_script": "true"},
+                timeout=10
+            )
+            if r.status_code == 200:
+                html  = r.json().get("html","")
+                imgs  = re.findall(r"https://pbs[.]twimg[.]com/media/[A-Za-z0-9_-]+", html)
+                if imgs:
+                    url = imgs[0].split("?")[0] + "?format=jpg&name=orig"
+                    print(f"[VISION] Found image via oEmbed: {url}")
+                    _image_cache[tweet_id] = url
+                    return url
+        except Exception as e:
+            print(f"[VISION] oEmbed error: {e}")
 
     print(f"[VISION] Could not extract image from {tweet_url}")
     return None
