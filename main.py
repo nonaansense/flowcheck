@@ -950,7 +950,37 @@ def build_sms(trade: dict, data: dict, result: dict,
         _h_flags.append("⚠️ ≤5d DTE on large flow — likely spread leg or expiry hedge")
     if _otm_pct and _otm_pct > 15 and _is_call:
         _h_flags.append(f"⚠️ OTM {_otm_pct:.0f}% — far OTM calls often event hedges, not price targets")
-    risk_lines.extend(_h_flags[:2])
+    # Buy the rumor / sell the news warning
+    try:
+        _s5d       = data.get("stock_5d_pct")
+        _earn_str2 = data.get("earnings_date","")
+        _days_e2   = None
+        if _earn_str2 and _s5d is not None:
+            from datetime import datetime as _dt_br
+            from zoneinfo import ZoneInfo as _zi_br
+            _now_br = _dt_br.now(_zi_br("America/New_York")).date()
+            for _fmt_br in ("%b %d, %Y", "%Y-%m-%d", "%m/%d/%Y"):
+                try:
+                    _days_e2 = (_dt_br.strptime(_earn_str2, _fmt_br).date() - _now_br).days
+                    break
+                except: pass
+        if _days_e2 is not None and 0 <= _days_e2 <= 2 and _s5d >= 8.0 and _is_call:
+            _h_flags.append(
+                f"🚨 BUY THE RUMOR risk: {ticker} +{_s5d:.1f}% in 5d into earnings in "
+                f"{_days_e2}d — sell-the-news drop is common after large pre-earnings run"
+            )
+        elif _days_e2 is not None and 0 <= _days_e2 <= 5 and _s5d >= 12.0 and _is_call:
+            _h_flags.append(
+                f"⚠️ Extended run: {ticker} +{_s5d:.1f}% in 5d with earnings in {_days_e2}d "
+                f"— elevated sell-the-news risk"
+            )
+    except Exception as _br_e:
+        pass
+    # Prioritize buy-the-rumor flag — always shown if triggered
+    _btr_flags   = [f for f in _h_flags if 'BUY THE RUMOR' in f or 'Extended run' in f]
+    _other_flags = [f for f in _h_flags if f not in _btr_flags]
+    _ordered     = _btr_flags + _other_flags
+    risk_lines.extend(_ordered[:3])  # Max 3 flags total
 
 
     if risk_lines:
