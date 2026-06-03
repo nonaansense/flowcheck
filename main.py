@@ -2076,8 +2076,11 @@ async def webhook(request: Request):
             _bot_tok  = os.environ.get("TELEGRAM_BOT_TOKEN","")
             if _all_chat and _bot_tok:
                 try:
+                    import re as _re_fyi
+                    _tkr_match = _re_fyi.search(r'[$]([A-Z]{1,5})', str(tweet).upper())
+                    _tkr_fyi   = _tkr_match.group(1) if _tkr_match else ""
                     from sms import send_telegram as _stg
-                    _fyi_msg = "📢 " + str(ticker or "").upper() + chr(10) + str(tweet).strip()
+                    _fyi_msg = "📢 " + _tkr_fyi + chr(10) + str(tweet).strip()
                     if tweet_url:
                         _fyi_msg += chr(10) + "🐦 " + str(tweet_url)
                     _stg(_fyi_msg, _bot_tok, _all_chat)
