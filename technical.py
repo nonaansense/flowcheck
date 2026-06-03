@@ -726,8 +726,9 @@ def run_technical_scan(send_sms_fn):
                     f"{v_emoji} {ticker} {strike}{opt_type} {expiry} [{score}/7 {verdict}]",
                 ]
                 if vwap:
-                    vwap_diff = round(((c["close"]-vwap)/vwap)*100, 2)
-                    lines.append(f"VWAP: ${vwap:.2f} | Price {vwap_diff:+.2f}% above")
+                    vwap_diff  = round(((c["close"]-vwap)/vwap)*100, 2)
+                    _direction = "above" if vwap_diff >= 0 else "below"
+                    lines.append(f"VWAP: ${vwap:.2f} | Price {abs(vwap_diff):.2f}% {_direction}")
                 lines.append(f"Best setup: {best['timeframe']} — {', '.join(best['signals'][:2])}")
                 lines.append(f"→ Entry ~${c['close']:.2f} | Stop ${c['low']:.2f} | Target ${round(c['close']+(c['close']-c['low'])*2,2):.2f}")
 
