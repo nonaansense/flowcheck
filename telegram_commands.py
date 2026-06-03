@@ -631,7 +631,23 @@ def handle_command(text: str, from_chat_id: str):
                     except: hdr_date = search_date
                     hdr_ticker = tkr_f2 if tkr_f2 else "All Tickers"
                     lines = ["=== " + hdr_ticker + " Flow — " + hdr_date + " ==="]
-                    for i, f in enumerate(ticker_flows[:10], 1):
+
+                    # For all-ticker view, group by ticker
+                    if tkr_f2 is None and len(ticker_flows) > 3:
+                        from collections import defaultdict as _dd2
+                        _bt = _dd2(list)
+                        for _f2 in ticker_flows:
+                            _bt[(_f2.get("ticker","?") or "?").upper()].append(_f2)
+                        ticker_flows = []
+                        for _tn, _fl in sorted(_bt.items(),
+                                               key=lambda x: sum(float(f.get("premium",0) or 0) for f in x[1]),
+                                               reverse=True):
+                            _bf2 = max(_fl, key=lambda x: float(x.get("premium",0) or 0))
+                            _bf2["_count"] = len(_fl)
+                            _bf2["_ticker_label"] = _tn
+                            ticker_flows.append(_bf2)
+
+                    for i, f in enumerate(ticker_flows[:15], 1):
                         otype   = (f.get("option_type","call") or "call")[0].upper()
                         strike  = f.get("strike","?")
                         expiry  = f.get("expiry","?")
@@ -641,19 +657,22 @@ def handle_command(text: str, from_chat_id: str):
                                    else "$" + str(int(prem/1000)) + "K")
                         fill    = (f.get("fill_type","") or "").replace("_"," ")
                         vol_oi  = f.get("vol_oi",0) or f.get("vol_oi_ratio",0) or 0
-                        sweep   = " ⚡Sweep" if f.get("is_sweep") else ""
-                        src     = " 🅱" if f.get("source") == "bullflow" else " 🐦" if f.get("source") == "flowgod" else ""
+                        sweep   = " ⚡" if f.get("is_sweep") else ""
+                        src     = " 🅱" if f.get("source")=="bullflow" else " 🐦" if f.get("source")=="flowgod" else ""
                         score   = f.get("score","")
                         verdict = f.get("verdict","")
                         sc_str  = " [" + str(score) + "/7 " + str(verdict) + "]" if score else ""
-                        vol_str = " · " + str(round(float(vol_oi),1)) + "x Vol/OI" if vol_oi else ""
+                        vol_str = " · " + str(round(float(vol_oi),1)) + "x" if vol_oi else ""
+                        cnt_str = " ×" + str(f.get("_count","")) if f.get("_count","") and f.get("_count",1) > 1 else ""
+                        tkr_lbl = (f.get("_ticker_label","") + " ") if tkr_f2 is None else ""
                         lines.append(
-                            str(i) + ". " + str(strike) + otype + " " + str(expiry) +
-                            " · " + prem_s + " " + fill + vol_str + sweep + src + sc_str
+                            str(i) + ". " + tkr_lbl + str(strike) + otype + " " + str(expiry) +
+                            " · " + prem_s + " " + fill + vol_str + sweep + src + sc_str + cnt_str
                         )
                     lines.append("─" * 20)
                     lines.append("Total: " + total_str + " across " + str(len(ticker_flows)) + " flows")
                     send_reply(chr(10).join(lines), from_chat_id)
+
             except Exception as e:
                 send_reply("Flow search error: " + str(e), from_chat_id)
     elif cmd == "price" and args:

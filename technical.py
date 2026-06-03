@@ -676,7 +676,7 @@ def run_technical_scan(send_sms_fn):
 
     for ticker, watch_entry in list(_watch_list.items()):
         try:
-            time.sleep(0.6)  # ~100 req/min — stays under Tradier 120/min limit
+            time.sleep(0.3)  # ~120 req/min — at Tradier limit but fine
             # Update DTE remaining for cleanup logic
             expiry_raw = watch_entry.get("expiry_raw","")
             if expiry_raw:
@@ -732,8 +732,12 @@ def run_technical_scan(send_sms_fn):
                 lines.append(f"→ Entry ~${c['close']:.2f} | Stop ${c['low']:.2f} | Target ${round(c['close']+(c['close']-c['low'])*2,2):.2f}")
 
                 msg = chr(10).join(lines)
+                import os as _os_tech
                 from sms import send_telegram
-                send_telegram(msg)
+                _bot  = _os_tech.environ.get("TELEGRAM_BOT_TOKEN","")
+                _cid  = _os_tech.environ.get("TELEGRAM_CHAT_ID","")
+                if _bot and _cid:
+                    send_telegram(msg, _bot, _cid)
                 for signal in new_signals:
                     watch_entry["alerted"][signal["timeframe"]] = time.time()
                 print(f"[TECHNICAL] Alert sent: {ticker} [{tfs}] {strength}")
