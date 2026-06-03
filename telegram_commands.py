@@ -807,6 +807,37 @@ def handle_command(text: str, from_chat_id: str):
     elif cmd in ("kb", "keyboard"):
         send_keyboard(from_chat_id)
 
+    elif cmd in ("scan", "watchlist-status"):
+        # /scan — show current technical watchlist status
+        try:
+            from technical import get_watchlist
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            wl   = get_watchlist()
+            now  = datetime.now(ZoneInfo("America/New_York"))
+            if not wl:
+                send_reply("No tickers in watchlist.", from_chat_id)
+            else:
+                expiring = [(t, e) for t, e in wl.items() if isinstance(e, dict) and 0 <= e.get("dte", 99) <= 7]
+                lines    = [f"📡 Technical Watchlist — {len(wl)} tickers | {now.strftime('%b %d %I:%M%p ET')}"]
+                if expiring:
+                    lines.append(f"⚠️ Expiring soon ({len(expiring)}): " + ", ".join(t for t,_ in expiring[:10]))
+                # Group by DTE bucket
+                buckets = {"≤7d":[], "8-21d":[], "22-45d":[], ">45d":[]}
+                for t, e in sorted(wl.items()):
+                    if not isinstance(e, dict): continue
+                    dte = e.get("dte", 99)
+                    if   dte <= 7:  buckets["≤7d"].append(t)
+                    elif dte <= 21: buckets["8-21d"].append(t)
+                    elif dte <= 45: buckets["22-45d"].append(t)
+                    else:           buckets[">45d"].append(t)
+                for bucket, tickers in buckets.items():
+                    if tickers:
+                        lines.append(f"{bucket}: " + ", ".join(tickers[:15]) + ("..." if len(tickers)>15 else ""))
+                send_reply(chr(10).join(lines), from_chat_id)
+        except Exception as e:
+            send_reply("Scan error: " + str(e), from_chat_id)
+
     elif cmd == "stop":
         token = bot_token()
         cid   = from_chat_id or chat_id()
@@ -1840,6 +1871,7 @@ def handle_help(reply_chat_id: str):
         '/debrief — AI analysis of your trades',
         '/journal — open trade journal web page',
         '/test — system connectivity check (all APIs)',
+        '/scan — technical watchlist status + DTE breakdown',
         '/stop — hide keyboard  |  /kb — show keyboard',
         '/flow TICKER — today\'s top flows for a ticker (from stream history)',
         '/test — system connectivity check (all APIs + services)',
@@ -1953,6 +1985,7 @@ def handle_journal_help(reply_chat_id: str):
         '',
         'SYSTEM',
         '/test                   — connectivity check (all APIs)',
+        '/scan                   — technical watchlist status (DTE buckets, expiring soon)',
         '/status                 — stream status, open positions, today alert count',
         '/kb                     — show command keyboard',
         '/stop                   — hide keyboard',

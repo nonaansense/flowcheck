@@ -1064,7 +1064,8 @@ def fetch_float_and_short(ticker: str) -> dict:
     if si_data and si_data.get("short_pct"):
         result["short_ratio"]    = si_data["short_pct"]
         result["short_interest"] = si_data.get("short_pct")
-        result["days_to_cover"]  = si_data.get("days_to_cover")
+        result["days_to_cover"]       = si_data.get("days_to_cover")
+        result["short_interest_date"] = si_data.get("settlement_date","")
         result["short_settle"]   = si_data.get("settlement_date")
         print(f"[FETCHER] Short interest: {si_data['short_pct']}% | {si_data.get('days_to_cover')}d to cover via Massive")
     return result
@@ -1461,7 +1462,8 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
     float_data = fetch_float_and_short(ticker) or {}
     data["float_shares"]   = float_data.get("float_shares")
     data["short_interest"]   = float_data.get("short_interest")
-    data["days_to_cover"]    = float_data.get("days_to_cover") or data.get("days_to_cover")
+    data["days_to_cover"]         = float_data.get("days_to_cover") or data.get("days_to_cover")
+    data["short_interest_date"]   = float_data.get("short_interest_date","")
     data["company_name"]     = float_data.get("company_name")
     data["company_desc"]     = float_data.get("company_desc")
     data["company_sector"]   = float_data.get("sector")    # renamed to avoid collision with sector dict

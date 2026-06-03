@@ -78,7 +78,11 @@ def save_analyses():
     from storage import save_data, db_set
     try:
         today      = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-        today_data = [a for a in analyses if a.get("date") == today]
+        today_data = [a for a in analyses if isinstance(a, dict) and a.get("date") == today]
+        # Cap to last 500 — prevents Supabase blob growing unbounded
+        if len(today_data) > 500:
+            print(f"[PERSIST] Capped analyses to 500 (was {len(today_data)})")
+            today_data = today_data[-500:]
 
         # Always save yesterday's analyses for pre-market carryover check
         from datetime import timedelta as _td2
@@ -591,6 +595,15 @@ def build_sms(trade: dict, data: dict, result: dict,
     # ── Short interest ───────────────────────────────────────────────
     si_pct   = data.get("short_interest_pct") or data.get("short_ratio")
     dtc      = data.get("days_to_cover")
+    si_date  = data.get("short_interest_date","")
+    si_staleness = ""
+    if si_date:
+        try:
+            from datetime import datetime as _dt_si
+            _si_age = (datetime.now() - _dt_si.strptime(si_date[:10], "%Y-%m-%d")).days
+            if _si_age > 14:
+                si_staleness = f" ({_si_age}d old)"
+        except: pass
     si_line  = None
     if si_pct:
         opt_lower  = (trade.get("option_type","call") or "call").lower()
@@ -2134,13 +2147,11 @@ async def webhook(request: Request):
         return {"status": "skipped", "reason": "empty"}
 
     # Filter FlowGod commentary tweets — not flow alerts
-    # These are price observations, not options flow
-    _COMMENTARY = [
-        "all time high", "up %", "up today", "down today",
-        "holy sh", "lol", "wtf", "nice move", "ripping",
-        "halted", "just went", "look at", "can't believe",
-        "remember when", "told you", "called it",
-    ]
+    # Configurable via FILTER_COMMENTARY_PHRASES Railway variable (comma-separated)
+    _default_phrases = "all time high,up today,down today,holy sh,nice move,ripping,halted,just went,look at,can't believe,remember when,told you,called it"
+    _custom = os.environ.get("FILTER_COMMENTARY_PHRASES", "")
+    _all_phrases = (_custom + "," + _default_phrases) if _custom else _default_phrases
+    _COMMENTARY = [p.strip().lower() for p in _all_phrases.split(",") if p.strip()]
     _tweet_lower = (tweet or "").lower()
     if any(phrase in _tweet_lower for phrase in _COMMENTARY):
         # Also check it doesn't have option-like content
