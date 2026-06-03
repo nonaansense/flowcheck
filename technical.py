@@ -434,6 +434,44 @@ def is_morning_star(candles: list) -> tuple:
         return True, f"Morning star reversal (${c1['close']:.2f}→${c2['close']:.2f}→${c3['close']:.2f})"
     return False, ""
 
+def is_bearish_engulfing(c: dict, prev: dict) -> tuple:
+    """Large bearish candle engulfs prior bullish candle — reversal signal."""
+    if (prev["close"] > prev["open"]    # Prev was bullish
+    and c["open"]  >= prev["close"]     # Gap up or flat
+    and c["close"] <= prev["open"]      # Engulfs prior body
+    and c["close"] < c["open"]):        # Current bearish
+        pct = round(abs(c["close"]-c["open"]) / max(abs(prev["close"]-prev["open"]),0.01) * 100)
+        return True, f"Bearish engulfing ({pct}% of prev candle)"
+    return False, ""
+
+
+def is_vwap_rejection(c: dict, vwap: float) -> tuple:
+    """Price touched VWAP and closed below it — bearish signal."""
+    if not vwap: return False, ""
+    high_pct  = (c["high"] - vwap) / vwap * 100
+    close_pct = (c["close"] - vwap) / vwap * 100
+    if high_pct > 0 and close_pct < -0.1:
+        return True, f"VWAP rejection — close {abs(close_pct):.2f}% below VWAP ${vwap:.2f}"
+    return False, ""
+
+
+def is_break_below_prev_low(c: dict, prev: dict) -> tuple:
+    """Close below prior candle low — breakdown signal."""
+    if c["close"] < prev["low"]:
+        pct = round((prev["low"] - c["close"]) / prev["low"] * 100, 2)
+        return True, f"Break below prev low ${prev['low']:.2f} (-{pct}%)"
+    return False, ""
+
+
+def is_lower_high(candles: list) -> tuple:
+    """Three consecutive lower highs — downtrend confirmation."""
+    if len(candles) < 3: return False, ""
+    highs = [c["high"] for c in candles[-3:]]
+    if highs[0] > highs[1] > highs[2]:
+        return True, f"Lower highs: ${highs[0]:.2f} → ${highs[1]:.2f} → ${highs[2]:.2f}"
+    return False, ""
+
+
 def is_higher_low(candles: list) -> tuple:
     """
     Three consecutive higher lows = uptrend resuming.
@@ -541,6 +579,7 @@ def check_all_timeframes(ticker: str, flow_stock_price: float = None,
             print(f"[TECHNICAL] {ticker} entry quality poor: {entry_note}")
 
     signals_found = []
+    is_put = "put" in (option_type or "call").lower()
 
     for tf_label, period in TIMEFRAMES.items():
         candles = aggregate_candles(candles_1min, period)
@@ -550,15 +589,26 @@ def check_all_timeframes(ticker: str, flow_stock_price: float = None,
         c    = candles[-1]
         prev = candles[-2]
 
-        checks = [
-            is_bullish_hammer(c),
-            is_bullish_engulfing(c, prev),
-            is_vwap_bounce(c, vwap),
-            is_break_above_prev_high(c, prev),
-            is_morning_star(candles),
-            is_higher_low(candles),
-            is_volume_spike(c, candles),
-        ]
+        if is_put:
+            # For puts: look for BEARISH signals (stock weakness = put gains)
+            checks = [
+                is_bearish_engulfing(c, prev),
+                is_vwap_rejection(c, vwap),
+                is_break_below_prev_low(c, prev),
+                is_lower_high(candles),
+                is_volume_spike(c, candles),  # Volume on down move
+            ]
+        else:
+            # For calls: look for BULLISH signals (stock strength = call gains)
+            checks = [
+                is_bullish_hammer(c),
+                is_bullish_engulfing(c, prev),
+                is_vwap_bounce(c, vwap),
+                is_break_above_prev_high(c, prev),
+                is_morning_star(candles),
+                is_higher_low(candles),
+                is_volume_spike(c, candles),
+            ]
 
         triggered = [note for ok, note in checks if ok]
 
@@ -714,10 +764,18 @@ def run_technical_scan(send_sms_fn):
                 verdict  = watch_entry.get("verdict","WATCH")
                 v_emoji  = {"TRADE":"✅","WATCH":"👀"}.get(verdict,"👀")
                 # Best signal = highest timeframe (most reliable)
-                best     = max(new_signals, key=lambda s: ["M5","M10","M15","M30","H1"].index(s["timeframe"])
-                               if s["timeframe"] in ["M5","M10","M15","M30","H1"] else 0)
+                # Pick the strongest signal (by signal count), break ties by highest timeframe
+                _str_order = {"STRONG 🚨": 3, "MODERATE ✅": 2, "MILD ⚠️": 1}
+                _tf_order  = ["M5","M10","M15","M30","H1"]
+                best = max(new_signals, key=lambda s: (
+                    _str_order.get(s.get("strength",""), 0),
+                    _tf_order.index(s["timeframe"]) if s["timeframe"] in _tf_order else 0
+                ))
                 tfs      = " + ".join(s["timeframe"] for s in new_signals)
                 strength = best["strength"]
+                # Ensure chasing warning has space
+                if "chasing" in strength and "⚠️" in strength and "⚠️ " not in strength:
+                    strength = strength.replace("⚠️chasing", "⚠️ chasing")
                 c        = best["candle"]
                 vwap     = best.get("vwap")
 
@@ -728,9 +786,15 @@ def run_technical_scan(send_sms_fn):
                 if vwap:
                     vwap_diff  = round(((c["close"]-vwap)/vwap)*100, 2)
                     _direction = "above" if vwap_diff >= 0 else "below"
-                    lines.append(f"VWAP: ${vwap:.2f} | Price {abs(vwap_diff):.2f}% {_direction}")
+                    _vwap_good = (vwap_diff < 0) if is_put else (vwap_diff >= 0)
+                    lines.append(f"VWAP: ${vwap:.2f} | Price {abs(vwap_diff):.2f}% {_direction}{'✅' if _vwap_good else ''}")
                 lines.append(f"Best setup: {best['timeframe']} — {', '.join(best['signals'][:2])}")
-                lines.append(f"→ Entry ~${c['close']:.2f} | Stop ${c['low']:.2f} | Target ${round(c['close']+(c['close']-c['low'])*2,2):.2f}")
+                if is_put:
+                    _stop_put   = round(c["high"], 2)
+                    _target_put = round(c["close"] - (c["high"] - c["close"]) * 2, 2)
+                    lines.append(f"→ Entry ~${c['close']:.2f} | Stop ${_stop_put:.2f} | Target ${_target_put:.2f}")
+                else:
+                    lines.append(f"→ Entry ~${c['close']:.2f} | Stop ${c['low']:.2f} | Target ${round(c['close']+(c['close']-c['low'])*2,2):.2f}")
 
                 msg = chr(10).join(lines)
                 import os as _os_tech
