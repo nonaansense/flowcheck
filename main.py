@@ -607,6 +607,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     # ══════════════════════════════════════════
 
     # Earnings proximity banner — shown at very top when within 7 days
+    earn_timing = data.get("earnings_timing","")  # AMC / BMO / ""
     earn_banner = ""
     try:
         from datetime import datetime as _dt_eb
@@ -2425,7 +2426,6 @@ async def analysis_detail(analysis_id: int):
     dte_val     = data.get("days_to_expiry")
     stock_px    = data.get("stock_price")
     earn_date   = data.get("earnings_date","")
-    earn_timing = data.get("earnings_timing","")  # AMC / BMO / ""
     earn_label  = data.get("expiry_timing_label","")
     earn_emoji  = data.get("expiry_timing_emoji","")
     si_pct      = data.get("short_interest_pct") or data.get("short_ratio")
