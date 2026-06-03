@@ -803,6 +803,24 @@ def run_technical_scan(send_sms_fn):
                 _cid  = _os_tech.environ.get("TELEGRAM_CHAT_ID","")
                 if _bot and _cid:
                     send_telegram(msg, _bot, _cid)
+
+                # Push STRONG signals on TRADE positions to priority channel
+                _verdict  = watch_entry.get("verdict","")
+                _trade_ch = _os_tech.environ.get("TELEGRAM_TRADE_CHAT_ID","")
+                _is_strong = strength.startswith("STRONG") or strength.startswith("MODERATE")
+                if _trade_ch and _is_strong and _verdict == "TRADE":
+                    _upgrade_msg = (
+                        f"📡 TECHNICAL CONFIRMATION: {ticker}\n"
+                        f"Signal: {strength} [{tfs}]\n"
+                        f"Flow: {ticker} {watch_entry.get('strike','')}"
+                        f"{watch_entry.get('option_type','C')[0].upper()} "
+                        f"{watch_entry.get('expiry','')} "
+                        f"[{watch_entry.get('flow_score','?')}/7 TRADE]\n"
+                        f"{msg.split(chr(10),2)[2] if chr(10) in msg else ''}"
+                    )
+                    send_telegram(_upgrade_msg, _bot, _trade_ch)
+                    print(f"[TECHNICAL] ⬆️ Pushed {ticker} {strength} to priority channel")
+
                 for signal in new_signals:
                     watch_entry["alerted"][signal["timeframe"]] = time.time()
                 print(f"[TECHNICAL] Alert sent: {ticker} [{tfs}] {strength}")

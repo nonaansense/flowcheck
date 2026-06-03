@@ -1503,3 +1503,120 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
           f"OTM={data['otm_pct']}%, DTE={data['days_to_expiry']}, "
           f"fill={data.get('fill_type')}, breakout={data['is_breakout_bet']}")
     return data
+
+
+# ── Hedged flow detection helpers ──────────────────────────────────────
+
+def fetch_put_call_ratio(ticker: str) -> dict:
+    """
+    Fetch today's put/call ratio via Tradier options chain.
+    Elevated P/C on same day as large call sweep = possible hedged position.
+    Returns {"put_call_ratio": float, "call_oi": int, "put_oi": int} or {}
+    """
+    token = os.environ.get("TRADIER_TOKEN","")
+    if not token:
+        return {}
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        # Get options expiring in next 30 days
+        exp_to = (_dt.now() + _td(days=45)).strftime("%Y-%m-%d")
+        r = requests.get(
+            "https://api.tradier.com/v1/markets/options/expirations",
+            params={"symbol": ticker, "includeAllRoots": "true"},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=8
+        )
+        if r.status_code != 200:
+            return {}
+        expirations = (r.json().get("expirations") or {}).get("date", [])
+        if isinstance(expirations, str): expirations = [expirations]
+        # Pick nearest expiry
+        if not expirations: return {}
+        exp = expirations[0]
+
+        # Fetch chain for nearest expiry
+        r2 = requests.get(
+            "https://api.tradier.com/v1/markets/options/chains",
+            params={"symbol": ticker, "expiration": exp, "greeks": "false"},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=10
+        )
+        if r2.status_code != 200:
+            return {}
+        options = r2.json().get("options", {}).get("option", []) or []
+        if not options: return {}
+
+        call_vol = sum(int(o.get("volume") or 0) for o in options if o.get("option_type")=="call")
+        put_vol  = sum(int(o.get("volume") or 0) for o in options if o.get("option_type")=="put")
+        call_oi  = sum(int(o.get("open_interest") or 0) for o in options if o.get("option_type")=="call")
+        put_oi   = sum(int(o.get("open_interest") or 0) for o in options if o.get("option_type")=="put")
+
+        pc_ratio = round(put_vol / call_vol, 2) if call_vol > 0 else None
+        print(f"[FETCHER] {ticker} P/C ratio: {pc_ratio} (call_vol={call_vol} put_vol={put_vol})")
+        return {
+            "put_call_ratio": pc_ratio,
+            "call_volume":    call_vol,
+            "put_volume":     put_vol,
+            "call_oi":        call_oi,
+            "put_oi":         put_oi,
+            "expiry_used":    exp,
+        }
+    except Exception as e:
+        print(f"[FETCHER] P/C ratio error {ticker}: {e}")
+        return {}
+
+
+def fetch_borrow_rate(ticker: str) -> dict:
+    """
+    Fetch stock borrow rate via Tradier securities endpoint.
+    High borrow rate (>5%) = heavy short demand = call buy may be hedge.
+    Returns {"borrow_rate": float, "availability": str} or {}
+    """
+    token = os.environ.get("TRADIER_TOKEN","")
+    if not token:
+        return {}
+    try:
+        # Tradier securities/lookup endpoint — shortable info
+        r = requests.get(
+            "https://api.tradier.com/v1/markets/securities",
+            params={"symbols": ticker},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=8
+        )
+        if r.status_code == 200:
+            data = r.json()
+            sec  = data.get("securities", {}).get("security", {})
+            if isinstance(sec, list): sec = sec[0] if sec else {}
+            # Tradier doesn't expose borrow rate directly — check shortable flag
+            shortable = sec.get("shortable", True)
+            easy_to_borrow = sec.get("easy_to_borrow", True)
+            if not easy_to_borrow:
+                print(f"[FETCHER] {ticker}: Hard to borrow — elevated short demand")
+                return {"borrow_difficulty": "HARD", "easy_to_borrow": False}
+            elif not shortable:
+                return {"borrow_difficulty": "NOT_SHORTABLE", "easy_to_borrow": False}
+        return {"borrow_difficulty": "NORMAL", "easy_to_borrow": True}
+    except Exception as e:
+        print(f"[FETCHER] Borrow rate error {ticker}: {e}")
+        return {}
+
+
+def check_price_action_after_flow(ticker: str, flow_price: float, delay_secs: int = 300) -> dict:
+    """
+    Check stock price N seconds after flow alert.
+    Called from a background thread after delay.
+    Returns {"price_now": float, "pct_move": float, "flag": bool}
+    """
+    import time as _t
+    _t.sleep(delay_secs)
+    try:
+        px_now = fetch_price(ticker)
+        if not px_now or not flow_price:
+            return {}
+        pct = round((px_now - flow_price) / flow_price * 100, 2)
+        flag = pct <= -1.0  # Flag if down >1% after call sweep
+        print(f"[FLOW-CHECK] {ticker} price action: flow=${flow_price} now=${px_now} ({pct:+.1f}%) flag={flag}")
+        return {"price_now": px_now, "pct_move": pct, "flag": flag}
+    except Exception as e:
+        print(f"[FLOW-CHECK] Price check error {ticker}: {e}")
+        return {}

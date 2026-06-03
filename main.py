@@ -923,6 +923,36 @@ def build_sms(trade: dict, data: dict, result: dict,
     news_lines = format_news_for_sms(data.get("news") or {})
     risk_lines.extend(news_lines)
 
+    # ── Hedge detection flags ──────────────────────────────────────────
+    _fill_type  = (data.get("fill_type","") or "").upper()
+    _vol_oi     = float(data.get("vol_oi_ratio") or data.get("vol_oi",0) or 0)
+    _otm_pct    = float(data.get("otm_pct") or 0)
+    _short_int  = float(data.get("short_interest_pct") or 0)
+    _opt_type   = (trade.get("option_type","call") or "call").lower()
+    _is_call    = "call" in _opt_type
+    _pc_ratio   = data.get("put_call_ratio")
+    _easy_borr  = data.get("easy_to_borrow", True)
+    _spread_pct = float(data.get("spread_pct") or 0)
+    _dte_h      = int(data.get("days_to_expiry") or 0)
+    _prem_h     = float(trade.get("premium",0) or 0)
+    _h_flags    = []
+    if _pc_ratio and _pc_ratio > 1.5 and _is_call:
+        _h_flags.append(f"⚠️ P/C ratio {_pc_ratio:.1f}x — elevated put activity, call may be hedge")
+    if not _easy_borr:
+        _h_flags.append("⚠️ Hard to borrow — call sweep may be protective hedge against short position")
+    if _vol_oi and _vol_oi < 1.5 and _is_call:
+        _h_flags.append("⚠️ Vol/OI <1.5x — may be rolling existing position, not new directional bet")
+    if _spread_pct and _spread_pct > 15 and _is_call:
+        _h_flags.append(f"⚠️ Wide spread ({_spread_pct:.0f}%) — may be hedge or spread leg")
+    if _short_int > 20 and _is_call and _otm_pct > 5:
+        _h_flags.append(f"⚠️ Short interest {_short_int:.0f}% — call may be short covering hedge")
+    if _dte_h <= 5 and _prem_h >= 500000 and _is_call:
+        _h_flags.append("⚠️ ≤5d DTE on large flow — likely spread leg or expiry hedge")
+    if _otm_pct and _otm_pct > 15 and _is_call:
+        _h_flags.append(f"⚠️ OTM {_otm_pct:.0f}% — far OTM calls often event hedges, not price targets")
+    risk_lines.extend(_h_flags[:2])
+
+
     if risk_lines:
         lines.append("")
         lines.append("━━━ RISK ━━━")
@@ -1115,6 +1145,16 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                     "premium_label":None,"premium_emoji":None,"premium_raw":0,
                     "is_breakout_bet":False,"breakout_emoji":"","breakout_label":"",
                     "flow_fill_price":None,"spread_pct":None,"bid":None,"ask":None}
+
+        # Fetch hedging indicators (P/C ratio + borrow difficulty)
+        try:
+            from fetcher import fetch_put_call_ratio as _fpcr, fetch_borrow_rate as _fbr
+            _pc_d = _fpcr(ticker)
+            _br_d = _fbr(ticker)
+            if _pc_d: data["put_call_ratio"]    = _pc_d.get("put_call_ratio")
+            if _br_d: data["easy_to_borrow"]    = _br_d.get("easy_to_borrow", True)
+        except Exception as _hed:
+            pass
 
         # Score — with graceful degradation if API down
         try:
@@ -1376,6 +1416,35 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
             send_sms(risk["block_msg"], verdict="TRADE")
 
         print(f"[PROCESS] Done: {ticker} {result.get('final_score')}/7 {result.get('verdict')} — SMS {'sent' if success else 'failed'}")
+
+        # 5-min price action check for TRADE alerts
+        if result.get("verdict") == "TRADE" and not trade.get("_test"):
+            _spxa = data.get("stock_price")
+            if _spxa:
+                def _pct():
+                    try:
+                        import time as _t2
+                        _t2.sleep(300)
+                        from fetcher import fetch_price as _fp2
+                        from sms import send_telegram as _stg2
+                        px2 = _fp2(ticker)
+                        if not px2: return
+                        pct2 = round((px2 - _spxa) / _spxa * 100, 2)
+                        print(f"[FLOW-CHECK] {ticker} 5min: {pct2:+.1f}%")
+                        if pct2 <= -1.0:
+                            _b2 = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                            _c2 = os.environ.get("TELEGRAM_CHAT_ID","")
+                            _tc2 = os.environ.get("TELEGRAM_TRADE_CHAT_ID","")
+                            _w2 = (f"⚠️ PRICE ACTION WARNING: {ticker}\n"
+                                   f"Stock {pct2:+.1f}% in 5min after flow alert\n"
+                                   f"Possible hedged position — monitor closely\n"
+                                   f"Flow: ${_spxa:.2f} → Now: ${px2:.2f}")
+                            if _b2 and _c2:  _stg2(_w2, _b2, _c2)
+                            if _b2 and _tc2: _stg2(_w2, _b2, _tc2)
+                    except Exception as _pce2:
+                        print(f"[FLOW-CHECK] Error: {_pce2}")
+                import threading as _thr2
+                _thr2.Thread(target=_pct, daemon=True).start()
 
     except Exception as e:
         import traceback
