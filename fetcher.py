@@ -566,7 +566,9 @@ def calc_move_analysis(stock_price: float, strike: str, opt_type: str,
         return {}
 
 def fetch_earnings_date(ticker: str):
-    """Returns (date_str, datetime_obj, is_past)"""
+    """Returns (date_str, datetime_obj, is_past, timing)
+    timing: 'AMC', 'BMO', or ''
+    """
     try:
         today    = datetime.now().date()
         lookback = (datetime.now() - timedelta(days=45)).strftime("%Y-%m-%d")
@@ -578,22 +580,25 @@ def fetch_earnings_date(ticker: str):
                 ds = e.get("date","")
                 if not ds: continue
                 try:
-                    dt = datetime.strptime(ds, "%Y-%m-%d")
-                    (future if dt.date() > today else past).append(dt)
+                    dt     = datetime.strptime(ds, "%Y-%m-%d")
+                    hour   = (e.get("hour","") or "").lower()
+                    timing = "BMO" if "bmo" in hour or hour == "bto" else                              "AMC" if "amc" in hour else ""
+                    (future if dt.date() > today else past).append((dt, timing))
                 except:
                     pass
             if future:
-                dt = min(future)
-                print(f"[FETCHER] {ticker} next earnings: {dt.strftime('%b %d, %Y')}")
-                return dt.strftime("%b %d, %Y"), dt, False
+                dt, timing = min(future, key=lambda x: x[0])
+                print(f"[FETCHER] {ticker} next earnings: {dt.strftime('%b %d, %Y')} {timing}")
+                return dt.strftime("%b %d, %Y"), dt, False, timing
             if past:
-                dt      = max(past)
-                days_ago = (today - dt.date()).days
+                dt, timing  = max(past, key=lambda x: x[0])
+                days_ago    = (today - dt.date()).days
                 print(f"[FETCHER] {ticker} last earnings: {dt.strftime('%b %d, %Y')} ({days_ago}d ago)")
-                return dt.strftime("%b %d, %Y"), dt, True
+                return dt.strftime("%b %d, %Y"), dt, True, timing
     except Exception as e:
         print(f"[FETCHER] Earnings error: {e}")
-    return None, None, False
+    return None, None, False, ""
+
 
 # ── Time of day ────────────────────────────────────────────────────────
 def check_time_of_day() -> dict:
@@ -1208,11 +1213,12 @@ def fetch_trade_data(trade: dict, flow_premium=None) -> dict:
         except: pass
 
     # Earnings
-    earn_str, earn_dt, earn_is_past = fetch_earnings_date(ticker)
+    earn_str, earn_dt, earn_is_past, earn_timing = fetch_earnings_date(ticker)
     if earn_str:
         data["earnings_date"]     = earn_str
         data["earnings_date_raw"] = earn_dt
         data["earnings_is_past"]  = earn_is_past
+        data["earnings_timing"]   = earn_timing
         if earn_is_past and earn_dt:
             days_ago = (datetime.now().date() - earn_dt.date()).days
             data["days_since_earnings"] = days_ago

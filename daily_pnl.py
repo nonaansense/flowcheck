@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 def get_daily_pnl_summary() -> str:
     from trade_journal import load_journal
-    from fetcher import fetch_price as get_current_price
+    from fetcher import fetch_price as get_current_price  # kept for fallback
 
     journal  = load_journal()
     closed_t = journal.get("closed", [])

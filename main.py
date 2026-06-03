@@ -605,8 +605,35 @@ def build_sms(trade: dict, data: dict, result: dict,
     # ══════════════════════════════════════════
     # SECTION 1: SIGNAL
     # ══════════════════════════════════════════
+
+    # Earnings proximity banner — shown at very top when within 7 days
+    earn_banner = ""
+    try:
+        from datetime import datetime as _dt_eb
+        from zoneinfo import ZoneInfo as _zi_eb
+        _now_eb  = _dt_eb.now(_zi_eb("America/New_York"))
+        _edt_eb  = None
+        for _fmt_eb in ("%b %d, %Y", "%Y-%m-%d", "%m/%d/%Y"):
+            try: _edt_eb = _dt_eb.strptime(earn_date, _fmt_eb); break
+            except: pass
+        if _edt_eb:
+            _days_eb  = (_edt_eb.date() - _now_eb.date()).days
+            _t_eb     = (" " + earn_timing) if earn_timing else ""
+            if _days_eb == 0:
+                earn_banner = f"🚨🚨 EARNINGS TODAY{_t_eb} 🚨🚨"
+            elif _days_eb == 1:
+                earn_banner = f"⚠️ EARNINGS TOMORROW{_t_eb}"
+            elif 2 <= _days_eb <= 7:
+                earn_banner = f"📅 EARNINGS IN {_days_eb}d{_t_eb}"
+    except:
+        pass
+
     lines = [
         f"━━━ SIGNAL ━━━",
+    ]
+    if earn_banner:
+        lines.append(earn_banner)
+    lines += [
         f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}",
         f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict}",
         f"VIX {vix_str} · SPY {spy_str}{regime_str}",
@@ -694,7 +721,32 @@ def build_sms(trade: dict, data: dict, result: dict,
     meta_parts = []
     if sector:   meta_parts.append(sector)
     if industry: meta_parts.append(industry)
-    if earn_date: meta_parts.append(f"Earnings: {earn_date}")
+    if earn_date:
+        try:
+            from datetime import datetime as _dt_e
+            from zoneinfo import ZoneInfo as _zi_e
+            _now_e   = _dt_e.now(_zi_e("America/New_York"))
+            _earn_dt = None
+            for _fmt in ("%b %d, %Y", "%Y-%m-%d", "%m/%d/%Y"):
+                try: _earn_dt = _dt_e.strptime(earn_date, _fmt); break
+                except: pass
+            if _earn_dt:
+                _days_to_earn = (_earn_dt.date() - _now_e.date()).days
+                if 0 <= _days_to_earn <= 7:
+                    _timing_str = earn_timing if earn_timing else ""
+                    if _days_to_earn == 0:
+                        _earn_badge = f"🚨 EARNINGS TODAY {_timing_str}".strip()
+                    elif _days_to_earn == 1:
+                        _earn_badge = f"⚠️ EARNINGS TOMORROW {_timing_str}".strip()
+                    else:
+                        _earn_badge = f"📅 EARNINGS IN {_days_to_earn}d {_timing_str}".strip()
+                    meta_parts.append(_earn_badge)
+                else:
+                    meta_parts.append(f"Earnings: {earn_date}")
+            else:
+                meta_parts.append(f"Earnings: {earn_date}")
+        except:
+            meta_parts.append(f"Earnings: {earn_date}")
     if meta_parts:
         context_lines.append("   " + " · ".join(meta_parts))
 
@@ -721,7 +773,29 @@ def build_sms(trade: dict, data: dict, result: dict,
     if earn:
         lines.append(f"{earn_emoji} {earn}")
     if earn_date:
-        lines.append(f"📅 Earnings: {earn_date}")
+        _earn_tag = (" " + earn_timing) if earn_timing else ""
+        try:
+            from datetime import datetime as _dt_e2
+            from zoneinfo import ZoneInfo as _zi_e2
+            _now2    = _dt_e2.now(_zi_e2("America/New_York"))
+            _edt2    = None
+            for _fmt2 in ("%b %d, %Y","%Y-%m-%d","%m/%d/%Y"):
+                try: _edt2 = _dt_e2.strptime(earn_date, _fmt2); break
+                except: pass
+            if _edt2:
+                _days2 = (_edt2.date() - _now2.date()).days
+                if _days2 == 0:
+                    lines.append(f"🚨 Earnings TODAY{_earn_tag}")
+                elif _days2 == 1:
+                    lines.append(f"⚠️ Earnings TOMORROW{_earn_tag} — {earn_date}")
+                elif 2 <= _days2 <= 7:
+                    lines.append(f"📅 Earnings in {_days2}d{_earn_tag} — {earn_date}")
+                else:
+                    lines.append(f"📅 Earnings: {earn_date}{_earn_tag}")
+            else:
+                lines.append(f"📅 Earnings: {earn_date}{_earn_tag}")
+        except:
+            lines.append(f"📅 Earnings: {earn_date}{_earn_tag}")
 
     # Breakout
     if data.get("is_breakout_bet") and data.get("breakout_label"):
@@ -849,7 +923,8 @@ def build_sms(trade: dict, data: dict, result: dict,
     # WATCH/SKIP get a compact format — full details at analysis URL
     if verdict in ("WATCH", "SKIP"):
         short_lines = []
-
+        if earn_banner:
+            short_lines.append(earn_banner)
         # Line 1: verdict + ticker + option + price + source
         short_lines.append(f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}")
 
@@ -2350,6 +2425,7 @@ async def analysis_detail(analysis_id: int):
     dte_val     = data.get("days_to_expiry")
     stock_px    = data.get("stock_price")
     earn_date   = data.get("earnings_date","")
+    earn_timing = data.get("earnings_timing","")  # AMC / BMO / ""
     earn_label  = data.get("expiry_timing_label","")
     earn_emoji  = data.get("expiry_timing_emoji","")
     si_pct      = data.get("short_interest_pct") or data.get("short_ratio")

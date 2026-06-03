@@ -136,6 +136,7 @@ When a prior WATCH alert gets confirmed to TRADE by a second source or higher sc
 | ITM | ≤ 10% (`FILTER_MAX_ITM`) | prefilter.py only |
 | Stocks only | true | Bullflow API |
 | Ticker dedup | 2h window | bullflow_stream.py |
+| Sector/Industry | Biotech, Pharma, REIT, Cannabis blocked | prefilter.py |
 
 Recreate Bullflow custom alert: `GET /sync-bullflow-filters`
 
@@ -217,6 +218,21 @@ Scans all watchlist tickers every 5 minutes (market hours) for M5/M10/M15/M30/H1
 | > 45d | -70% option | +110% |
 
 **PUT_SELL targets:** Capture 50-80% premium decay. Exit at 20-50% decay or near strike.
+
+---
+
+## Earnings Highlighting
+
+When flow comes in for a stock with earnings within 7 days, a banner appears at the **top of the SIGNAL section**:
+
+| Days to earnings | Display |
+|-----------------|---------|
+| 0 (today) | `🚨🚨 EARNINGS TODAY AMC 🚨🚨` |
+| 1 (tomorrow) | `⚠️ EARNINGS TOMORROW BMO` |
+| 2-7 days | `📅 EARNINGS IN 3d AMC` |
+| 8+ days | `📅 Earnings: Aug 25, 2026` (in THESIS only) |
+
+AMC = After Market Close · BMO = Before Market Open (from Finnhub earnings calendar)
 
 ---
 
@@ -326,6 +342,9 @@ FILTER_MAX_DTE            = 120
 FILTER_MAX_OTM            = 20.0
 FILTER_MAX_ITM            = 10.0       # Applied in prefilter.py (Bullflow API doesn't support)
 FILTER_EXCLUDE_ETF_HEDGES = true
+FILTER_EXCLUDE_SECTORS    = Biotechnology,Pharmaceutical,Drug Manufacturers,REIT,Real Estate,Cannabis
+FILTER_MAX_ITM_CALL       = 5    # Calls: prefer ATM/OTM only
+FILTER_MAX_ITM_PUT        = 30   # Puts: deep ITM allowed (real conviction)
 BULLFLOW_MIN_SCORE        = 6.0
 
 # APIs
@@ -343,6 +362,9 @@ SUPABASE_KEY              = ...
 # Account
 ACCOUNT_SIZE              = 100000
 BASE_URL                  = https://web-production-19e44.up.railway.app
+
+# Channels
+TELEGRAM_ALL_CHAT_ID      = (all-alerts channel — commentary/FYI tweets from FlowGod)
 
 # Railway balance (update after each top-up)
 RAILWAY_BALANCE           = 4.37
