@@ -808,22 +808,54 @@ def run_technical_scan(send_sms_fn):
                 if _bot and _cid:
                     send_telegram(msg, _bot, _cid)
 
-                # Push STRONG signals on TRADE positions to priority channel
+                # Push to priority channel only when:
+                # TRADE + STRONG signal + GEX aligned + 24h cooldown
                 _verdict  = watch_entry.get("verdict","")
                 _trade_ch = _os_tech.environ.get("TELEGRAM_TRADE_CHAT_ID","")
-                _is_strong = strength.startswith("STRONG") or strength.startswith("MODERATE")
+                _is_strong = strength.startswith("STRONG")  # STRONG only, not MODERATE
                 if _trade_ch and _is_strong and _verdict == "TRADE":
-                    _upgrade_msg = (
-                        f"📡 TECHNICAL CONFIRMATION: {ticker}\n"
-                        f"Signal: {strength} [{tfs}]\n"
-                        f"Flow: {ticker} {watch_entry.get('strike','')}"
-                        f"{watch_entry.get('option_type','C')[0].upper()} "
-                        f"{watch_entry.get('expiry','')} "
-                        f"[{watch_entry.get('flow_score','?')}/7 TRADE]\n"
-                        f"{msg.split(chr(10),2)[2] if chr(10) in msg else ''}"
-                    )
-                    send_telegram(_upgrade_msg, _bot, _trade_ch)
-                    print(f"[TECHNICAL] ⬆️ Pushed {ticker} {strength} to priority channel")
+                    # Check 24h cooldown
+                    _last_tc  = watch_entry.get("tech_confirm_alerted", 0)
+                    _tc_age   = time.time() - float(_last_tc or 0)
+                    if _tc_age > 86400:
+                        # Quick GEX check — only alert if GEX also favorable
+                        try:
+                            from fetcher import fetch_gex as _fgex_tc, fetch_price as _fpx_tc
+                            import time as _ttc; _ttc.sleep(5)
+                            _gex_tc  = _fgex_tc(ticker)
+                            _px_tc   = _fpx_tc(ticker) or current_price
+                            _flip_tc = _gex_tc.get("gamma_flip") if _gex_tc else None
+                            _reg_tc  = _gex_tc.get("regime","") if _gex_tc else ""
+                            _is_put_tc = "put" in (watch_entry.get("option_type","call") or "call").lower()
+                            # GEX ok for calls: above flip; for puts: below flip
+                            _gex_ok_tc = True
+                            if _flip_tc and _px_tc:
+                                if _is_put_tc:
+                                    _gex_ok_tc = _px_tc <= (_flip_tc * 1.01)
+                                else:
+                                    _gex_ok_tc = _px_tc >= (_flip_tc * 0.995)
+                            if _gex_ok_tc:
+                                watch_entry["tech_confirm_alerted"] = time.time()
+                                _flip_str_tc = f"| flip ${_flip_tc:.0f}" if _flip_tc else ""
+                                _upgrade_msg = (
+                                    f"📡 TECHNICAL CONFIRMATION: {ticker}\n"
+                                    f"Signal: {strength} [{tfs}] + GEX aligned\n"
+                                    f"Stock: ${_px_tc:.2f} {_flip_str_tc}\n"
+                                    f"{msg.split(chr(10),2)[2] if chr(10) in msg else ''}\n"
+                                    f"Flow: {ticker} {watch_entry.get('strike','')}"
+                                    f"{(watch_entry.get('option_type','C') or 'C')[0].upper()} "
+                                    f"{watch_entry.get('expiry','')} "
+                                    f"[{watch_entry.get('flow_score','?')}/7 TRADE]"
+                                )
+                                send_telegram(_upgrade_msg, _bot, _trade_ch)
+                                print(f"[TECHNICAL] ⬆️ Pushed {ticker} STRONG+GEX to priority (24h cooldown started)")
+                            else:
+                                print(f"[TECHNICAL] {ticker} STRONG but GEX not aligned — skipping priority alert")
+                        except Exception as _tce:
+                            print(f"[TECHNICAL] Trade confirm GEX error: {_tce}")
+                    else:
+                        _h = round((86400 - _tc_age) / 3600, 1)
+                        print(f"[TECHNICAL] {ticker} STRONG but in cooldown ({_h}h left)")
 
                 # ENTRY WINDOW alert — fires on WATCH positions when GEX also aligns
                 # This is the "when to enter" signal for positions you're monitoring
@@ -849,36 +881,116 @@ def run_technical_scan(send_sms_fn):
                             _cascade_near = len(_danger) > 0
 
                         # Entry window conditions differ for calls vs puts
+                        # KEY INSIGHT: best entry is APPROACHING the flip, not after it
+                        # The gamma flip break triggers the dealer cascade — enter before/at it
                         _is_call_ew = "put" not in (watch_entry.get("option_type","call") or "call").lower()
 
                         if _is_call_ew:
-                            # CALLS: stock above/near gamma flip + room above to strike
-                            _flip_ok  = True
-                            if _flip_tw and _px_tw:
-                                _flip_ok = _px_tw >= (_flip_tw * 0.995)
-                            _room_ok  = True
-                            if _cwall and _px_tw:
-                                _room_ok = (_cwall - _px_tw) / _px_tw >= 0.01
-                            _gex_good = _flip_ok and _room_ok and not _cascade_near
+                            # CALLS: best entry = positive GEX + stock DECLINING TOWARD support
+                            # Dealers mechanically buy at support → stock reverses up → call profits
+                            # Need: (1) near support, (2) stock moving DOWN toward it
+
+                            _regime_ok = True  # Both regimes can work but different logic
+
+                            if _regime == "positive":
+                                # Find nearest positive GEX support below spot
+                                _supp_list = sorted(
+                                    [s for s in _strikes
+                                     if float(s["strike"]) < _px_tw
+                                     and float(s.get("net_gex", 0)) > 2_000_000],
+                                    key=lambda s: float(s["strike"]), reverse=True
+                                )
+                                if _supp_list:
+                                    _s_strike = float(_supp_list[0]["strike"])
+                                    _s_gex    = float(_supp_list[0].get("net_gex", 0))
+                                    _dist_pct = (_px_tw - _s_strike) / _px_tw * 100
+
+                                    # Check if stock is DECLINING toward support (not bouncing away)
+                                    _declining = False
+                                    try:
+                                        import time as _t_dec
+                                        from fetcher import fetch_1min_candles as _f1m
+                                        _c5 = _f1m(ticker, count=10)
+                                        if len(_c5) >= 3:
+                                            # Declining = recent close lower than 5-candle-ago close
+                                            _declining = _c5[-1]["close"] < _c5[-4]["close"]
+                                    except: pass
+
+                                    _near_support = _dist_pct <= 2.0   # within 2% above support
+                                    _approaching  = _declining and _near_support
+                                    _at_support   = _dist_pct <= 0.5   # essentially at support
+
+                                    if _approaching or _at_support:
+                                        _gex_good = True
+                                        _supp_str_ew = (
+                                            f"✅ Pos GEX support ${_s_strike:.0f} "
+                                            f"({_s_gex/1_000_000:.0f}M, {_dist_pct:.1f}% below) — "
+                                            f"{'stock declining toward it' if _approaching else 'stock at support'}"
+                                        )
+                                    else:
+                                        _gex_good = False
+                                        # Stock near support but not declining — wait
+                                else:
+                                    _gex_good = False  # No nearby support found
+
+                            else:  # Negative GEX
+                                # For negative GEX calls: approaching gamma flip from below
+                                _flip_ok = True
+                                if _flip_tw and _px_tw:
+                                    _dist = (_flip_tw - _px_tw) / _px_tw * 100
+                                    _flip_ok = 0 <= _dist <= 3.0
+                                _room_ok = True
+                                if _cwall and _px_tw:
+                                    _room_ok = (_cwall - _px_tw) / _px_tw >= 0.015
+                                _gex_good = _flip_ok and _room_ok and not _cascade_near
                         else:
-                            # PUTS: stock below/near gamma flip + negative GEX + room below
-                            _flip_ok  = True
-                            if _flip_tw and _px_tw:
-                                # Want stock at or below flip (within 1%)
-                                _flip_ok = _px_tw <= (_flip_tw * 1.01)
-                            _neg_gex  = (_regime == "negative")  # negative = amplifies drops
-                            _room_ok  = True
-                            if _pwall and _px_tw:  # put wall below = room to fall
-                                _room_ok = (_px_tw - _pwall) / _px_tw >= 0.01
-                            # No cascade zones ABOVE (they'd stop the put rally on reversal)
-                            _cascade_above = False
-                            if _strikes and _px_tw:
-                                _danger_up = [s for s in _strikes
-                                              if float(s["strike"]) > _px_tw
-                                              and float(s["strike"]) < _px_tw * 1.01
-                                              and float(s.get("net_gex",0)) < -2_000_000]
-                                _cascade_above = len(_danger_up) > 0
-                            _gex_good = _flip_ok and _room_ok and not _cascade_above
+                            # PUTS: best entry = positive GEX + stock RISING TOWARD resistance
+                            # Dealers mechanically SELL at resistance → stock reverses down → put profits
+                            # Need: (1) near resistance wall, (2) stock moving UP toward it
+
+                            if _regime == "positive":
+                                # Find nearest positive GEX resistance ABOVE spot
+                                _res_list = sorted(
+                                    [s for s in _strikes
+                                     if float(s["strike"]) > _px_tw
+                                     and float(s.get("net_gex", 0)) > 2_000_000],
+                                    key=lambda s: float(s["strike"])
+                                )
+                                if _res_list:
+                                    _r_strike = float(_res_list[0]["strike"])
+                                    _r_gex    = float(_res_list[0].get("net_gex", 0))
+                                    _dist_pct = (_r_strike - _px_tw) / _px_tw * 100
+
+                                    # Check if stock is RISING toward resistance
+                                    _rising = False
+                                    try:
+                                        from fetcher import fetch_1min_candles as _f1m_p
+                                        _cp5 = _f1m_p(ticker, count=10)
+                                        if len(_cp5) >= 3:
+                                            _rising = _cp5[-1]["close"] > _cp5[-4]["close"]
+                                    except: pass
+
+                                    _near_resist = _dist_pct <= 2.0
+                                    _approaching = _rising and _near_resist
+                                    _at_resist   = _dist_pct <= 0.5
+
+                                    if _approaching or _at_resist:
+                                        _gex_good = True
+                                    else:
+                                        _gex_good = False
+                                else:
+                                    _gex_good = False  # No nearby resistance
+
+                            else:  # Negative GEX puts
+                                # Approaching gamma flip from above
+                                _flip_ok = True
+                                if _flip_tw and _px_tw:
+                                    _dist = (_px_tw - _flip_tw) / _px_tw * 100
+                                    _flip_ok = 0 <= _dist <= 3.0
+                                _room_ok = True
+                                if _pwall and _px_tw:
+                                    _room_ok = (_px_tw - _pwall) / _px_tw >= 0.015
+                                _gex_good = _flip_ok and _room_ok
 
                         # Cooldown: only fire entry window once per 24h per ticker
                         _last_ew = watch_entry.get("entry_window_alerted", 0)
@@ -900,9 +1012,15 @@ def run_technical_scan(send_sms_fn):
                                 _wall_str = f"Put wall ${_pwall:.0f} (-{round((_px_tw-_pwall)/_px_tw*100,1):.1f}%) — target/support" if _pwall else ""
                                 _supp_str = f"Stop: ${_cwall:.0f} (call wall — if stock reverses above)" if _cwall else ""
                             if _is_call_ew:
-                                _regime_str = "⚡ Neg GEX — moves amplify" if _regime == "negative" else "🧲 Pos GEX — chop risk"
+                                if _regime == "positive":
+                                    _regime_str = "🧲 Pos GEX — dealers BUY dips (support bounce setup)"
+                                else:
+                                    _regime_str = "⚡ Neg GEX — moves amplify (breakout setup)"
                             else:
-                                _regime_str = "⚡ Neg GEX — drops accelerate" if _regime == "negative" else "🧲 Pos GEX — dealers buy dips (puts may stall)"
+                                if _regime == "positive":
+                                    _regime_str = "🧲 Pos GEX — dealers SELL rallies (resistance fade setup)"
+                                else:
+                                    _regime_str = "⚡ Neg GEX — drops accelerate"
                             _cascade_str = "✅ No cascade zones nearby" if not _cascade_near else ""
 
                             # Days since original flow alert
