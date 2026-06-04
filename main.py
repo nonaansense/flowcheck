@@ -1344,6 +1344,26 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         _strike = str(trade.get("strike","") or "")
         _expiry = str(trade.get("expiry_raw","") or trade.get("expiry","") or "")
         if not _strike or _strike in ("None","?","") or not _expiry or _expiry in ("None","?",""):
+            # Multi-ticker summary tweet detection
+            import re as _re_multi
+            _multi_tickers = _re_multi.findall(
+                r'\$([A-Z]{1,5})\s+\d+\.?\d*\s*(?:Call|Put|C|P)',
+                str(tweet), _re_multi.IGNORECASE
+            )
+            if len(_multi_tickers) >= 2 and not _strike:
+                _ac_m = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+                _bt_m = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                if _ac_m and _bt_m:
+                    try:
+                        from sms import send_telegram as _stg_m
+                        _fyi_m = "\U0001F4CB FlowGod Summary\n" + str(tweet).strip()
+                        if tweet_url: _fyi_m += "\n\U0001F426 " + str(tweet_url)
+                        _stg_m(_fyi_m, _bt_m, _ac_m)
+                        print(f"[WEBHOOK] Multi-ticker summary forwarded: {_multi_tickers}")
+                    except Exception as _me:
+                        print(f"[WEBHOOK] Multi-ticker error: {_me}")
+                return {"status": "skipped", "reason": "multi_ticker_summary"}
+
             print(f"[WEBHOOK] Incomplete trade data (strike={_strike} expiry={_expiry}) — forwarding as FYI")
             _ac = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
             _bt = os.environ.get("TELEGRAM_BOT_TOKEN","")
@@ -2809,6 +2829,8 @@ async def analysis_detail(analysis_id: int):
     stock_px    = data.get("stock_price")
     earn_label  = data.get("expiry_timing_label","")
     earn_emoji  = data.get("expiry_timing_emoji","")
+    earn_date   = data.get("earnings_date","") or data.get("next_earnings","")
+    earn_timing = data.get("earnings_timing","")
     earn_date   = data.get("earnings_date","") or data.get("next_earnings","")
     earn_timing = data.get("earnings_timing","")
     si_pct      = data.get("short_interest_pct") or data.get("short_ratio")

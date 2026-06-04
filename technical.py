@@ -101,6 +101,7 @@ def add_to_watchlist(ticker, trade, result, data=None, send_sms_fn=None):
         "added":            time.time(),
         "strike":           trade.get("strike","?"),
         "option_type":      trade.get("option_type","call"),
+        "added_at":         time.time(),  # when flow alert originally fired
         "expiry":           trade.get("expiry","?"),
         "expiry_raw":       expiry_raw,
         "flow_score":       result.get("final_score",0),
@@ -823,6 +824,94 @@ def run_technical_scan(send_sms_fn):
                     )
                     send_telegram(_upgrade_msg, _bot, _trade_ch)
                     print(f"[TECHNICAL] ⬆️ Pushed {ticker} {strength} to priority channel")
+
+                # ENTRY WINDOW alert — fires on WATCH positions when GEX also aligns
+                # This is the "when to enter" signal for positions you're monitoring
+                if _trade_ch and _is_strong and _verdict == "WATCH":
+                    try:
+                        from fetcher import fetch_gex as _fgex_tw, fetch_price as _fpx_tw
+                        import time as _t_tw; _t_tw.sleep(5)  # GEX rate limit
+                        _gex_tw  = _fgex_tw(ticker)
+                        _px_tw   = _fpx_tw(ticker) or 0
+                        _flip_tw = _gex_tw.get("gamma_flip") if _gex_tw else None
+                        _regime  = _gex_tw.get("regime","") if _gex_tw else ""
+                        _cwall   = _gex_tw.get("call_wall") if _gex_tw else None
+                        _pwall   = _gex_tw.get("put_wall")  if _gex_tw else None
+                        _strikes = _gex_tw.get("strikes",[]) if _gex_tw else []
+
+                        # Check cascade zones within 1% below
+                        _cascade_near = False
+                        if _strikes and _px_tw:
+                            _danger = [s for s in _strikes
+                                       if float(s["strike"]) < _px_tw
+                                       and float(s["strike"]) > _px_tw * 0.99
+                                       and float(s.get("net_gex",0)) < -2_000_000]
+                            _cascade_near = len(_danger) > 0
+
+                        # Entry window conditions:
+                        # 1. Not in a cascade zone
+                        # 2. Stock above or within 0.5% of gamma flip (or flip unknown)
+                        # 3. Call wall at least 1% above (room to move)
+                        _above_flip = True
+                        if _flip_tw and _px_tw:
+                            _above_flip = _px_tw >= (_flip_tw * 0.995)
+                        _room_above = True
+                        if _cwall and _px_tw:
+                            _room_above = (_cwall - _px_tw) / _px_tw >= 0.01
+
+                        _gex_good = _above_flip and _room_above and not _cascade_near
+
+                        # Cooldown: only fire entry window once per 24h per ticker
+                        _last_ew = watch_entry.get("entry_window_alerted", 0)
+                        _ew_age  = time.time() - float(_last_ew or 0)
+                        _ew_ok   = _ew_age > 86400  # 24 hours
+
+                        if _gex_good and _ew_ok:
+                            watch_entry["entry_window_alerted"] = time.time()
+                            # Build entry window message
+                            _opt_type = watch_entry.get("option_type","call")
+                            _strike   = watch_entry.get("strike","?")
+                            _expiry   = watch_entry.get("expiry","?")
+                            _score    = watch_entry.get("flow_score","?")
+                            _flip_str = f"gamma flip ${_flip_tw:.0f}" if _flip_tw else "no flip data"
+                            _wall_str = f"Call wall ${_cwall:.0f} (+{round((_cwall-_px_tw)/_px_tw*100,1):.1f}%)" if _cwall else ""
+                            _supp_str = f"Stop: ${_pwall:.0f} (put wall)" if _pwall else ""
+                            _regime_str = "⚡ Neg GEX — moves amplify" if _regime == "negative" else "🧲 Pos GEX — chop risk"
+                            _cascade_str = "✅ No cascade zones nearby" if not _cascade_near else ""
+
+                            # Days since original flow alert
+                            _flow_ts    = float(watch_entry.get("added_at", time.time()))
+                            _days_since = int((time.time() - _flow_ts) / 86400)
+                            _age_str    = f"Day {_days_since+1} since flow" if _days_since > 0 else "Same day as flow"
+
+                            _entry_msg = (
+                                f"🎯 ENTRY WINDOW: {ticker}\n"
+                                f"GEX + Technical aligned — {strength} [{tfs}]\n"
+                                f"📅 {_age_str}\n"
+                                f"Stock: ${_px_tw:.2f} | {_flip_str}\n"
+                                f"{_regime_str}\n"
+                                f"{_wall_str}\n"
+                                f"{_supp_str}\n"
+                                f"{_cascade_str}\n"
+                                f"→ {msg.split(chr(10))[-2] if chr(10) in msg else ''}\n"
+                                f"👀 {ticker} {_strike}{str(_opt_type)[0].upper()} "
+                                f"{_expiry} [{_score}/7 WATCH → consider entering]"
+                            )
+                            send_telegram(_entry_msg, _bot, _trade_ch)
+                            print(f"[TECHNICAL] 🎯 ENTRY WINDOW sent: {ticker} — GEX+tech aligned")
+                            # Persist cooldown timestamp
+                            try:
+                                from storage import save_data as _sd_ew
+                                _sd_ew("watchlist", _get_watchlist_raw())
+                            except: pass
+                        elif _gex_good and not _ew_ok:
+                            _hours_left = round((86400 - _ew_age) / 3600, 1)
+                            print(f"[TECHNICAL] {ticker} GEX+tech aligned but entry window cooldown ({_hours_left}h left)")
+                        else:
+                            _reason = "cascade zone nearby" if _cascade_near else "below flip" if not _above_flip else "wall too close"
+                            print(f"[TECHNICAL] {ticker} signal good but GEX not aligned ({_reason})")
+                    except Exception as _ew_e:
+                        print(f"[TECHNICAL] Entry window GEX error: {_ew_e}")
 
                 for signal in new_signals:
                     watch_entry["alerted"][signal["timeframe"]] = time.time()
