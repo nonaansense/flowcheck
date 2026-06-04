@@ -418,6 +418,8 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             alert_data = msg.get("data",{})
                             alert_type = alert_data.get("alertType","")
                             alert_name = alert_data.get("alertName","")
+                            symbol     = alert_data.get("symbol","")
+                            premium    = float(alert_data.get("alertPremium",0) or 0)
 
                             # Route SPX/SPY to dedicated channel (algo + custom alerts)
                             _is_spx_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","O:SPX"])
@@ -436,7 +438,6 @@ def stream_alerts(process_fn, send_sms_fn=None):
 
 
 
-                            symbol     = alert_data.get("symbol","")
                             premium    = alert_data.get("alertPremium",0)
 
                             # Allow all hours — Bullflow filters at source
