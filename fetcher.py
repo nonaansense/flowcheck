@@ -1624,17 +1624,8 @@ def check_price_action_after_flow(ticker: str, flow_price: float, delay_secs: in
 
 def fetch_gex(ticker: str) -> dict:
     """
-    Fetch net GEX by strike from Bullflow API.
-    Returns {
-        "net_gex_total": float,      # sum of all net_gex — positive = dampening, negative = amplifying
-        "regime": "positive"|"negative",
-        "gamma_flip": float|None,    # strike where cumulative GEX crosses zero
-        "call_wall": float|None,     # strike with highest call_gex (resistance)
-        "put_wall": float|None,      # strike with highest put_gex abs (support)
-        "gex_at_strike": float|None, # net_gex at or nearest to the flow's strike
-        "spot_price": float,
-        "as_of": str,
-    } or {} on failure.
+    Fetch net GEX from Bullflow, aggregate by strike across all expirations,
+    then compute gamma flip, call wall, put wall, and regime.
     Rate limited: 1 req / 5s.
     """
     key = os.environ.get("BULLFLOW_API_KEY","")
@@ -1650,68 +1641,75 @@ def fetch_gex(ticker: str) -> dict:
             print(f"[GEX] {ticker} HTTP {r.status_code}")
             return {}
 
-        data     = r.json()
-        strikes  = data.get("strikes", [])
-        spot     = float(data.get("spot_price", 0) or 0)
+        data    = r.json()
+        strikes = data.get("strikes", [])
+        spot    = float(data.get("spot_price", 0) or 0)
         if not strikes or not spot:
             return {}
 
-        # Sum net GEX across all strikes
-        net_total = sum(float(s.get("net_gex", 0) or 0) for s in strikes)
+        # ── Step 1: Aggregate net_gex, call_gex, put_gex by strike ──
+        from collections import defaultdict as _dd
+        agg = _dd(lambda: {"net_gex": 0.0, "call_gex": 0.0, "put_gex": 0.0})
+        for s in strikes:
+            sk = float(s["strike"])
+            agg[sk]["net_gex"]  += float(s.get("net_gex",  0) or 0)
+            agg[sk]["call_gex"] += float(s.get("call_gex", 0) or 0)
+            agg[sk]["put_gex"]  += float(s.get("put_gex",  0) or 0)
 
-        # Call wall = strike with highest call_gex (resistance above spot)
-        call_strikes = [s for s in strikes if float(s.get("call_gex",0) or 0) > 0 and float(s["strike"]) >= spot]
-        call_wall    = max(call_strikes, key=lambda s: float(s.get("call_gex",0)), default=None)
+        # Convert to sorted list
+        agg_strikes = sorted(
+            [{"strike": sk, **vals} for sk, vals in agg.items()],
+            key=lambda s: s["strike"]
+        )
 
-        # Put wall = strike with most negative put_gex (support below spot)
-        put_strikes  = [s for s in strikes if float(s.get("put_gex",0) or 0) < 0 and float(s["strike"]) <= spot]
-        put_wall     = min(put_strikes, key=lambda s: float(s.get("put_gex",0)), default=None)
+        # ── Step 2: Gamma flip — sign change in net_gex NEAREST to spot ──
+        gamma_flip = None
+        # Find crossings, pick the one closest to spot
+        crossings = []
+        for i in range(len(agg_strikes) - 1):
+            a = agg_strikes[i]
+            b = agg_strikes[i+1]
+            if a["net_gex"] * b["net_gex"] < 0:  # sign change
+                # Interpolate crossing point
+                crossing = (a["strike"] * abs(b["net_gex"]) + b["strike"] * abs(a["net_gex"]))                            / (abs(a["net_gex"]) + abs(b["net_gex"]))
+                crossings.append(round(crossing, 1))
+        if crossings:
+            # Pick crossing nearest to spot
+            gamma_flip = min(crossings, key=lambda x: abs(x - spot))
 
-        # Gamma flip = strike closest to spot where net_gex sign changes
-        sorted_s    = sorted(strikes, key=lambda s: float(s["strike"]))
-        gamma_flip  = None
+        # ── Step 3: Regime — net GEX sum within 10% of spot ──
+        near_spot = [s for s in agg_strikes
+                     if abs(s["strike"] - spot) / spot <= 0.10]
+        net_near  = sum(s["net_gex"] for s in near_spot)
+        regime    = "positive" if net_near >= 0 else "negative"
 
-        # Method 1: sign flip of net_gex between adjacent strikes near spot
-        for i in range(len(sorted_s)-1):
-            a = sorted_s[i]
-            b = sorted_s[i+1]
-            a_gex = float(a.get("net_gex",0) or 0)
-            b_gex = float(b.get("net_gex",0) or 0)
-            if a_gex * b_gex < 0:  # sign flip
-                # Pick the crossing closer to spot
-                a_str = float(a["strike"])
-                b_str = float(b["strike"])
-                gamma_flip = b_str if abs(b_str - spot) < abs(a_str - spot) else a_str
-                # Prefer the crossing nearest to spot price
-                if abs((a_str + b_str)/2 - spot) < abs((gamma_flip or 9999) - spot):
-                    gamma_flip = round((a_str + b_str) / 2, 1)
+        # ── Step 4: Call wall (largest call_gex above spot) ──
+        above = [s for s in agg_strikes if s["strike"] > spot]
+        call_wall = max(above, key=lambda s: s["call_gex"], default=None)
 
-        # Method 2 fallback: cumulative crossing
-        if gamma_flip is None:
-            cumulative = 0.0
-            prev_cum   = 0.0
-            for s in sorted_s:
-                cumulative += float(s.get("net_gex", 0) or 0)
-                if prev_cum < 0 and cumulative >= 0:
-                    gamma_flip = float(s["strike"]); break
-                elif prev_cum > 0 and cumulative <= 0:
-                    gamma_flip = float(s["strike"]); break
-                prev_cum = cumulative
+        # ── Step 5: Put wall (most negative put_gex below spot) ──
+        below = [s for s in agg_strikes if s["strike"] < spot]
+        put_wall  = min(below, key=lambda s: s["put_gex"], default=None)
 
-        # GEX at or nearest to the flow strike (passed via ticker for now — will be enriched per-alert)
-        # Returns the full strikes list so caller can look up specific strike
+        # Total net GEX
+        net_total = sum(s["net_gex"] for s in agg_strikes)
+
         result = {
             "net_gex_total": round(net_total, 2),
-            "regime":        "positive" if net_total >= 0 else "negative",
+            "regime":        regime,
             "gamma_flip":    gamma_flip,
             "call_wall":     float(call_wall["strike"]) if call_wall else None,
             "put_wall":      float(put_wall["strike"])  if put_wall  else None,
             "spot_price":    spot,
             "as_of":         data.get("as_of",""),
-            "strikes":       strikes,  # kept for per-strike lookup
+            "strikes":       agg_strikes,  # aggregated — no duplicate strikes
         }
-        print(f"[GEX] {ticker}: regime={result['regime']} flip={gamma_flip} call_wall={result['call_wall']} put_wall={result['put_wall']}")
+        print(f"[GEX] {ticker}: regime={regime} flip={gamma_flip} "
+              f"call_wall={result['call_wall']} put_wall={result['put_wall']} "
+              f"({len(agg_strikes)} unique strikes)")
         return result
     except Exception as e:
         print(f"[GEX] Error {ticker}: {e}")
         return {}
+
+
