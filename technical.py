@@ -717,6 +717,23 @@ def run_technical_scan(send_sms_fn):
         elif dte is not None and dte < MIN_DTE_TO_MONITOR:
             print(f"[TECHNICAL] {t} removed — only {dte}d left, too late to enter")
             to_remove.append(t)
+        else:
+            # Remove if option is >8% ITM — thesis fully played out, no entry value
+            _strike_exp = float(e.get("strike", 0) or 0)
+            _px_exp     = float(e.get("stock_price_at_alert", 0) or 0)
+            _is_put_exp = "put" in (e.get("option_type","call") or "call").lower()
+            if _strike_exp > 0 and _px_exp > 0:
+                try:
+                    from fetcher import fetch_price as _fpx_exp
+                    _cur_px = _fpx_exp(t) or _px_exp
+                    if not _is_put_exp:
+                        _itm = (_cur_px - _strike_exp) / _strike_exp * 100
+                    else:
+                        _itm = (_strike_exp - _cur_px) / _strike_exp * 100
+                    if _itm > 8.0:
+                        print(f"[TECHNICAL] {t} removed — {_itm:.1f}% ITM, thesis complete")
+                        to_remove.append(t)
+                except: pass
 
     for t in to_remove:
         remove_from_watchlist(t)
@@ -992,10 +1009,26 @@ def run_technical_scan(send_sms_fn):
                                     _room_ok = (_px_tw - _pwall) / _px_tw >= 0.015
                                 _gex_good = _flip_ok and _room_ok
 
+                        # Staleness check: option too deep ITM = thesis already played out
+                        _strike_ew   = float(watch_entry.get("strike", 0) or 0)
+                        _is_put_ew   = not _is_call_ew
+                        _stale_ew    = False
+                        if _strike_ew > 0 and _px_tw > 0:
+                            if not _is_put_ew:
+                                _itm_ew = (_px_tw - _strike_ew) / _strike_ew * 100
+                                if _itm_ew > 5.0:
+                                    _stale_ew = True
+                                    print(f"[TECHNICAL] {ticker} call {_itm_ew:.1f}% ITM — thesis done, skipping entry window")
+                            else:
+                                _itm_ew = (_strike_ew - _px_tw) / _strike_ew * 100
+                                if _itm_ew > 5.0:
+                                    _stale_ew = True
+                                    print(f"[TECHNICAL] {ticker} put {_itm_ew:.1f}% ITM — thesis done, skipping entry window")
+
                         # Cooldown: only fire entry window once per 24h per ticker
                         _last_ew = watch_entry.get("entry_window_alerted", 0)
                         _ew_age  = time.time() - float(_last_ew or 0)
-                        _ew_ok   = _ew_age > 86400  # 24 hours
+                        _ew_ok   = _ew_age > 86400 and not _stale_ew  # 24 hours
 
                         if _gex_good and _ew_ok:
                             watch_entry["entry_window_alerted"] = time.time()

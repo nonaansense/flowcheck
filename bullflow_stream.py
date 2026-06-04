@@ -87,21 +87,69 @@ def build_trade_from_alert(alert: dict) -> dict | None:
     alert_nm = alert.get("alertName","")
     alert_tp = alert.get("alertType","algo")
 
-    # Map Bullflow alert names to fill types
-    fill_type = "UNKNOWN"
+    # Debug: log all available keys on first alert to understand Bullflow payload
+    _known_keys = {"averageFillPrice","timestamp","alertName","alertType","symbol",
+                   "alertPremium","spotPrice","stockPrice","underlyingPrice","volume",
+                   "openInterest","vol","oi","_id","alertId","id"}
+    _new_keys = set(alert.keys()) - _known_keys
+    if _new_keys:
+        print(f"[BULLFLOW] New payload keys found: {_new_keys}")
+        for _k in _new_keys:
+            print(f"[BULLFLOW]   {_k}: {alert.get(_k)}")
+
+    # Determine fill type from Bullflow data
+    # Priority: (1) custom alert = always ask side by our filter
+    #           (2) side field from Bullflow
+    #           (3) price comparison (fill vs ask/bid)
+    #           (4) alert name inference
     nm_lower  = alert_nm.lower()
-    if "ask" in nm_lower or "urgent" in nm_lower or "sweep" in nm_lower:
+    alert_tp  = alert.get("alertType","algo")
+
+    # Read side and price fields Bullflow provides
+    _side_raw = str(alert.get("side","") or alert.get("tradeSide","") or "").upper()
+    _ask_px   = float(alert.get("askPrice",0) or alert.get("ask",0) or 0)
+    _bid_px   = float(alert.get("bidPrice",0) or alert.get("bid",0) or 0)
+    _mid_px   = (_ask_px + _bid_px) / 2 if _ask_px and _bid_px else 0
+
+    if _side_raw in ("ASK", "ABOVE_ASK", "A"):
         fill_type = "FULL_ASK"
-    elif "bullflow" in nm_lower or "sizable" in nm_lower or "repeater" in nm_lower:
-        fill_type = "MOSTLY_ASK"
-    elif "bid" in nm_lower:
-        # Bid side put = put SELLING = bullish conviction
-        # Bid side call = call selling = bearish, less interesting
+    elif _side_raw in ("BID", "B"):
         opt = "put" if parsed and parsed.get("option_type") == "put" else "call"
         fill_type = "PUT_SELL_BID" if opt == "put" else "MOSTLY_BID"
+    elif _side_raw in ("MID", "M"):
+        fill_type = "MID"
+    elif fill_px > 0 and _ask_px > 0:
+        # Compare fill price to ask/bid
+        if fill_px >= _ask_px * 0.99:
+            fill_type = "FULL_ASK"
+        elif _mid_px > 0 and fill_px >= _mid_px * 0.98:
+            fill_type = "MID"
+        elif _bid_px > 0 and fill_px <= _bid_px * 1.01:
+            opt = "put" if parsed and parsed.get("option_type") == "put" else "call"
+            fill_type = "PUT_SELL_BID" if opt == "put" else "MOSTLY_BID"
+        else:
+            fill_type = "MOSTLY_ASK"
+    else:
+        # Fallback: infer from alert name
+        if "ask" in nm_lower or "urgent" in nm_lower or "sweep" in nm_lower:
+            fill_type = "FULL_ASK"
+        elif "sizable" in nm_lower or "repeater" in nm_lower:
+            fill_type = "MOSTLY_ASK"
+        elif "bid" in nm_lower:
+            opt = "put" if parsed and parsed.get("option_type") == "put" else "call"
+            fill_type = "PUT_SELL_BID" if opt == "put" else "MOSTLY_BID"
+        else:
+            fill_type = "UNKNOWN"
+
+    # Pct at ask (if price data available)
+    _pct_ask = None
+    if fill_px > 0 and _ask_px > 0 and _bid_px > 0:
+        _spread = _ask_px - _bid_px
+        if _spread > 0:
+            _pct_ask = round(min((fill_px - _bid_px) / _spread * 100, 100), 1)
 
     # Is sweep?
-    is_sweep = any(w in nm_lower for w in ["sweep","urgent","sizable"])
+    is_sweep = any(w in nm_lower for w in ["sweep","urgent","sizable"]) or _side_raw in ("ASK","ABOVE_ASK")
 
     # Build trade dict compatible with FlowCheck pipeline
     # Map Bullflow alert names to Vol/OI signals for scorer
@@ -151,6 +199,9 @@ def build_trade_from_alert(alert: dict) -> dict | None:
         "option_price":   fill_px,
         "avg_fill_price": fill_px,
         "dte":            dte_val,
+        "pct_at_ask":     _pct_ask,
+        "ask_price":      _ask_px if _ask_px else None,
+        "bid_price":      _bid_px if _bid_px else None,
     }
 
     # Estimate contracts from premium and fill price
@@ -292,11 +343,15 @@ def setup_flowcheck_filters():
     # Instead filter by: stocks only, reasonable DTE, not deep ITM
     filters = {
         "premiumMin":    min_premium,
-        "dteMin":        min_dte,        # No same-week lotto tickets
-        "dteMax":        max_dte,        # No multi-year LEAPs
-        "otmPercentMax": max_otm,        # No deep OTM lotto tickets
-        # Note: itmPercentMax not supported by Bullflow API — ITM filter applied in prefilter.py
-        "quickFilters":  ["Stocks"],     # Stocks only — excludes SPX/SPXW/RUT/NDX
+        "dteMin":        min_dte,
+        "dteMax":        max_dte,
+        "otmPercentMax": max_otm,
+        # Sweeps OR Splits only — highest conviction order types
+        # Singles and Blocks removed (low conviction / high noise)
+        # Bid removed (ask-side only = aggressive buyers)
+        # Neutral removed (no directional signal)
+        # Mild removed (low conviction)
+        "quickFilters":  ["Stocks", "Sweeps", "Splits", "Bullish", "Bearish"],  # excludes SPX/SPXW/RUT/NDX
     }
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
@@ -337,10 +392,33 @@ def setup_flowcheck_filters():
         _ck = os.environ.get("BULLFLOW_API_KEY","")
         _er = _rqc.get("https://api.bullflow.io/v1/alerts/custom-alerts",
                         params={"key": _ck}, timeout=8)
-        _existing = [a.get("alertName","") for a in _er.json().get("alerts",[])] if _er.status_code == 200 else []
-        if alert_name in _existing:
-            print(f"[BULLFLOW] Custom alert '{alert_name}' already exists — skipping creation")
+        _alerts_raw = _er.json().get("alerts",[]) if _er.status_code == 200 else []
+        _existing_alert = next((a for a in _alerts_raw if a.get("alertName") == alert_name), None)
+        _existing = [a.get("alertName","") for a in _alerts_raw]
+
+        # Check if existing alert has correct quickFilters (Sweeps+Splits, no Singles/Blocks/Bid)
+        _needs_update = False
+        if _existing_alert:
+            _qf = _existing_alert.get("quickFilters", _existing_alert.get("filters", []))
+            _has_sweeps = any("sweep" in str(f).lower() for f in _qf)
+            _has_singles = any("single" in str(f).lower() for f in _qf)
+            _has_bid = any("bid" in str(f).lower() for f in _qf)
+            if _has_singles or _has_bid or not _has_sweeps:
+                _needs_update = True
+                print(f"[BULLFLOW] Alert filters outdated (singles={_has_singles} bid={_has_bid}) — recreating")
+
+        if alert_name in _existing and not _needs_update:
+            print(f"[BULLFLOW] Custom alert '{alert_name}' exists with correct filters — skipping")
         else:
+            if _needs_update and _existing_alert:
+                # Delete old alert first
+                try:
+                    _del_id = _existing_alert.get("id","") or _existing_alert.get("alertId","")
+                    if _del_id:
+                        _rqc.delete(f"https://api.bullflow.io/v1/alerts/{_del_id}",
+                                    params={"key": _ck}, timeout=8)
+                        print(f"[BULLFLOW] Deleted outdated alert {_del_id}")
+                except: pass
             result = create_custom_alert(alert_name, filters)
             if result:
                 print(f"[BULLFLOW] Created custom alert: {result}")
