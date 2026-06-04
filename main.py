@@ -870,6 +870,25 @@ def build_sms(trade: dict, data: dict, result: dict,
     # SECTION 4: THESIS
     # ══════════════════════════════════════════
     lines.append("")
+    # Compute conviction score
+    try:
+        from conviction import score_conviction, format_conviction, update_xsource
+        _fh = []
+        try:
+            from storage import db_get as _dbg_cv
+            import json as _json_cv
+            _fh_raw = _dbg_cv("flow_history") or "[]"
+            _fh = _json_cv.loads(_fh_raw) if _fh_raw else []
+        except: pass
+        _conv = score_conviction(data, trade, result, _fh)
+        data["conviction"] = _conv
+        # Track cross-source
+        _src_cv = str(data.get("source","") or "").lower()
+        if _src_cv in ("flowgod","bullflow"):
+            update_xsource(trade.get("ticker",""), _src_cv)
+    except Exception as _ce:
+        _conv = None
+
     lines.append("━━━ THESIS ━━━")
 
     if one_liner:
@@ -1065,6 +1084,14 @@ def build_sms(trade: dict, data: dict, result: dict,
     # SECTION 4: ENTRY
     # ══════════════════════════════════════════
     lines.append("")
+    # Add conviction block if available
+    if _conv and _conv["total"] > 0:
+        try:
+            from conviction import format_conviction
+            lines.append("")
+            lines.append(format_conviction(_conv))
+        except: pass
+
     lines.append("━━━ ENTRY ━━━")
 
     if op_float and op_float > 0:

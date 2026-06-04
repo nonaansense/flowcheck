@@ -824,6 +824,11 @@ def run_technical_scan(send_sms_fn):
                 _cid  = _os_tech.environ.get("TELEGRAM_CHAT_ID","")
                 if _bot and _cid:
                     send_telegram(msg, _bot, _cid)
+                # Store technical confirmation timestamp for conviction scoring
+                try:
+                    from conviction import store_tech_confirmation
+                    store_tech_confirmation(ticker)
+                except: pass
 
                 # Push to priority channel only when:
                 # TRADE + STRONG signal + GEX aligned + 24h cooldown
