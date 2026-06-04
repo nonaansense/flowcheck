@@ -597,6 +597,14 @@ def build_sms(trade: dict, data: dict, result: dict,
     # ── Short interest ───────────────────────────────────────────────
     si_pct   = data.get("short_interest_pct") or data.get("short_ratio")
     dtc      = data.get("days_to_cover")
+
+    # GEX context from Bullflow
+    gex_regime    = data.get("gex_regime","")        # "positive" or "negative"
+    gex_flip      = data.get("gex_flip")             # gamma flip strike
+    gex_call_wall = data.get("gex_call_wall")        # call wall (resistance)
+    gex_put_wall  = data.get("gex_put_wall")         # put wall (support)
+    gex_at_strike = data.get("gex_at_strike")        # net GEX at flow's strike
+    gex_net_total = data.get("gex_net_total")        # total net GEX
     si_date  = data.get("short_interest_date","")
     si_staleness = ""
     if si_date:
@@ -789,6 +797,24 @@ def build_sms(trade: dict, data: dict, result: dict,
     earn_emoji = data.get("expiry_timing_emoji","")
     if earn:
         lines.append(f"{earn_emoji} {earn}")
+    # GEX context block
+    if gex_regime and gex_flip:
+        _spot       = data.get("stock_price", 0) or 0
+        _above_flip = _spot > gex_flip if (_spot and gex_flip) else None
+        if gex_regime == "negative":
+            _gex_label = "⚡ GEX: NEGATIVE zone"
+            _gex_note  = "dealer hedging AMPLIFIES moves — favorable for directional flow"
+        else:
+            _gex_label = "🧲 GEX: POSITIVE zone"
+            _gex_note  = "dealer hedging DAMPENS moves — may slow momentum"
+        _flip_note = f" (stock {'above' if _above_flip else 'below'} gamma flip ${gex_flip:.0f})" if _above_flip is not None else f" (flip ${gex_flip:.0f})"
+        lines.append(f"{_gex_label}{_flip_note}")
+        lines.append(f"   → {_gex_note}")
+        if gex_call_wall and is_call:
+            lines.append(f"   Call wall: ${gex_call_wall:.0f} — heavy resistance above")
+        if gex_put_wall and not is_call:
+            lines.append(f"   Put wall: ${gex_put_wall:.0f} — heavy support below")
+
     if earn_date:
         _earn_tag = (" " + earn_timing) if earn_timing else ""
         try:
@@ -980,6 +1006,10 @@ def build_sms(trade: dict, data: dict, result: dict,
     _btr_flags   = [f for f in _h_flags if 'BUY THE RUMOR' in f or 'Extended run' in f]
     _other_flags = [f for f in _h_flags if f not in _btr_flags]
     _ordered     = _btr_flags + _other_flags
+    # GEX regime flag in RISK
+    if gex_regime == "positive" and _is_call:
+        _h_flags.append("🧲 Positive GEX — dealer hedging may dampen call momentum")
+
     risk_lines.extend(_ordered[:3])  # Max 3 flags total
 
 
@@ -995,6 +1025,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     effective_tweet_url = tweet_url or trade.get("tweet_url","")
     if effective_tweet_url:
         lines.append(f"🐦 {effective_tweet_url}")
+    lines.append(f"📈 https://www.tradingview.com/chart/?symbol={ticker}")
     lines.append(f"🔗 {base_url.rstrip('/')}/analysis/{analysis_id}")
 
     # WATCH/SKIP get a compact format — full details at analysis URL
@@ -1175,6 +1206,29 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                     "premium_label":None,"premium_emoji":None,"premium_raw":0,
                     "is_breakout_bet":False,"breakout_emoji":"","breakout_label":"",
                     "flow_fill_price":None,"spread_pct":None,"bid":None,"ask":None}
+
+        # Fetch GEX from Bullflow — only for TRADE-rated alerts, respects 5s rate limit
+        _gex_data = {}
+        try:
+            from fetcher import fetch_gex as _fgex
+            import time as _tgex
+            _tgex.sleep(5)  # Respect 1 req/5s rate limit
+            _gex_data = _fgex(ticker)
+            if _gex_data:
+                data["gex_regime"]    = _gex_data.get("regime","")
+                data["gex_flip"]      = _gex_data.get("gamma_flip")
+                data["gex_call_wall"] = _gex_data.get("call_wall")
+                data["gex_put_wall"]  = _gex_data.get("put_wall")
+                data["gex_net_total"] = _gex_data.get("net_gex_total")
+                # Find GEX at flow strike
+                _flow_strike = float(trade.get("strike",0) or 0)
+                if _flow_strike and _gex_data.get("strikes"):
+                    _nearest = min(_gex_data["strikes"],
+                                   key=lambda s: abs(float(s["strike"]) - _flow_strike))
+                    data["gex_at_strike"] = float(_nearest.get("net_gex",0) or 0)
+                    data["gex_strike_used"] = float(_nearest["strike"])
+        except Exception as _ge:
+            print(f"[GEX] Fetch error: {_ge}")
 
         # Fetch hedging indicators (P/C ratio + borrow difficulty)
         try:

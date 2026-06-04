@@ -1620,3 +1620,82 @@ def check_price_action_after_flow(ticker: str, flow_price: float, delay_secs: in
     except Exception as e:
         print(f"[FLOW-CHECK] Price check error {ticker}: {e}")
         return {}
+
+
+def fetch_gex(ticker: str) -> dict:
+    """
+    Fetch net GEX by strike from Bullflow API.
+    Returns {
+        "net_gex_total": float,      # sum of all net_gex — positive = dampening, negative = amplifying
+        "regime": "positive"|"negative",
+        "gamma_flip": float|None,    # strike where cumulative GEX crosses zero
+        "call_wall": float|None,     # strike with highest call_gex (resistance)
+        "put_wall": float|None,      # strike with highest put_gex abs (support)
+        "gex_at_strike": float|None, # net_gex at or nearest to the flow's strike
+        "spot_price": float,
+        "as_of": str,
+    } or {} on failure.
+    Rate limited: 1 req / 5s.
+    """
+    key = os.environ.get("BULLFLOW_API_KEY","")
+    if not key or not ticker:
+        return {}
+    try:
+        r = requests.get(
+            "https://api.bullflow.io/v1/data/netgex",
+            params={"key": key, "ticker": ticker.upper()},
+            timeout=15
+        )
+        if r.status_code != 200:
+            print(f"[GEX] {ticker} HTTP {r.status_code}")
+            return {}
+
+        data     = r.json()
+        strikes  = data.get("strikes", [])
+        spot     = float(data.get("spot_price", 0) or 0)
+        if not strikes or not spot:
+            return {}
+
+        # Sum net GEX across all strikes
+        net_total = sum(float(s.get("net_gex", 0) or 0) for s in strikes)
+
+        # Call wall = strike with highest call_gex (resistance above spot)
+        call_strikes = [s for s in strikes if float(s.get("call_gex",0) or 0) > 0 and float(s["strike"]) >= spot]
+        call_wall    = max(call_strikes, key=lambda s: float(s.get("call_gex",0)), default=None)
+
+        # Put wall = strike with most negative put_gex (support below spot)
+        put_strikes  = [s for s in strikes if float(s.get("put_gex",0) or 0) < 0 and float(s["strike"]) <= spot]
+        put_wall     = min(put_strikes, key=lambda s: float(s.get("put_gex",0)), default=None)
+
+        # Gamma flip = strike where cumulative GEX (sorted by strike) crosses zero
+        sorted_s  = sorted(strikes, key=lambda s: float(s["strike"]))
+        cumulative = 0.0
+        gamma_flip = None
+        prev_cum   = 0.0
+        for s in sorted_s:
+            cumulative += float(s.get("net_gex", 0) or 0)
+            if prev_cum < 0 and cumulative >= 0:
+                gamma_flip = float(s["strike"])
+                break
+            elif prev_cum > 0 and cumulative <= 0:
+                gamma_flip = float(s["strike"])
+                break
+            prev_cum = cumulative
+
+        # GEX at or nearest to the flow strike (passed via ticker for now — will be enriched per-alert)
+        # Returns the full strikes list so caller can look up specific strike
+        result = {
+            "net_gex_total": round(net_total, 2),
+            "regime":        "positive" if net_total >= 0 else "negative",
+            "gamma_flip":    gamma_flip,
+            "call_wall":     float(call_wall["strike"]) if call_wall else None,
+            "put_wall":      float(put_wall["strike"])  if put_wall  else None,
+            "spot_price":    spot,
+            "as_of":         data.get("as_of",""),
+            "strikes":       strikes,  # kept for per-strike lookup
+        }
+        print(f"[GEX] {ticker}: regime={result['regime']} flip={gamma_flip} call_wall={result['call_wall']} put_wall={result['put_wall']}")
+        return result
+    except Exception as e:
+        print(f"[GEX] Error {ticker}: {e}")
+        return {}
