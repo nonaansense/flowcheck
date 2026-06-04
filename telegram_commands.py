@@ -1076,10 +1076,10 @@ def handle_gex_command(ticker: str, reply_chat_id: str):
         # Regime emoji and description
         if regime == "negative":
             reg_emoji = "⚡"
-            reg_desc  = "NEGATIVE — moves AMPLIFIED (dealer hedging WITH the move)"
+            reg_desc  = "NEGATIVE — dealers BUY rallies, SELL dips (trending/momentum)"
         else:
             reg_emoji = "🧲"
-            reg_desc  = "POSITIVE — moves DAMPENED (dealer hedging AGAINST the move)"
+            reg_desc  = "POSITIVE — dealers SELL rallies, BUY dips (choppy/fading)"
 
         # Flip distance
         flip_str = ""
@@ -1179,9 +1179,14 @@ def handle_gex_command(ticker: str, reply_chat_id: str):
 
         # Open position context
         lines.append("")
-        lines.append("💡 For open calls: check if your strike is")
-        lines.append("   above multiple positive GEX walls — if yes,")
-        lines.append("   momentum may stall before reaching it.")
+        # Practical takeaway based on regime
+        if regime == "positive":
+            lines.append("💡 Calls: check walls between entry and strike")
+            lines.append("   Each wall = dealer resistance. More walls = harder path.")
+            lines.append("   Best entry: wait for stock to close above a wall, not below it")
+        else:
+            lines.append("💡 Calls: momentum favored — enter on pullbacks to support")
+            lines.append("   Moves amplified in both directions — use defined risk")
 
         send_reply(chr(10).join(lines), reply_chat_id)
 
