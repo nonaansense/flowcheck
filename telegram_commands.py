@@ -1044,7 +1044,7 @@ def handle_gex_command(ticker: str, reply_chat_id: str):
 
         # Find top 3 positive and negative GEX levels near spot (within 15%)
         near = [s for s in strikes
-                if abs(float(s["strike"]) - spot) / spot <= 0.15]
+                if abs(float(s["strike"]) - spot) / spot <= 0.05]  # 5% range
         near_sorted = sorted(near, key=lambda s: abs(float(s.get("net_gex",0))), reverse=True)
 
         # Walls above and below spot
@@ -1086,7 +1086,10 @@ def handle_gex_command(ticker: str, reply_chat_id: str):
         if flip:
             flip_dist = round(((flip - spot) / spot) * 100, 1)
             flip_dir  = "above" if flip > spot else "below"
-            flip_str  = f"${flip:.1f} ({abs(flip_dist):.1f}% {flip_dir} spot)"
+            if abs(flip_dist) < 0.3:
+                flip_str = f"${flip:.1f} ⚠️ AT THE FLIP — inflection point"
+            else:
+                flip_str = f"${flip:.1f} ({abs(flip_dist):.1f}% {flip_dir} spot)"
 
         # Fetch live price separately for accuracy
         from datetime import datetime
@@ -1110,6 +1113,15 @@ def handle_gex_command(ticker: str, reply_chat_id: str):
             f"🎯 Gamma flip: {flip_str or 'N/A'}",
             "",
         ]
+
+        # On-flip warning
+        if flip and abs(((flip - spot) / spot) * 100) < 0.3:
+            lines.append("🚨 SITTING ON THE FLIP — one tick changes the regime")
+            lines.append("   Upside: dealers FADE rallies (+443M wall at $755)")
+            lines.append("   Downside: dealers AMPLIFY drops — no support for miles")
+            lines.append("   Asymmetric: rallies get sold, drops accelerate")
+            lines.append("")
+
 
         # Walls above spot
         if walls_above:

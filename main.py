@@ -802,6 +802,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     if gex_regime and gex_net_total is not None:
         _spot_gex  = float(data.get("stock_price",0) or 0)
         _strike_f  = float(trade.get("strike",0) or 0)
+        is_call    = "call" in (trade.get("option_type","call") or "call").lower()
         _gex_strik = gex_at_strike or 0
         _strikes_raw = _gex_data.get("strikes",[]) if isinstance(_gex_data, dict) else []
 
