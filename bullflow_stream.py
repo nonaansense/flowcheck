@@ -306,10 +306,23 @@ def setup_flowcheck_filters():
     _spx_chat = os.environ.get("TELEGRAM_SPX_CHAT_ID","")
     if _spx_chat:
         try:
-            from spx_flow import create_spx_custom_alert
-            _spx_id = create_spx_custom_alert()
-            if _spx_id:
-                print(f"[BULLFLOW] SPX 0DTE alert registered: {_spx_id}")
+            import requests as _rq_spx
+            _bk = os.environ.get("BULLFLOW_API_KEY","")
+            # Check if FlowCheck SPX 0DTE alert already exists
+            _ar = _rq_spx.get("https://api.bullflow.io/v1/alerts/custom-alerts",
+                               params={"key": _bk}, timeout=8)
+            _existing_names = []
+            if _ar.status_code == 200:
+                _existing_names = [a.get("alertName","") for a in _ar.json().get("alerts",[])]
+            if "FlowCheck SPX 0DTE" in _existing_names:
+                print(f"[BULLFLOW] SPX alert already registered — skipping creation")
+            else:
+                from spx_flow import create_spx_custom_alert
+                _spx_id = create_spx_custom_alert()
+                if _spx_id:
+                    print(f"[BULLFLOW] SPX 0DTE alert registered: {_spx_id}")
+                else:
+                    print(f"[BULLFLOW] SPX alert creation failed")
         except Exception as _se:
             print(f"[BULLFLOW] SPX alert setup error: {_se}")
     if exclude_etf:
@@ -346,11 +359,16 @@ def stream_alerts(process_fn, send_sms_fn=None):
         except: pass
     atexit.register(_cleanup_lock)
 
-    retry_delay   = 5
+    retry_delay   = 30  # Start high — avoid rapid reconnects on deploy
     _seen_symbols = set()
     _seen_tickers = set()
     while True:
         try:
+            _now_conn = time.time()
+            if _STREAM_LAST_CONNECTED > 0 and (_now_conn - _STREAM_LAST_CONNECTED) < 30:
+                _wait_gap = int(30 - (_now_conn - _STREAM_LAST_CONNECTED))
+                print(f"[BULLFLOW] Waiting {_wait_gap}s — min reconnect gap")
+                time.sleep(_wait_gap)
             print(f"[BULLFLOW] Connecting to SSE stream...")
             time.sleep(1)  # Small delay to prevent duplicate connection race
             with requests.get(
@@ -361,6 +379,7 @@ def stream_alerts(process_fn, send_sms_fn=None):
             ) as resp:
                 resp.raise_for_status()
                 print("[BULLFLOW] Connected to live alert stream")
+                _STREAM_LAST_CONNECTED = time.time()
                 retry_delay = 5  # Reset on successful connect
 
                 for line in resp.iter_lines(decode_unicode=True):
@@ -376,6 +395,7 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             print(f"[BULLFLOW] Stream initialized at {msg.get('startedAt','?')}")
 
                         elif event == "heartbeat":
+                            retry_delay = 30  # Reset backoff after sustained connection
                             pass  # Expected every 10s
 
                         elif event == "alert":
