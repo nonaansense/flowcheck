@@ -20,9 +20,9 @@ def create_spx_custom_alert():
         payload = {
             "name":            "FlowCheck SPX 0DTE",
             "tickerAllowlist": ["SPY", "SPX", "SPXW"],
-            "premiumMin":      5_000_000,   # $5M+ only
+            "premiumMin":      500_000,   # $500K+ for SPX flow
             "dteMin":          0,
-            "dteMax":          1,            # 0DTE and 1DTE
+            "dteMax":          3,            # 0-3 DTE for weekly SPX plays
             "includeCalls":    True,
             "includePuts":     True,
             "includeAskSide":  True,

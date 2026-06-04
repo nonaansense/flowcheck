@@ -314,9 +314,11 @@ def setup_flowcheck_filters():
             _existing_names = []
             if _ar.status_code == 200:
                 _existing_names = [a.get("alertName","") for a in _ar.json().get("alerts",[])]
-            if "FlowCheck SPX 0DTE" in _existing_names:
+            _spx_exists = next((a for a in _ar.json().get("alerts",[]) if a.get("alertName") == "FlowCheck SPX 0DTE"), None) if _ar.status_code == 200 else None
+            if _spx_exists and _spx_exists.get("minPremium",0) <= 500_000:
                 print(f"[BULLFLOW] SPX alert already registered — skipping creation")
             else:
+                # Create or recreate with updated parameters
                 from spx_flow import create_spx_custom_alert
                 _spx_id = create_spx_custom_alert()
                 if _spx_id:
@@ -422,9 +424,10 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             premium    = float(alert_data.get("alertPremium",0) or 0)
 
                             # Route SPX/SPY to dedicated channel (algo + custom alerts)
-                            _is_spx_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","O:SPX"])
+                            _is_spx_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","O:SPX","SPXL","SPXS"])
                             _is_spx_alert  = (alert_name == "FlowCheck SPX 0DTE")
-                            _spx_min_prem  = 5_000_000
+                            # $1M min for algo alerts on SPX, $5M min for custom alert
+                            _spx_min_prem  = 500_000
                             if (_is_spx_alert or _is_spx_ticker) and premium >= _spx_min_prem:
                                 try:
                                     from spx_flow import send_spx_alert as _ssa

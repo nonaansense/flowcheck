@@ -1284,15 +1284,15 @@ def handle_test_command(reply_chat_id: str):
     except Exception as e:
         lines.append(fail + " Bullflow — " + str(e)[:40])
 
-    # 7. Massive API — short interest endpoint
+    # 7. Massive API — uses api.polygon.io with Massive API key
     try:
         key2 = os.environ.get("MASSIVE_API_KEY","") or os.environ.get("MASSIVE_API_KEY_2","")
         if key2:
-            r = _req.get("https://api.massive.com/stocks/v1/short-interest/AAPL",
-                         headers={"Authorization": "Bearer " + key2}, timeout=8)
+            r = _req.get("https://api.polygon.io/stocks/v1/short-interest",
+                         params={"apiKey": key2, "ticker": "AAPL", "limit": 1}, timeout=8)
             if r.status_code == 200:
                 lines.append(ok + " Massive API — connected")
-            elif r.status_code == 402:
+            elif r.status_code == 403:
                 lines.append(warn + " Massive API — plan upgrade required")
             elif r.status_code == 429:
                 lines.append(warn + " Massive API — rate limited (key works)")
