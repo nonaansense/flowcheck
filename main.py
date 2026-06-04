@@ -914,6 +914,7 @@ def build_sms(trade: dict, data: dict, result: dict,
         _entry_score = "GOOD"
         _entry_emoji = "✅"
         _entry_notes = []
+        data["_gex_entry_score"] = "GOOD"  # Will be updated below
 
         if gex_regime == "negative":
             _entry_notes.append("Negative GEX — moves amplified, momentum favorable")
@@ -929,6 +930,7 @@ def build_sms(trade: dict, data: dict, result: dict,
                 _entry_notes.append(f"Stock {dist_flip:.1f}% below gamma flip ${gex_flip:.0f} — wait for break above")
                 _entry_score = "WAIT"
                 _entry_emoji = "⏳"
+                data["_gex_entry_score"] = "WAIT"
             elif is_call and _above_flip:
                 _entry_notes.append(f"Stock above gamma flip ${gex_flip:.0f} ✅")
 
@@ -944,9 +946,11 @@ def build_sms(trade: dict, data: dict, result: dict,
             if _total_wall_gex > 50_000_000:
                 _entry_score = "POOR"
                 _entry_emoji = "❌"
+                data["_gex_entry_score"] = "POOR"
             elif _total_wall_gex > 10_000_000 and _entry_score == "GOOD":
                 _entry_score = "CAUTION"
                 _entry_emoji = "⚠️"
+                data["_gex_entry_score"] = "WAIT"
 
         if gex_call_wall and is_call and _strike_f:
             if gex_call_wall < _strike_f:

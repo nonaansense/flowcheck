@@ -848,18 +848,37 @@ def run_technical_scan(send_sms_fn):
                                        and float(s.get("net_gex",0)) < -2_000_000]
                             _cascade_near = len(_danger) > 0
 
-                        # Entry window conditions:
-                        # 1. Not in a cascade zone
-                        # 2. Stock above or within 0.5% of gamma flip (or flip unknown)
-                        # 3. Call wall at least 1% above (room to move)
-                        _above_flip = True
-                        if _flip_tw and _px_tw:
-                            _above_flip = _px_tw >= (_flip_tw * 0.995)
-                        _room_above = True
-                        if _cwall and _px_tw:
-                            _room_above = (_cwall - _px_tw) / _px_tw >= 0.01
+                        # Entry window conditions differ for calls vs puts
+                        _is_call_ew = "put" not in (watch_entry.get("option_type","call") or "call").lower()
 
-                        _gex_good = _above_flip and _room_above and not _cascade_near
+                        if _is_call_ew:
+                            # CALLS: stock above/near gamma flip + room above to strike
+                            _flip_ok  = True
+                            if _flip_tw and _px_tw:
+                                _flip_ok = _px_tw >= (_flip_tw * 0.995)
+                            _room_ok  = True
+                            if _cwall and _px_tw:
+                                _room_ok = (_cwall - _px_tw) / _px_tw >= 0.01
+                            _gex_good = _flip_ok and _room_ok and not _cascade_near
+                        else:
+                            # PUTS: stock below/near gamma flip + negative GEX + room below
+                            _flip_ok  = True
+                            if _flip_tw and _px_tw:
+                                # Want stock at or below flip (within 1%)
+                                _flip_ok = _px_tw <= (_flip_tw * 1.01)
+                            _neg_gex  = (_regime == "negative")  # negative = amplifies drops
+                            _room_ok  = True
+                            if _pwall and _px_tw:  # put wall below = room to fall
+                                _room_ok = (_px_tw - _pwall) / _px_tw >= 0.01
+                            # No cascade zones ABOVE (they'd stop the put rally on reversal)
+                            _cascade_above = False
+                            if _strikes and _px_tw:
+                                _danger_up = [s for s in _strikes
+                                              if float(s["strike"]) > _px_tw
+                                              and float(s["strike"]) < _px_tw * 1.01
+                                              and float(s.get("net_gex",0)) < -2_000_000]
+                                _cascade_above = len(_danger_up) > 0
+                            _gex_good = _flip_ok and _room_ok and not _cascade_above
 
                         # Cooldown: only fire entry window once per 24h per ticker
                         _last_ew = watch_entry.get("entry_window_alerted", 0)
@@ -874,9 +893,16 @@ def run_technical_scan(send_sms_fn):
                             _expiry   = watch_entry.get("expiry","?")
                             _score    = watch_entry.get("flow_score","?")
                             _flip_str = f"gamma flip ${_flip_tw:.0f}" if _flip_tw else "no flip data"
-                            _wall_str = f"Call wall ${_cwall:.0f} (+{round((_cwall-_px_tw)/_px_tw*100,1):.1f}%)" if _cwall else ""
-                            _supp_str = f"Stop: ${_pwall:.0f} (put wall)" if _pwall else ""
-                            _regime_str = "⚡ Neg GEX — moves amplify" if _regime == "negative" else "🧲 Pos GEX — chop risk"
+                            if _is_call_ew:
+                                _wall_str = f"Call wall ${_cwall:.0f} (+{round((_cwall-_px_tw)/_px_tw*100,1):.1f}%) — target/resistance" if _cwall else ""
+                                _supp_str = f"Stop: ${_pwall:.0f} (put wall)" if _pwall else ""
+                            else:
+                                _wall_str = f"Put wall ${_pwall:.0f} (-{round((_px_tw-_pwall)/_px_tw*100,1):.1f}%) — target/support" if _pwall else ""
+                                _supp_str = f"Stop: ${_cwall:.0f} (call wall — if stock reverses above)" if _cwall else ""
+                            if _is_call_ew:
+                                _regime_str = "⚡ Neg GEX — moves amplify" if _regime == "negative" else "🧲 Pos GEX — chop risk"
+                            else:
+                                _regime_str = "⚡ Neg GEX — drops accelerate" if _regime == "negative" else "🧲 Pos GEX — dealers buy dips (puts may stall)"
                             _cascade_str = "✅ No cascade zones nearby" if not _cascade_near else ""
 
                             # Days since original flow alert
