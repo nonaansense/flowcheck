@@ -523,20 +523,23 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                     f"{trade['option_type'].title()} "
                                     f"{trade['strike']} [{alert_name}] via Bullflow")
 
-                            # Feed into FlowCheck pipeline from background thread
-                            import asyncio
-                            try:
-                                loop = asyncio.new_event_loop()
-                                loop.run_until_complete(process_fn(tweet, None, trade))
-                                loop.close()
-                            except RuntimeError as pe:
-                                msg = str(pe)
-                                if "interpreter shutdown" in msg or "cannot schedule" in msg:
-                                    print(f"[BULLFLOW] Shutdown in progress — skipping alert")
-                                    break  # Exit stream loop cleanly
-                                print(f"[BULLFLOW] process_alert RuntimeError: {pe}")
-                            except Exception as pe:
-                                print(f"[BULLFLOW] process_alert error: {pe}")
+                            # Process in a separate thread so SSE loop is never blocked
+                            # Blocking here causes Bullflow to close the connection mid-stream
+                            def _run_process():
+                                import asyncio as _aio
+                                try:
+                                    _loop = _aio.new_event_loop()
+                                    _loop.run_until_complete(process_fn(tweet, None, trade))
+                                    _loop.close()
+                                except RuntimeError as _pe:
+                                    _msg = str(_pe)
+                                    if "interpreter shutdown" in _msg or "cannot schedule" in _msg:
+                                        return
+                                    print(f"[BULLFLOW] process_alert RuntimeError: {_pe}")
+                                except Exception as _pe:
+                                    print(f"[BULLFLOW] process_alert error: {_pe}")
+                            import threading as _thr_bf
+                            _thr_bf.Thread(target=_run_process, daemon=True).start()
 
                     except json.JSONDecodeError:
                         pass
