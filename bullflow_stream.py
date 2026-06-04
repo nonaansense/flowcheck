@@ -349,6 +349,7 @@ def setup_flowcheck_filters():
         result = create_custom_alert(alert_name, filters)
         print(f"[BULLFLOW] Alert check failed, attempted create: {result}")
 
+
 def stream_alerts(process_fn, send_sms_fn=None):
     """
     Connect to Bullflow SSE stream and process alerts.
@@ -372,14 +373,15 @@ def stream_alerts(process_fn, send_sms_fn=None):
         except: pass
     atexit.register(_cleanup_lock)
 
+    _conn_state = {"last_connected": 0.0}  # Avoids global scoping issues
     retry_delay   = 30  # Start high — avoid rapid reconnects on deploy
     _seen_symbols = set()
     _seen_tickers = set()
     while True:
         try:
             _now_conn = time.time()
-            if _STREAM_LAST_CONNECTED > 0 and (_now_conn - _STREAM_LAST_CONNECTED) < 30:
-                _wait_gap = int(30 - (_now_conn - _STREAM_LAST_CONNECTED))
+            if _conn_state["last_connected"] > 0 and (_now_conn - _conn_state["last_connected"]) < 30:
+                _wait_gap = int(30 - (_now_conn - _conn_state["last_connected"]))
                 print(f"[BULLFLOW] Waiting {_wait_gap}s — min reconnect gap")
                 time.sleep(_wait_gap)
             print(f"[BULLFLOW] Connecting to SSE stream...")
@@ -392,7 +394,7 @@ def stream_alerts(process_fn, send_sms_fn=None):
             ) as resp:
                 resp.raise_for_status()
                 print("[BULLFLOW] Connected to live alert stream")
-                _STREAM_LAST_CONNECTED = time.time()
+                _conn_state["last_connected"] = time.time()
                 retry_delay = 5  # Reset on successful connect
 
                 for line in resp.iter_lines(decode_unicode=True):
@@ -523,6 +525,12 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                 loop = asyncio.new_event_loop()
                                 loop.run_until_complete(process_fn(tweet, None, trade))
                                 loop.close()
+                            except RuntimeError as pe:
+                                msg = str(pe)
+                                if "interpreter shutdown" in msg or "cannot schedule" in msg:
+                                    print(f"[BULLFLOW] Shutdown in progress — skipping alert")
+                                    break  # Exit stream loop cleanly
+                                print(f"[BULLFLOW] process_alert RuntimeError: {pe}")
                             except Exception as pe:
                                 print(f"[BULLFLOW] process_alert error: {pe}")
 

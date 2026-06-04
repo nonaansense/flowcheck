@@ -1323,6 +1323,11 @@ def handle_test_command(reply_chat_id: str):
 
     # 10. Webhook (IFTTT)
     last_wh = os.environ.get("LAST_WEBHOOK_TS","")
+    if not last_wh:
+        try:
+            from storage import db_get as _dbg
+            last_wh = _dbg("last_webhook_ts") or ""
+        except: pass
     if last_wh:
         import time as _t
         age_min = int((_t.time() - float(last_wh)) / 60)
@@ -1354,7 +1359,11 @@ def handle_test_command(reply_chat_id: str):
             lines.append(("✅ SPX Bullflow Alert — registered" if _has_spx
                           else "⚠️ SPX Bullflow Alert — not yet registered (will create on next deploy)"))
         except Exception as _spx_e:
-            lines.append("⚠️ SPX Channel — " + str(_spx_e)[:40])
+            _spx_err = str(_spx_e)
+            if "ConnectionPool" in _spx_err or "ConnectTimeout" in _spx_err or "Connection" in _spx_err:
+                lines.append("⚠️ SPX Channel — configured (Bullflow API unreachable)")
+            else:
+                lines.append("⚠️ SPX Channel — " + _spx_err[:60])
     else:
         lines.append("⚠️ SPX Channel — TELEGRAM_SPX_CHAT_ID not set")
 

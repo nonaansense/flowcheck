@@ -773,6 +773,7 @@ def run_technical_scan(send_sms_fn):
                     _str_order.get(s.get("strength",""), 0),
                     _tf_order.index(s["timeframe"]) if s["timeframe"] in _tf_order else 0
                 ))
+                is_put   = "put" in (watch_entry.get("option_type","call") or "call").lower()
                 tfs      = " + ".join(s["timeframe"] for s in new_signals)
                 strength = best["strength"]
                 # Ensure chasing warning has space

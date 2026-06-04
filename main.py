@@ -2548,6 +2548,11 @@ async def webhook(request: Request):
     global last_webhook_ts
     last_webhook_ts = time.time()
     os.environ["LAST_WEBHOOK_TS"] = str(last_webhook_ts)
+    # Persist to Supabase so it survives redeploys
+    try:
+        from storage import db_set
+        db_set("last_webhook_ts", str(last_webhook_ts))
+    except: pass
 
     # Reject webhooks on market holidays
     if not is_market_open():
