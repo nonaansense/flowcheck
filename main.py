@@ -1344,7 +1344,21 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         _strike = str(trade.get("strike","") or "")
         _expiry = str(trade.get("expiry_raw","") or trade.get("expiry","") or "")
         if not _strike or _strike in ("None","?","") or not _expiry or _expiry in ("None","?",""):
-            print(f"[WEBHOOK] Incomplete trade data (strike={_strike} expiry={_expiry}) — skipping")
+            print(f"[WEBHOOK] Incomplete trade data (strike={_strike} expiry={_expiry}) — forwarding as FYI")
+            _ac = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+            _bt = os.environ.get("TELEGRAM_BOT_TOKEN","")
+            if _ac and _bt and source == "flowgod":
+                try:
+                    import re as _re_fyi2
+                    from sms import send_telegram as _stg2
+                    _tkr2 = _re_fyi2.search(r'[$]([A-Z]{1,5})', str(tweet).upper())
+                    _tkr2 = ("  " + _tkr2.group(1)) if _tkr2 else ""
+                    _fyi2 = "📢 FlowGod" + _tkr2 + chr(10) + str(tweet).strip()
+                    if tweet_url: _fyi2 += chr(10) + "🐦 " + str(tweet_url)
+                    _stg2(_fyi2, _bt, _ac)
+                    print(f"[WEBHOOK] Info tweet forwarded to FYI: {str(tweet)[:60]}")
+                except Exception as _fyi_e:
+                    print(f"[WEBHOOK] FYI forward error: {_fyi_e}")
             return
 
         # Tag source if passed explicitly
@@ -2507,7 +2521,8 @@ async def webhook(request: Request):
     if any(phrase in _tweet_lower for phrase in _COMMENTARY):
         # Also check it doesn't have option-like content
         import re as _re_wh
-        has_option = bool(_re_wh.search(r'\$?\d+[CP]|\d+\.\d+[CP]|call|put|strike|exp', _tweet_lower))
+        # Only block if it looks like actual options data (strike price + C/P, not just the word "call")
+        has_option = bool(_re_wh.search(r'\$?\d+\.?\d*[CP]\b|strike|expir', _tweet_lower))
         if not has_option:
             # Forward to all-alerts channel as FYI
             _all_chat = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
@@ -2789,6 +2804,8 @@ async def analysis_detail(analysis_id: int):
     stock_px    = data.get("stock_price")
     earn_label  = data.get("expiry_timing_label","")
     earn_emoji  = data.get("expiry_timing_emoji","")
+    earn_date   = data.get("earnings_date","") or data.get("next_earnings","")
+    earn_timing = data.get("earnings_timing","")
     si_pct      = data.get("short_interest_pct") or data.get("short_ratio")
     dtc         = data.get("days_to_cover")
     is_sweep    = data.get("is_sweep")

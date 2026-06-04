@@ -1284,24 +1284,22 @@ def handle_test_command(reply_chat_id: str):
     except Exception as e:
         lines.append(fail + " Bullflow — " + str(e)[:40])
 
-    # 7. Massive API — test via short interest endpoint (known to work)
+    # 7. Massive API — short interest endpoint
     try:
-        key2 = os.environ.get("MASSIVE_API_KEY","")
+        key2 = os.environ.get("MASSIVE_API_KEY","") or os.environ.get("MASSIVE_API_KEY_2","")
         if key2:
-            r = _req.get("https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/AAPL",
-                         params={"apiKey": key2}, timeout=8)
+            r = _req.get("https://api.massive.com/stocks/v1/short-interest/AAPL",
+                         headers={"Authorization": "Bearer " + key2}, timeout=8)
             if r.status_code == 200:
                 lines.append(ok + " Massive API — connected")
-            elif r.status_code == 403:
-                # Try short interest endpoint instead
-                r2 = _req.get("https://api.massive.com/stocks/v1/short-interest/AAPL",
-                              headers={"Authorization": "Bearer " + key2}, timeout=8)
-                lines.append((ok if r2.status_code == 200 else warn) +
-                             " Massive API — " + ("connected" if r2.status_code == 200 else "HTTP " + str(r2.status_code)))
+            elif r.status_code == 402:
+                lines.append(warn + " Massive API — plan upgrade required")
+            elif r.status_code == 429:
+                lines.append(warn + " Massive API — rate limited (key works)")
             else:
-                lines.append(warn + " Massive API — HTTP " + str(r.status_code) + " (plan limitation)")
+                lines.append(warn + " Massive API — HTTP " + str(r.status_code))
         else:
-            lines.append(warn + " Massive API — no key")
+            lines.append(warn + " Massive API — no key set")
     except Exception as e:
         lines.append(fail + " Massive API — " + str(e)[:40])
 
@@ -1340,6 +1338,25 @@ def handle_test_command(reply_chat_id: str):
             lines.append(ok + " IFTTT/Webhook — connected (market closed, no tweets expected)")
         else:
             lines.append(warn + " IFTTT/Webhook — no tweets received yet today")
+
+    # SPX channel + Bullflow alert check
+    _spx_chat = os.environ.get("TELEGRAM_SPX_CHAT_ID","")
+    if _spx_chat:
+        lines.append("")
+        try:
+            import requests as _rq2
+            _bk2 = os.environ.get("BULLFLOW_API_KEY","")
+            _ar2 = _rq2.get("https://api.bullflow.io/v1/alerts/custom-alerts",
+                            params={"key": _bk2}, timeout=8)
+            _names = [a.get("alertName","") for a in _ar2.json().get("alerts",[])] if _ar2.status_code == 200 else []
+            _has_spx = "FlowCheck SPX 0DTE" in _names
+            lines.append("✅ SPX Channel — configured")
+            lines.append(("✅ SPX Bullflow Alert — registered" if _has_spx
+                          else "⚠️ SPX Bullflow Alert — not yet registered (will create on next deploy)"))
+        except Exception as _spx_e:
+            lines.append("⚠️ SPX Channel — " + str(_spx_e)[:40])
+    else:
+        lines.append("⚠️ SPX Channel — TELEGRAM_SPX_CHAT_ID not set")
 
     send_reply(chr(10).join(lines), reply_chat_id)
 

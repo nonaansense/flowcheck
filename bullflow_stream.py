@@ -328,13 +328,26 @@ def setup_flowcheck_filters():
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
 
-    # Remove name from filters dict if present to avoid duplicate
+    # Check if alert already exists before creating — prevents duplicates on every deploy
     alert_name = filters.pop("name", "FlowCheck High Conviction")
-    result = create_custom_alert(alert_name, filters)
-    if result:
-        print(f"[BULLFLOW] Created custom alert: {result}")
-    else:
-        print("[BULLFLOW] Could not create custom alert — using all algo alerts")
+    try:
+        import requests as _rqc
+        _ck = os.environ.get("BULLFLOW_API_KEY","")
+        _er = _rqc.get("https://api.bullflow.io/v1/alerts/custom-alerts",
+                        params={"key": _ck}, timeout=8)
+        _existing = [a.get("alertName","") for a in _er.json().get("alerts",[])] if _er.status_code == 200 else []
+        if alert_name in _existing:
+            print(f"[BULLFLOW] Custom alert '{alert_name}' already exists — skipping creation")
+        else:
+            result = create_custom_alert(alert_name, filters)
+            if result:
+                print(f"[BULLFLOW] Created custom alert: {result}")
+            else:
+                print("[BULLFLOW] Could not create custom alert — using all algo alerts")
+    except Exception as _ce:
+        # Fallback: try to create anyway
+        result = create_custom_alert(alert_name, filters)
+        print(f"[BULLFLOW] Alert check failed, attempted create: {result}")
 
 def stream_alerts(process_fn, send_sms_fn=None):
     """
@@ -404,13 +417,17 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             alert_type = alert_data.get("alertType","")
                             alert_name = alert_data.get("alertName","")
 
-                            # Route SPX 0DTE to dedicated channel
-                            if alert_name == "FlowCheck SPX 0DTE":
+                            # Route SPX/SPY to dedicated channel (algo + custom alerts)
+                            _is_spx_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","O:SPX"])
+                            _is_spx_alert  = (alert_name == "FlowCheck SPX 0DTE")
+                            _spx_min_prem  = 5_000_000
+                            if (_is_spx_alert or _is_spx_ticker) and premium >= _spx_min_prem:
                                 try:
                                     from spx_flow import send_spx_alert as _ssa
                                     from fetcher import fetch_gex as _fgs
                                     import time as _ts2; _ts2.sleep(5)
                                     _ssa(alert_data, _fgs("SPY"))
+                                    print(f"[SPX] Routed {symbol} ${premium:,.0f}")
                                 except Exception as _e_spx:
                                     print(f"[SPX] {_e_spx}")
                                 continue
@@ -432,6 +449,14 @@ def stream_alerts(process_fn, send_sms_fn=None):
 
                             # Deduplicate — same TICKER within 2 hours = skip
                             # Prevents SNOW 180C, SNOW 185C, SNOW 190C all firing
+                            # Dedup on Bullflow alert ID first (catches double-sends)
+                            alert_id_key = msg.get("id","")
+                            if alert_id_key and alert_id_key in _seen_symbols:
+                                print(f"[BULLFLOW] Alert ID dedup skip: {alert_id_key[:8]}... (duplicate)")
+                                continue
+                            if alert_id_key:
+                                _seen_symbols.add(alert_id_key)
+
                             ticker_dedup_key = f"{trade['ticker']}_{int(float(alert_data.get('timestamp',0)) // 7200)}"
                             symbol_dedup_key = f"{symbol}_{int(float(alert_data.get('timestamp',0)) // 60)}"
                             if ticker_dedup_key in _seen_tickers:

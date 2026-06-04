@@ -548,7 +548,8 @@ def is_good_entry_price(current_price: float, flow_stock_price: float,
 
 
 def check_all_timeframes(ticker: str, flow_stock_price: float = None,
-                          flow_option_price: float = None) -> list:
+                          flow_option_price: float = None,
+                          option_type: str = "call") -> list:
     """
     Fetch 1-min candles once, aggregate into all timeframes,
     check patterns on each. Returns list of signals found.
@@ -744,6 +745,7 @@ def run_technical_scan(send_sms_fn):
                 ticker,
                 flow_stock_price=watch_entry.get("flow_stock_price"),
                 flow_option_price=watch_entry.get("flow_option_price"),
+                option_type=(watch_entry.get("option_type","call") or "call"),
             )
 
             # Filter signals not alerted in last 30 min
