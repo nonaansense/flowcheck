@@ -26,7 +26,7 @@ FLOWCHECK_KEYBOARD = {
     "keyboard": [
         ["📊 /eval",      "📓 /journal",   "🔢 /count"],
         ["📈 /flow ...",  "💹 /price ...", "😐 /sent ..."],
-        ["🔬 /test",      "⚙️ /status",    "❓ /help"],
+        ["⚡ /gex ...",   "🔬 /test",      "❓ /help"],
     ],
     "resize_keyboard":   True,
     "persistent":        True,
@@ -439,7 +439,7 @@ def handle_command(text: str, from_chat_id: str):
     # Handle keyboard button presses — extract command from "emoji /cmd" format
     import re as _re3
     kb_match = _re3.search(r"/([a-z_]+)", text.lower())
-    _KB = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓","🔬")
+    _KB = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓","🔬","⚡")
     if kb_match and any(text.startswith(e) for e in _KB):
         # Buttons with "..." need a ticker — prompt instead of running
         if "..." in text:
@@ -448,6 +448,7 @@ def handle_command(text: str, from_chat_id: str):
                 "flow":  "📈 Flow search — reply with:\n/flow TICKER\n/flow TICKER 05-30",
                 "price": "💹 Price check — reply with:\n/price TICKER",
                 "sent":  "😐 Sentiment — reply with:\n/sent TICKER",
+                "gex":   "⚡ GEX Analysis — reply with:\n/gex TICKER\nShows gamma flip, call/put walls, regime",
             }
             msg = prompts.get(cmd_name, "Reply with /" + cmd_name + " TICKER")
             send_reply(msg, from_chat_id)
@@ -849,6 +850,13 @@ def handle_command(text: str, from_chat_id: str):
     elif cmd in ("kb", "keyboard"):
         send_keyboard(from_chat_id)
 
+    elif cmd in ("gex",):
+        # /gex NVDA — show current GEX conditions for a ticker
+        if not args:
+            send_reply("Usage: /gex TICKER\nExample: /gex NVDA", from_chat_id)
+        else:
+            handle_gex_command(args[0].upper(), from_chat_id)
+
     elif cmd in ("scan", "watchlist-status"):
         # /scan — show current technical watchlist status
         try:
@@ -1008,6 +1016,180 @@ def handle_backtest(tweet_url: str, tweet_time: str, reply_chat_id: str):
 def handle_history(reply_chat_id: str):
     base_url = os.environ.get("BASE_URL","")
     send_reply(f"📊 Today's alerts:\n{base_url}/history", reply_chat_id)
+
+def handle_gex_command(ticker: str, reply_chat_id: str):
+    """
+    /gex NVDA — fetch and display current GEX conditions.
+    Shows: regime, gamma flip, call wall, put wall, nearest walls,
+    and a plain-English summary of what it means for the stock.
+    """
+    send_reply(f"🔍 Fetching GEX for {ticker}...", reply_chat_id)
+    try:
+        from fetcher import fetch_gex, fetch_price
+        import os
+
+        gex  = fetch_gex(ticker)
+        spot = fetch_price(ticker) or gex.get("spot_price", 0)
+
+        if not gex or not gex.get("strikes"):
+            send_reply(f"❌ No GEX data available for {ticker}", reply_chat_id)
+            return
+
+        strikes  = gex["strikes"]
+        regime   = gex.get("regime","")
+        flip     = gex.get("gamma_flip")
+        cwall    = gex.get("call_wall")
+        pwall    = gex.get("put_wall")
+        net_tot  = gex.get("net_gex_total", 0)
+
+        # Find top 3 positive and negative GEX levels near spot (within 15%)
+        near = [s for s in strikes
+                if abs(float(s["strike"]) - spot) / spot <= 0.15]
+        near_sorted = sorted(near, key=lambda s: abs(float(s.get("net_gex",0))), reverse=True)
+
+        # Walls above and below spot
+        walls_above = sorted(
+            [s for s in near if float(s["strike"]) > spot and float(s.get("net_gex",0)) > 0],
+            key=lambda s: float(s["strike"])
+        )[:4]
+        walls_below = sorted(
+            [s for s in near if float(s["strike"]) < spot and float(s.get("net_gex",0)) > 0],
+            key=lambda s: float(s["strike"]), reverse=True
+        )[:4]
+
+        neg_above  = sorted(
+            [s for s in near if float(s["strike"]) > spot and float(s.get("net_gex",0)) < 0],
+            key=lambda s: float(s["strike"])
+        )[:2]
+        neg_below  = sorted(
+            [s for s in near if float(s["strike"]) < spot and float(s.get("net_gex",0)) < 0],
+            key=lambda s: float(s["strike"]), reverse=True
+        )[:2]
+
+        # Format GEX value
+        def fmt_gex(v):
+            v = float(v)
+            if abs(v) >= 1_000_000: return f"{v/1_000_000:+.1f}M"
+            if abs(v) >= 1_000:     return f"{v/1_000:+.1f}K"
+            return f"{v:+.0f}"
+
+        # Regime emoji and description
+        if regime == "negative":
+            reg_emoji = "⚡"
+            reg_desc  = "NEGATIVE — moves AMPLIFIED (dealer hedging WITH the move)"
+        else:
+            reg_emoji = "🧲"
+            reg_desc  = "POSITIVE — moves DAMPENED (dealer hedging AGAINST the move)"
+
+        # Flip distance
+        flip_str = ""
+        if flip:
+            flip_dist = round(((flip - spot) / spot) * 100, 1)
+            flip_dir  = "above" if flip > spot else "below"
+            flip_str  = f"${flip:.1f} ({abs(flip_dist):.1f}% {flip_dir} spot)"
+
+        # Fetch live price separately for accuracy
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now_et    = datetime.now(ZoneInfo("America/New_York"))
+        as_of_str = gex.get("as_of","")
+        gex_age   = ""
+        if as_of_str:
+            try:
+                from datetime import datetime as _dt
+                gex_dt  = _dt.fromisoformat(as_of_str.replace("Z","+00:00"))
+                age_min = int((datetime.now(ZoneInfo("UTC")) - gex_dt.astimezone(ZoneInfo("UTC"))).total_seconds() / 60)
+                gex_age = f" (GEX as of {age_min}min ago)"
+            except: pass
+
+        lines = [
+            f"━━━ GEX: {ticker} ━━━",
+            f"💵 Current price: ${spot:.2f}  {now_et.strftime('%I:%M%p ET')}{gex_age}",
+            "",
+            f"{reg_emoji} Regime: {reg_desc}",
+            f"🎯 Gamma flip: {flip_str or 'N/A'}",
+            "",
+        ]
+
+        # Walls above spot
+        if walls_above:
+            lines.append("▲ ABOVE SPOT (resistance/magnets):")
+            for s in walls_above:
+                st   = float(s["strike"])
+                ngex = float(s.get("net_gex",0))
+                dist = round(((st - spot) / spot) * 100, 1)
+                size = "🔴 MASSIVE" if abs(ngex) > 50_000_000 else "🟠 Large" if abs(ngex) > 10_000_000 else "🟡 Medium" if abs(ngex) > 1_000_000 else "⚪ Small"
+                lines.append(f"  ${st:.1f} {fmt_gex(ngex)} {size} (+{dist}%)")
+
+        # Negative zones above (air pockets)
+        if neg_above:
+            lines.append("⚡ AIR POCKETS above (acceleration zones):")
+            for s in neg_above:
+                st   = float(s["strike"])
+                ngex = float(s.get("net_gex",0))
+                dist = round(((st - spot) / spot) * 100, 1)
+                lines.append(f"  ${st:.1f} {fmt_gex(ngex)} (+{dist}%)")
+
+        lines.append("")
+
+        # Walls below spot
+        if walls_below:
+            lines.append("▼ BELOW SPOT (support/magnets):")
+            for s in walls_below:
+                st   = float(s["strike"])
+                ngex = float(s.get("net_gex",0))
+                dist = round(((spot - st) / spot) * 100, 1)
+                size = "🔴 MASSIVE" if abs(ngex) > 50_000_000 else "🟠 Large" if abs(ngex) > 10_000_000 else "🟡 Medium" if abs(ngex) > 1_000_000 else "⚪ Small"
+                lines.append(f"  ${st:.1f} {fmt_gex(ngex)} {size} (-{dist}%)")
+
+        # Negative zones below (danger zones)
+        if neg_below:
+            lines.append("💀 DANGER ZONES below (cascade zones):")
+            for s in neg_below:
+                st   = float(s["strike"])
+                ngex = float(s.get("net_gex",0))
+                dist = round(((spot - st) / spot) * 100, 1)
+                lines.append(f"  ${st:.1f} {fmt_gex(ngex)} (-{dist}%)")
+
+        lines.append("")
+
+        # Plain-English summary
+        lines.append("─" * 20)
+        if regime == "negative":
+            lines.append("📖 Summary: Stock in NEGATIVE GEX zone.")
+            lines.append("   Dealers hedge WITH moves — both up and down")
+            lines.append("   moves are amplified. Higher volatility expected.")
+            if flip and spot < flip:
+                lines.append(f"   Break above ${flip:.0f} flip = dealer buying cascade ↑")
+            elif flip and spot > flip:
+                lines.append(f"   Break below ${flip:.0f} flip = dealer selling cascade ↓")
+        else:
+            lines.append("📖 Summary: Stock in POSITIVE GEX zone.")
+            lines.append("   Dealers hedge AGAINST moves — chop/pin likely.")
+            lines.append("   Low volatility, mean-reversion favored.")
+            if walls_above:
+                nearest_wall = walls_above[0]
+                w_st  = float(nearest_wall["strike"])
+                w_gex = float(nearest_wall.get("net_gex",0))
+                if abs(w_gex) > 10_000_000:
+                    lines.append(f"   ⚠️ ${w_st:.0f} is a major wall — expect slowdown/reversal there")
+            if walls_below:
+                nearest_supp = walls_below[0]
+                lines.append(f"   ✅ ${float(nearest_supp['strike']):.0f} is strong support below")
+
+        # Open position context
+        lines.append("")
+        lines.append("💡 For open calls: check if your strike is")
+        lines.append("   above multiple positive GEX walls — if yes,")
+        lines.append("   momentum may stall before reaching it.")
+
+        send_reply(chr(10).join(lines), reply_chat_id)
+
+    except Exception as e:
+        import traceback
+        send_reply(f"GEX error: {e}", reply_chat_id)
+        print(f"[GEX CMD] Error: {traceback.format_exc()[-300:]}")
+
 
 def handle_test_command(reply_chat_id: str):
     """Run connectivity checks on all external services."""
@@ -1914,6 +2096,7 @@ def handle_help(reply_chat_id: str):
         '/journal — open trade journal web page',
         '/test — system connectivity check (all APIs)',
         '/scan — technical watchlist status + DTE breakdown',
+        '/gex TICKER — GEX conditions (regime, gamma flip, call/put walls)',
         '/stop — hide keyboard  |  /kb — show keyboard',
         '/flow TICKER — today\'s top flows for a ticker (from stream history)',
         '/test — system connectivity check (all APIs + services)',
@@ -2623,7 +2806,7 @@ def poll_commands():
             continue
 
         # Handle both /commands and keyboard button presses (emoji prefix)
-        KB_EMOJIS = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓","🔬")
+        KB_EMOJIS = ("📊","📓","🔢","📈","💹","😐","⚙","📋","❓","🔬","⚡")
         is_kb_btn = any(text.startswith(e) for e in KB_EMOJIS)
         if text.startswith("/") or is_kb_btn:
             try:

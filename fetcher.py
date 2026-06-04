@@ -1667,20 +1667,36 @@ def fetch_gex(ticker: str) -> dict:
         put_strikes  = [s for s in strikes if float(s.get("put_gex",0) or 0) < 0 and float(s["strike"]) <= spot]
         put_wall     = min(put_strikes, key=lambda s: float(s.get("put_gex",0)), default=None)
 
-        # Gamma flip = strike where cumulative GEX (sorted by strike) crosses zero
-        sorted_s  = sorted(strikes, key=lambda s: float(s["strike"]))
-        cumulative = 0.0
-        gamma_flip = None
-        prev_cum   = 0.0
-        for s in sorted_s:
-            cumulative += float(s.get("net_gex", 0) or 0)
-            if prev_cum < 0 and cumulative >= 0:
-                gamma_flip = float(s["strike"])
-                break
-            elif prev_cum > 0 and cumulative <= 0:
-                gamma_flip = float(s["strike"])
-                break
-            prev_cum = cumulative
+        # Gamma flip = strike closest to spot where net_gex sign changes
+        sorted_s    = sorted(strikes, key=lambda s: float(s["strike"]))
+        gamma_flip  = None
+
+        # Method 1: sign flip of net_gex between adjacent strikes near spot
+        for i in range(len(sorted_s)-1):
+            a = sorted_s[i]
+            b = sorted_s[i+1]
+            a_gex = float(a.get("net_gex",0) or 0)
+            b_gex = float(b.get("net_gex",0) or 0)
+            if a_gex * b_gex < 0:  # sign flip
+                # Pick the crossing closer to spot
+                a_str = float(a["strike"])
+                b_str = float(b["strike"])
+                gamma_flip = b_str if abs(b_str - spot) < abs(a_str - spot) else a_str
+                # Prefer the crossing nearest to spot price
+                if abs((a_str + b_str)/2 - spot) < abs((gamma_flip or 9999) - spot):
+                    gamma_flip = round((a_str + b_str) / 2, 1)
+
+        # Method 2 fallback: cumulative crossing
+        if gamma_flip is None:
+            cumulative = 0.0
+            prev_cum   = 0.0
+            for s in sorted_s:
+                cumulative += float(s.get("net_gex", 0) or 0)
+                if prev_cum < 0 and cumulative >= 0:
+                    gamma_flip = float(s["strike"]); break
+                elif prev_cum > 0 and cumulative <= 0:
+                    gamma_flip = float(s["strike"]); break
+                prev_cum = cumulative
 
         # GEX at or nearest to the flow strike (passed via ticker for now — will be enriched per-alert)
         # Returns the full strikes list so caller can look up specific strike

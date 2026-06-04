@@ -605,6 +605,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     gex_put_wall  = data.get("gex_put_wall")         # put wall (support)
     gex_at_strike = data.get("gex_at_strike")        # net GEX at flow's strike
     gex_net_total = data.get("gex_net_total")        # total net GEX
+    _gex_data     = data.get("_gex_full", {})        # full strikes array for wall analysis
     si_date  = data.get("short_interest_date","")
     si_staleness = ""
     if si_date:
@@ -797,23 +798,130 @@ def build_sms(trade: dict, data: dict, result: dict,
     earn_emoji = data.get("expiry_timing_emoji","")
     if earn:
         lines.append(f"{earn_emoji} {earn}")
-    # GEX context block
-    if gex_regime and gex_flip:
-        _spot       = data.get("stock_price", 0) or 0
-        _above_flip = _spot > gex_flip if (_spot and gex_flip) else None
+    # GEX entry quality analysis
+    if gex_regime and gex_net_total is not None:
+        _spot_gex  = float(data.get("stock_price",0) or 0)
+        _strike_f  = float(trade.get("strike",0) or 0)
+        _gex_strik = gex_at_strike or 0
+        _strikes_raw = _gex_data.get("strikes",[]) if isinstance(_gex_data, dict) else []
+
+        # Count walls between current price and the strike
+        _walls_between = []
+        _danger_zones  = []
+        if _strike_f and _spot_gex and _strikes_raw:
+            _lo = min(_spot_gex, _strike_f)
+            _hi = max(_spot_gex, _strike_f)
+            for _s in _strikes_raw:
+                _sk = float(_s.get("strike",0))
+                _ng = float(_s.get("net_gex",0) or 0)
+                if _lo < _sk < _hi:
+                    if is_call and _ng > 1_000_000:
+                        _walls_between.append((_sk, _ng))
+                    elif not is_call and _ng < -1_000_000:
+                        _danger_zones.append((_sk, _ng))
+
+        # Sort by size
+        _walls_between.sort(key=lambda x: abs(x[1]), reverse=True)
+        _total_wall_gex = sum(abs(w[1]) for w in _walls_between)
+
+        # Entry quality score
+        _entry_score = "GOOD"
+        _entry_emoji = "✅"
+        _entry_notes = []
+
         if gex_regime == "negative":
-            _gex_label = "⚡ GEX: NEGATIVE zone"
-            _gex_note  = "dealer hedging AMPLIFIES moves — favorable for directional flow"
+            _entry_notes.append("Negative GEX — moves amplified, momentum favorable")
         else:
-            _gex_label = "🧲 GEX: POSITIVE zone"
-            _gex_note  = "dealer hedging DAMPENS moves — may slow momentum"
-        _flip_note = f" (stock {'above' if _above_flip else 'below'} gamma flip ${gex_flip:.0f})" if _above_flip is not None else f" (flip ${gex_flip:.0f})"
-        lines.append(f"{_gex_label}{_flip_note}")
-        lines.append(f"   → {_gex_note}")
-        if gex_call_wall and is_call:
-            lines.append(f"   Call wall: ${gex_call_wall:.0f} — heavy resistance above")
-        if gex_put_wall and not is_call:
-            lines.append(f"   Put wall: ${gex_put_wall:.0f} — heavy support below")
+            _entry_score = "CAUTION"
+            _entry_emoji = "⚠️"
+            _entry_notes.append("Positive GEX — dealer headwind, moves dampened")
+
+        if gex_flip and _spot_gex:
+            _above_flip = _spot_gex > gex_flip
+            if is_call and not _above_flip:
+                dist_flip = round(((gex_flip - _spot_gex) / _spot_gex) * 100, 1)
+                _entry_notes.append(f"Stock {dist_flip:.1f}% below gamma flip ${gex_flip:.0f} — wait for break above")
+                _entry_score = "WAIT"
+                _entry_emoji = "⏳"
+            elif is_call and _above_flip:
+                _entry_notes.append(f"Stock above gamma flip ${gex_flip:.0f} ✅")
+
+        if _walls_between and is_call:
+            _wall_count = len(_walls_between)
+            _biggest    = _walls_between[0]
+            def _fmt_m(v): return f"${v/1_000_000:.0f}M" if abs(v)>=1_000_000 else f"${v/1_000:.0f}K"
+            _entry_notes.append(
+                f"{_wall_count} positive GEX wall{'s' if _wall_count>1 else ''} between "
+                f"${_spot_gex:.0f} and ${_strike_f:.0f} "
+                f"(biggest: ${_biggest[0]:.0f} at {_fmt_m(_biggest[1])})"
+            )
+            if _total_wall_gex > 50_000_000:
+                _entry_score = "POOR"
+                _entry_emoji = "❌"
+            elif _total_wall_gex > 10_000_000 and _entry_score == "GOOD":
+                _entry_score = "CAUTION"
+                _entry_emoji = "⚠️"
+
+        if gex_call_wall and is_call and _strike_f:
+            if gex_call_wall < _strike_f:
+                dist = round(((gex_call_wall - _spot_gex) / _spot_gex) * 100, 1)
+                _entry_notes.append(
+                    f"Call wall ${gex_call_wall:.0f} sits between entry and strike — "
+                    f"expect slowdown/reversal at ${gex_call_wall:.0f}"
+                )
+
+        lines.append(f"📐 GEX ENTRY: {_entry_emoji} {_entry_score}")
+        for note in _entry_notes[:4]:
+            lines.append(f"   → {note}")
+        if _entry_score == "WAIT" and gex_flip:
+            lines.append(f"   💡 Better entry: wait for ${gex_flip:.0f} break + 5min candle confirmation")
+        elif _entry_score == "POOR":
+            lines.append(f"   💡 High wall resistance — consider smaller size or wait for pullback to support")
+
+        # Downside map — where stock goes if trade reverses
+        if _strikes_raw and _spot_gex:
+            def _fmt_m2(v):
+                v = float(v)
+                if abs(v) >= 1_000_000: return f"${abs(v)/1_000_000:.0f}M"
+                if abs(v) >= 1_000:     return f"${abs(v)/1_000:.0f}K"
+                return f"${abs(v):.0f}"
+
+            # Support below (positive GEX below spot = dealer buying = support)
+            _supp_below = sorted(
+                [s for s in _strikes_raw
+                 if float(s["strike"]) < _spot_gex
+                 and float(s.get("net_gex",0) or 0) > 1_000_000],
+                key=lambda s: float(s["strike"]), reverse=True
+            )[:3]
+
+            # Danger zones below (negative GEX below spot = dealer selling = cascade)
+            _danger_below = sorted(
+                [s for s in _strikes_raw
+                 if float(s["strike"]) < _spot_gex
+                 and float(s.get("net_gex",0) or 0) < -1_000_000],
+                key=lambda s: float(s["strike"]), reverse=True
+            )[:3]
+
+            if _supp_below or _danger_below:
+                lines.append("   ─────────────────")
+                lines.append("   📉 IF REVERSED:")
+
+            if _supp_below:
+                lines.append("   Support (dealer buying):")
+                for _s in _supp_below:
+                    _sk  = float(_s["strike"])
+                    _ng  = float(_s.get("net_gex",0))
+                    _pct = round((_spot_gex - _sk) / _spot_gex * 100, 1)
+                    _sz  = "🟠 Strong" if _ng > 10_000_000 else "🟡 Moderate"
+                    lines.append(f"     ${_sk:.0f} ({_fmt_m2(_ng)}) {_sz} — {_pct:.1f}% below")
+
+            if _danger_below:
+                lines.append("   Danger zones (cascade if broken):")
+                for _s in _danger_below:
+                    _sk  = float(_s["strike"])
+                    _ng  = float(_s.get("net_gex",0))
+                    _pct = round((_spot_gex - _sk) / _spot_gex * 100, 1)
+                    lines.append(f"     ${_sk:.0f} ({_fmt_m2(_ng)}) 💀 — {_pct:.1f}% below, move accelerates here")
 
     if earn_date:
         _earn_tag = (" " + earn_timing) if earn_timing else ""
@@ -1220,6 +1328,7 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                 data["gex_call_wall"] = _gex_data.get("call_wall")
                 data["gex_put_wall"]  = _gex_data.get("put_wall")
                 data["gex_net_total"] = _gex_data.get("net_gex_total")
+                data["_gex_full"]     = _gex_data
                 # Find GEX at flow strike
                 _flow_strike = float(trade.get("strike",0) or 0)
                 if _flow_strike and _gex_data.get("strikes"):
