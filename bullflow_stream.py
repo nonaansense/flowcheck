@@ -301,6 +301,17 @@ def setup_flowcheck_filters():
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
     print(f"[BULLFLOW] Filter: ${min_premium:,} + Stocks + DTE {min_dte}-{max_dte} + OTM≤{max_otm}% + ITM≤{max_itm}%")
+
+    # Create SPX 0DTE custom alert if SPX channel is configured
+    _spx_chat = os.environ.get("TELEGRAM_SPX_CHAT_ID","")
+    if _spx_chat:
+        try:
+            from spx_flow import create_spx_custom_alert
+            _spx_id = create_spx_custom_alert()
+            if _spx_id:
+                print(f"[BULLFLOW] SPX 0DTE alert registered: {_spx_id}")
+        except Exception as _se:
+            print(f"[BULLFLOW] SPX alert setup error: {_se}")
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist
 
@@ -372,6 +383,20 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             alert_data = msg.get("data",{})
                             alert_type = alert_data.get("alertType","")
                             alert_name = alert_data.get("alertName","")
+
+                            # Route SPX 0DTE to dedicated channel
+                            if alert_name == "FlowCheck SPX 0DTE":
+                                try:
+                                    from spx_flow import send_spx_alert as _ssa
+                                    from fetcher import fetch_gex as _fgs
+                                    import time as _ts2; _ts2.sleep(5)
+                                    _ssa(alert_data, _fgs("SPY"))
+                                except Exception as _e_spx:
+                                    print(f"[SPX] {_e_spx}")
+                                continue
+
+
+
                             symbol     = alert_data.get("symbol","")
                             premium    = alert_data.get("alertPremium",0)
 

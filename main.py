@@ -367,6 +367,14 @@ async def startup():
                           max_instances=1, coalesce=True)
         scheduler.add_job(send_weekly_report,
                           "cron", day_of_week="fri", hour=16, minute=45, id="weekly_report")
+
+        # SPY GEX snapshots for day trading context
+        if os.environ.get("TELEGRAM_SPX_CHAT_ID"):
+            scheduler.add_job(lambda: send_spy_gex_snapshot("10AM"),
+                              "cron", day_of_week="mon-fri", hour=10, minute=0, id="gex_10am")
+            scheduler.add_job(lambda: send_spy_gex_snapshot("1PM"),
+                              "cron", day_of_week="mon-fri", hour=13, minute=0, id="gex_1pm")
+            print("[SCHEDULER] SPY GEX snapshots scheduled: 10AM + 1PM ET")
         scheduler.add_job(lambda: send_theta_calendar(send_sms) if is_market_open() else None,
                           "cron", day_of_week="mon", hour=8, minute=5, id="theta_calendar")
         scheduler.add_job(lambda: check_polygon_health() if is_market_open() else None,
@@ -462,6 +470,83 @@ def calc_exit_target(final_score: int, data: dict) -> dict:
         scale = "Full exit at +" + str(target_pct) + "%"
 
     return {"target": target_pct, "stop": stop_str, "scale": scale}
+
+def send_spy_gex_snapshot(label: str):
+    """Send SPY GEX snapshot to SPX channel at 10AM and 1PM ET."""
+    spx_chat  = os.environ.get("TELEGRAM_SPX_CHAT_ID","")
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN","")
+    if not spx_chat or not bot_token:
+        return
+    try:
+        from fetcher import fetch_gex, fetch_price
+        from sms import send_telegram
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        gex  = fetch_gex("SPY")
+        spot = fetch_price("SPY") or gex.get("spot_price",0)
+        if not gex:
+            return
+
+        regime   = gex.get("regime","")
+        flip     = gex.get("gamma_flip")
+        cwall    = gex.get("call_wall")
+        pwall    = gex.get("put_wall")
+        strikes  = gex.get("strikes",[])
+        now_et   = datetime.now(ZoneInfo("America/New_York"))
+
+        # Find biggest danger zone below spot
+        danger = sorted(
+            [s for s in strikes if float(s["strike"]) < spot and float(s.get("net_gex",0)) < -5_000_000],
+            key=lambda s: float(s.get("net_gex",0))
+        )
+
+        reg_emoji = "⚡" if regime == "negative" else "🧲"
+        reg_label = "NEGATIVE — dealers amplify moves" if regime == "negative" else "POSITIVE — dealers fade moves"
+
+        flip_str = "N/A"
+        if flip and spot:
+            dist = round(((flip - spot)/spot)*100, 1)
+            if abs(dist) < 0.3:
+                flip_str = f"${flip:.0f} ⚠️ AT THE FLIP"
+            else:
+                flip_str = f"${flip:.0f} ({'above' if spot > flip else 'below'} by {abs(dist):.1f}%)"
+
+        lines = [
+            f"📐 SPY GEX — {label} ({now_et.strftime('%I:%M%p ET')})",
+            f"💵 Spot: ${spot:.2f}",
+            f"{reg_emoji} Regime: {reg_label}",
+            f"🎯 Flip: {flip_str}",
+        ]
+
+        if cwall and spot:
+            dist = round(((cwall - spot)/spot)*100,1)
+            lines.append(f"📈 Call wall: ${cwall:.0f} (+{dist:.1f}%) — resistance/target")
+        if pwall and spot:
+            dist = round(((spot - pwall)/spot)*100,1)
+            lines.append(f"📉 Put wall: ${pwall:.0f} (-{dist:.1f}%) — support/target")
+        if danger:
+            d = danger[0]
+            dist = round(((spot - float(d["strike"]))/spot)*100,1)
+            lines.append(f"💀 Cascade zone: ${float(d['strike']):.0f} ({float(d['net_gex'])/1_000_000:.0f}M) — {dist:.1f}% below")
+
+        # Day trading bias
+        lines.append("─" * 18)
+        if regime == "negative":
+            if flip and spot < flip:
+                lines.append("📋 Bias: Watch for break above flip → fast squeeze")
+            else:
+                lines.append("📋 Bias: Momentum day — trade breakouts, don't fade")
+        else:
+            lines.append("📋 Bias: Choppy day — fade walls, buy support dips")
+            if abs(dist := round(((flip-spot)/spot)*100,1) if flip and spot else 99) < 1:
+                lines.append("⚠️ Near flip — character could shift intraday")
+
+        send_telegram(chr(10).join(lines), bot_token, spx_chat)
+        print(f"[GEX] SPY snapshot sent: {label}")
+    except Exception as e:
+        print(f"[GEX] Snapshot error: {e}")
+
 
 def build_sms(trade: dict, data: dict, result: dict,
               tweet_url: str, analysis_id: int, pattern: dict,
@@ -1117,7 +1202,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     _ordered     = _btr_flags + _other_flags
     # GEX regime flag in RISK
     if gex_regime == "positive" and _is_call:
-        _h_flags.append("🧲 Positive GEX — dealer hedging may dampen call momentum")
+        _h_flags.append("🧲 Positive GEX — dealers fade rallies, call momentum may stall")
 
     risk_lines.extend(_ordered[:3])  # Max 3 flags total
 

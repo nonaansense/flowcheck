@@ -1076,10 +1076,10 @@ def handle_gex_command(ticker: str, reply_chat_id: str):
         # Regime emoji and description
         if regime == "negative":
             reg_emoji = "⚡"
-            reg_desc  = "NEGATIVE — dealers BUY rallies, SELL dips (trending/momentum)"
+            reg_desc  = "NEGATIVE — dealers BUY rallies, SELL dips (amplifies moves)"
         else:
             reg_emoji = "🧲"
-            reg_desc  = "POSITIVE — dealers SELL rallies, BUY dips (choppy/fading)"
+            reg_desc  = "POSITIVE — dealers SELL rallies, BUY dips (fades moves)"
 
         # Flip distance
         flip_str = ""
@@ -1117,9 +1117,9 @@ def handle_gex_command(ticker: str, reply_chat_id: str):
         # On-flip warning
         if flip and abs(((flip - spot) / spot) * 100) < 0.3:
             lines.append("🚨 SITTING ON THE FLIP — one tick changes the regime")
-            lines.append("   Upside: dealers FADE rallies (+443M wall at $755)")
-            lines.append("   Downside: dealers AMPLIFY drops — no support for miles")
-            lines.append("   Asymmetric: rallies get sold, drops accelerate")
+            lines.append("   Above flip → POSITIVE zone: dealers fade rallies, buy dips")
+            lines.append("   Below flip → NEGATIVE zone: dealers amplify drops, amplify rallies")
+            lines.append("   Right now: one tick determines the whole regime")
             lines.append("")
 
 
@@ -1193,12 +1193,16 @@ def handle_gex_command(ticker: str, reply_chat_id: str):
         lines.append("")
         # Practical takeaway based on regime
         if regime == "positive":
-            lines.append("💡 Calls: check walls between entry and strike")
-            lines.append("   Each wall = dealer resistance. More walls = harder path.")
-            lines.append("   Best entry: wait for stock to close above a wall, not below it")
+            lines.append("💡 Calls: each wall above = dealer selling resistance")
+            lines.append("   Best entries: after stock closes above a wall, not below it")
+            lines.append("   Option sellers: positive GEX favors premium decay")
         else:
-            lines.append("💡 Calls: momentum favored — enter on pullbacks to support")
-            lines.append("   Moves amplified in both directions — use defined risk")
+            if walls_below:
+                nearest = walls_below[0]
+                lines.append(f"💡 Calls: pullback toward ${float(nearest['strike']):.0f} support = better entry")
+            else:
+                lines.append("💡 ⚠️ No nearby support — define your risk before entering")
+            lines.append("   Moves amplified in both directions — use defined risk size")
 
         send_reply(chr(10).join(lines), reply_chat_id)
 
