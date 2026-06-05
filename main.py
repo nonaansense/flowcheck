@@ -751,6 +751,41 @@ def build_sms(trade: dict, data: dict, result: dict,
     except:
         pass
 
+    # Pre-compute GEX entry score so it's available for the SIGNAL line
+    # (Full GEX analysis with notes runs later in THESIS section)
+    if not data.get("_gex_entry_score") and gex_regime and _spot_gex:
+        _gex_strikes_pre = _gex_data.get("strikes",[]) if isinstance(_gex_data,dict) else []
+        if is_call:
+            if gex_regime == "positive":
+                _pre_supps = sorted([s for s in _gex_strikes_pre
+                                     if float(s["strike"]) < _spot_gex
+                                     and float(s.get("net_gex",0)) > 2_000_000],
+                                    key=lambda s: float(s["strike"]), reverse=True)
+                if _pre_supps:
+                    _pre_dist = (_spot_gex - float(_pre_supps[0]["strike"])) / _spot_gex * 100
+                    data["_gex_entry_score"] = "GOOD" if _pre_dist <= 2.0 else "WAIT"
+                else:
+                    data["_gex_entry_score"] = "WAIT"
+            else:
+                if gex_flip:
+                    _pre_flip_dist = (gex_flip - _spot_gex) / _spot_gex * 100
+                    data["_gex_entry_score"] = "GOOD" if 0 <= _pre_flip_dist <= 3.0 else "WAIT"
+        else:
+            if gex_regime == "positive":
+                _pre_ress = sorted([s for s in _gex_strikes_pre
+                                    if float(s["strike"]) > _spot_gex
+                                    and float(s.get("net_gex",0)) > 2_000_000],
+                                   key=lambda s: float(s["strike"]))
+                if _pre_ress:
+                    _pre_dist = (float(_pre_ress[0]["strike"]) - _spot_gex) / _spot_gex * 100
+                    data["_gex_entry_score"] = "GOOD" if _pre_dist <= 2.0 else "WAIT"
+                else:
+                    data["_gex_entry_score"] = "WAIT"
+            else:
+                if gex_flip:
+                    _pre_flip_dist = (_spot_gex - gex_flip) / _spot_gex * 100
+                    data["_gex_entry_score"] = "GOOD" if 0 <= _pre_flip_dist <= 3.0 else "WAIT"
+
     lines = [
         f"━━━ SIGNAL ━━━",
     ]
@@ -1166,8 +1201,8 @@ def build_sms(trade: dict, data: dict, result: dict,
     # SECTION 4: ENTRY
     # ══════════════════════════════════════════
     lines.append("")
-    # Add conviction block if available
-    if _conv and _conv["total"] > 0:
+    # Always show conviction block when available
+    if _conv:
         try:
             from conviction import format_conviction
             lines.append("")
