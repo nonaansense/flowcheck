@@ -101,8 +101,12 @@ def calc_position_size(option_price: float, verdict: str,
         "recommendation":  rec_text,
     }
 
-def format_sizing_for_sms(sizing: dict, option_price: float = None) -> str:
-    """Format position sizing for Telegram."""
+def format_sizing_for_sms(sizing: dict, option_price: float = None,
+                          flow_price: float = None) -> str:
+    """Format position sizing for Telegram.
+    option_price: entry price (may be discounted limit)
+    flow_price: original flow fill price (for multiplier display)
+    """
     if sizing.get("error") or not sizing.get("recommended"):
         return ""
 
@@ -112,8 +116,14 @@ def format_sizing_for_sms(sizing: dict, option_price: float = None) -> str:
     acct = sizing["account_size"]
 
     if option_price:
+        # Show multiplier if using discounted limit price
+        if flow_price and flow_price > option_price and option_price > 0:
+            _mult = round(flow_price / option_price, 2)
+            _note = f" limit ({_mult:.2f}x leverage vs flow price)"
+        else:
+            _note = ""
         return (f"💰 Size: {rec} contract{'s' if rec>1 else ''} "
-                f"@ ${option_price} = ${cost:.0f} "
+                f"@ ${option_price:.2f}{_note} = ${cost:.0f} "
                 f"({pct}% of ${acct:,.0f})")
     return (f"💰 Size: {rec} contract{'s' if rec>1 else ''} "
             f"= ${cost:.0f} ({pct}% of account)")

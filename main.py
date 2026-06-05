@@ -1225,25 +1225,33 @@ def build_sms(trade: dict, data: dict, result: dict,
             _gex_tag    = data.get("_gex_entry_score","")
             _gex_good   = (_gex_tag == "GOOD")
 
-            if _gex_good:
-                # GEX supports immediate entry — stock at/near dealer support or flip
-                # Enter near ask, not deep discount (support IS the entry point)
-                _limit_disc  = 0.05   # 5% below ask = near market
-                _limit_reason = "🎯 GEX entry zone — enter near ask"
-                _limit_flag   = "⚡ IMMEDIATE ENTRY — GEX conditions aligned"
+            # DTE-based discount always — GEX status changes urgency, not pricing
+            if _dte_lim <= 7:
+                _limit_disc = 0.50
+            elif _dte_lim <= 14:
+                _limit_disc = 0.43
+            elif _dte_lim <= 30:
+                _limit_disc = 0.37
+            elif _dte_lim <= 60:
+                _limit_disc = 0.30
             else:
-                # Wait for pullback — DTE-based discount
-                if _dte_lim <= 7:
-                    _limit_disc = 0.50
-                elif _dte_lim <= 14:
-                    _limit_disc = 0.43
-                elif _dte_lim <= 30:
-                    _limit_disc = 0.37
-                elif _dte_lim <= 60:
-                    _limit_disc = 0.30
-                else:
-                    _limit_disc = 0.25
-                _limit_reason = f"GEX: wait for pullback — {_dte_lim}d DTE"
+                _limit_disc = 0.25
+
+            # Conviction check — only enter near ask if GEX + conviction both align
+            _conv_total = data.get("conviction",{}).get("total",0) if data.get("conviction") else 0
+            _high_conv  = _conv_total >= 3  # MODERATE or better
+
+            if _gex_good and _high_conv:
+                # Both GEX and conviction aligned — enter near ask
+                _limit_disc   = 0.05
+                _limit_reason = f"GEX + conviction aligned — enter near ask"
+                _limit_flag   = f"⚡ GEX + CONVICTION aligned ({_conv_total}/6) — enter near ask"
+            elif _gex_good and not _high_conv:
+                # GEX ok but conviction low — still use DTE discount, don't chase
+                _limit_reason = f"GEX ok but conviction low ({_conv_total}/6) — wait for pullback — {_dte_lim}d DTE"
+                _limit_flag   = None
+            else:
+                _limit_reason = f"wait for pullback — {_dte_lim}d DTE"
                 _limit_flag   = None
 
             entry_limit = round(op_float * (1 - _limit_disc), 2)
@@ -1258,8 +1266,10 @@ def build_sms(trade: dict, data: dict, result: dict,
         from outcomes import get_stats
         stats      = get_stats()
         win_rate   = stats.get("win_rate") if stats.get("total",0) >= 5 else None
-        sizing     = calc_position_size(op_float, verdict, win_rate=win_rate, score=final_score)
-        sizing_str = format_sizing_for_sms(sizing, op_float)
+        # Use discounted limit price for sizing if available
+        _size_price = entry_limit if (has_fill and "entry_limit" in dir() and entry_limit and entry_limit < op_float) else op_float
+        sizing     = calc_position_size(_size_price, verdict, win_rate=win_rate, score=final_score)
+        sizing_str = format_sizing_for_sms(sizing, _size_price, flow_price=op_float)
         if sizing_str:
             lines.append(sizing_str)
 
