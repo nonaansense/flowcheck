@@ -836,6 +836,15 @@ def run_technical_scan(send_sms_fn):
                 _trade_ch = _os_tech.environ.get("TELEGRAM_TRADE_CHAT_ID","")
                 _is_strong = strength.startswith("STRONG")  # STRONG only, not MODERATE
                 if _trade_ch and _is_strong and _verdict == "TRADE":
+                    # Staleness: >5% ITM = thesis played out
+                    _stale     = False
+                    _str_tc    = float(watch_entry.get("strike",0) or 0)
+                    _isp_tc    = "put" in (watch_entry.get("option_type","call") or "call").lower()
+                    if _str_tc > 0 and current_price > 0:
+                        _itm_tc = (current_price-_str_tc)/_str_tc*100 if not _isp_tc else (_str_tc-current_price)/_str_tc*100
+                        if _itm_tc > 5.0:
+                            _stale = True
+                            print(f"[TECHNICAL] {ticker} {'call' if not _isp_tc else 'put'} {_itm_tc:.1f}% ITM — thesis done")
                     # Check 24h cooldown
                     _last_tc  = watch_entry.get("tech_confirm_alerted", 0)
                     _tc_age   = time.time() - float(_last_tc or 0)
@@ -927,22 +936,20 @@ def run_technical_scan(send_sms_fn):
                                     _s_gex    = float(_supp_list[0].get("net_gex", 0))
                                     _dist_pct = (_px_tw - _s_strike) / _px_tw * 100
 
-                                    # Check if stock is DECLINING toward support (not bouncing away)
+                                    # Check if stock is DECLINING toward support
                                     _declining = False
                                     try:
-                                        import time as _t_dec
                                         from fetcher import fetch_1min_candles as _f1m
                                         _c5 = _f1m(ticker, count=10)
-                                        if len(_c5) >= 3:
-                                            # Declining = recent close lower than 5-candle-ago close
+                                        if len(_c5) >= 4:
                                             _declining = _c5[-1]["close"] < _c5[-4]["close"]
                                     except: pass
 
-                                    _near_support = _dist_pct <= 2.0   # within 2% above support
-                                    _approaching  = _declining and _near_support
-                                    _at_support   = _dist_pct <= 0.5   # essentially at support
+                                    _near_support = 0.3 <= _dist_pct <= 2.0
+                                    _at_support   = _dist_pct < 0.3
+                                    _direction    = "declining" if _declining else "flat"
 
-                                    if _approaching or _at_support:
+                                    if (_near_support and _declining) or _at_support:
                                         _gex_good = True
                                         _supp_str_ew = (
                                             f"✅ Pos GEX support ${_s_strike:.0f} "
@@ -988,15 +995,15 @@ def run_technical_scan(send_sms_fn):
                                     try:
                                         from fetcher import fetch_1min_candles as _f1m_p
                                         _cp5 = _f1m_p(ticker, count=10)
-                                        if len(_cp5) >= 3:
+                                        if len(_cp5) >= 4:
                                             _rising = _cp5[-1]["close"] > _cp5[-4]["close"]
                                     except: pass
 
-                                    _near_resist = _dist_pct <= 2.0
-                                    _approaching = _rising and _near_resist
-                                    _at_resist   = _dist_pct <= 0.5
+                                    _near_resist = 0.3 <= _dist_pct <= 2.0
+                                    _at_resist   = _dist_pct < 0.3
+                                    _direction   = "rising" if _rising else "flat"
 
-                                    if _approaching or _at_resist:
+                                    if (_near_resist and _rising) or _at_resist:
                                         _gex_good = True
                                     else:
                                         _gex_good = False

@@ -353,6 +353,18 @@ async def startup():
                           max_instances=1, coalesce=True)
         scheduler.add_job(lambda: run_technical_scan(send_sms),
                           "interval", minutes=5, id="technical_scan")
+
+        def _run_gex_mon():
+            try:
+                from gex_monitor import run_gex_monitor
+                from sms import send_telegram as _stg_gm
+                _wl_gm = {e.get("ticker",""):e for e in _watchlist.values() if e.get("ticker")}
+                run_gex_monitor(_wl_gm, send_fn=_stg_gm)
+            except Exception as _gme:
+                print(f"[GEX_MON] {_gme}")
+        scheduler.add_job(_run_gex_mon, "interval", minutes=5,
+                          id="gex_monitor", max_instances=1)
+
         scheduler.add_job(lambda: check_exit_signals(),
                           "interval", minutes=15, id="exit_signals")
         scheduler.add_job(lambda: track_outcomes(analyses),
@@ -744,9 +756,13 @@ def build_sms(trade: dict, data: dict, result: dict,
     ]
     if earn_banner:
         lines.append(earn_banner)
+    _gex_vtag = data.get("_gex_entry_score","")
+    _gex_vstr = (" | \U0001F4D0 ENTER NOW" if _gex_vtag=="GOOD"
+                 else (f" | \U0001F4D0 WAIT (${gex_flip:.0f})" if gex_flip else " | \U0001F4D0 WAIT") if _gex_vtag in ("WAIT","CAUTION")
+                 else " | \U0001F4D0 GEX POOR" if _gex_vtag=="POOR" else "")
     lines += [
         f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}",
-        f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict}",
+        f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict}{_gex_vstr}",
         f"VIX {vix_str} · SPY {spy_str}{stock_5d_str}{regime_str}",
     ]
     if time_warning:
@@ -929,49 +945,115 @@ def build_sms(trade: dict, data: dict, result: dict,
         _walls_between.sort(key=lambda x: abs(x[1]), reverse=True)
         _total_wall_gex = sum(abs(w[1]) for w in _walls_between)
 
-        # Entry quality score
+        # Entry quality score — positive GEX support bounce / resistance fade strategy
         _entry_score = "GOOD"
         _entry_emoji = "✅"
         _entry_notes = []
-        data["_gex_entry_score"] = "GOOD"  # Will be updated below
+        data["_gex_entry_score"] = "GOOD"
+        _gex_strikes  = _gex_data.get("strikes",[]) if isinstance(_gex_data,dict) else []
 
-        if gex_regime == "negative":
-            _entry_notes.append("Negative GEX — moves amplified, momentum favorable")
-        else:
-            _entry_score = "CAUTION"
-            _entry_emoji = "⚠️"
-            _entry_notes.append("Positive GEX — dealer headwind, moves dampened")
+        if is_call:
+            if gex_regime == "positive":
+                # CALLS in pos GEX: ideal entry = stock declining toward support wall
+                _supps = sorted([s for s in _gex_strikes
+                                 if float(s["strike"]) < _spot_gex
+                                 and float(s.get("net_gex",0)) > 2_000_000],
+                                key=lambda s: float(s["strike"]), reverse=True)
+                if _supps:
+                    _supp_strike = float(_supps[0]["strike"])
+                    _supp_gex    = float(_supps[0].get("net_gex",0))
+                    _dist_supp   = round((_spot_gex - _supp_strike) / _spot_gex * 100, 1)
+                    _sz = "MASSIVE" if _supp_gex>50_000_000 else "Large" if _supp_gex>10_000_000 else "Moderate"
+                    if _dist_supp <= 2.0:
+                        _entry_notes.append(f"Positive GEX support ${_supp_strike:.0f} ({_sz}, {_dist_supp:.1f}% below) — dealer buy zone ✅")
+                        _entry_notes.append("Pullback to support = ideal call entry")
+                    elif _dist_supp <= 5.0:
+                        _entry_score = "WAIT"; _entry_emoji = "⏳"
+                        data["_gex_entry_score"] = "WAIT"
+                        _entry_notes.append(f"Support ${_supp_strike:.0f} ({_dist_supp:.1f}% below)")
+                        _entry_notes.append(f"💡 Better entry: wait for pullback to ${_supp_strike:.0f}")
+                    else:
+                        _entry_score = "WAIT"; _entry_emoji = "⏳"
+                        data["_gex_entry_score"] = "WAIT"
+                        _entry_notes.append(f"Nearest support ${_supp_strike:.0f} ({_dist_supp:.1f}% below) — wait for pullback")
+                else:
+                    _entry_score = "CAUTION"; _entry_emoji = "⚠️"
+                    data["_gex_entry_score"] = "WAIT"
+                    _entry_notes.append("Positive GEX but no significant support below")
+            else:  # negative GEX calls: flip approach
+                if gex_flip and _spot_gex:
+                    _flip_dist_pct = (gex_flip - _spot_gex) / _spot_gex * 100
+                    if 0 <= _flip_dist_pct <= 3.0:
+                        _entry_notes.append(f"Stock {_flip_dist_pct:.1f}% below gamma flip ${gex_flip:.0f} — approaching dealer cascade ✅")
+                    elif _flip_dist_pct > 3.0:
+                        _entry_score = "WAIT"; _entry_emoji = "⏳"
+                        data["_gex_entry_score"] = "WAIT"
+                        _entry_notes.append(f"Stock {_flip_dist_pct:.1f}% below flip — wait for approach to ${gex_flip:.0f}")
+                    elif -2.0 <= _flip_dist_pct < 0:
+                        _entry_notes.append(f"Just above gamma flip ${gex_flip:.0f} — cascade starting ✅")
+                    else:
+                        _entry_score = "CAUTION"; _entry_emoji = "⚠️"
+                        data["_gex_entry_score"] = "WAIT"
+                        _entry_notes.append(f"Stock {abs(_flip_dist_pct):.1f}% above flip — majority of move done")
+                else:
+                    _entry_notes.append("Negative GEX — moves amplified")
+        else:  # puts
+            if gex_regime == "positive":
+                # PUTS in pos GEX: ideal entry = stock rising toward resistance wall
+                _ress = sorted([s for s in _gex_strikes
+                                if float(s["strike"]) > _spot_gex
+                                and float(s.get("net_gex",0)) > 2_000_000],
+                               key=lambda s: float(s["strike"]))
+                if _ress:
+                    _res_strike = float(_ress[0]["strike"])
+                    _res_gex    = float(_ress[0].get("net_gex",0))
+                    _dist_res   = round((_res_strike - _spot_gex) / _spot_gex * 100, 1)
+                    _sz = "MASSIVE" if _res_gex>50_000_000 else "Large" if _res_gex>10_000_000 else "Moderate"
+                    if _dist_res <= 2.0:
+                        _entry_notes.append(f"Positive GEX resistance ${_res_strike:.0f} ({_sz}, {_dist_res:.1f}% above) — dealer sell zone ✅")
+                        _entry_notes.append("Rally toward resistance = ideal put entry")
+                    elif _dist_res <= 5.0:
+                        _entry_score = "WAIT"; _entry_emoji = "⏳"
+                        data["_gex_entry_score"] = "WAIT"
+                        _entry_notes.append(f"💡 Better entry: wait for rally to ${_res_strike:.0f} resistance")
+                    else:
+                        _entry_score = "WAIT"; _entry_emoji = "⏳"
+                        data["_gex_entry_score"] = "WAIT"
+                        _entry_notes.append(f"Nearest resistance ${_res_strike:.0f} ({_dist_res:.1f}% above) — wait for rally")
+                else:
+                    _entry_score = "CAUTION"; _entry_emoji = "⚠️"
+                    data["_gex_entry_score"] = "WAIT"
+                    _entry_notes.append("Positive GEX but no significant resistance above")
+            else:  # negative GEX puts: flip approach from above
+                if gex_flip and _spot_gex:
+                    _flip_dist_pct = (_spot_gex - gex_flip) / _spot_gex * 100
+                    if 0 <= _flip_dist_pct <= 3.0:
+                        _entry_notes.append(f"Stock {_flip_dist_pct:.1f}% above gamma flip ${gex_flip:.0f} — approaching cascade ✅")
+                    elif _flip_dist_pct > 3.0:
+                        _entry_score = "WAIT"; _entry_emoji = "⏳"
+                        data["_gex_entry_score"] = "WAIT"
+                        _entry_notes.append(f"Stock {_flip_dist_pct:.1f}% above flip — wait for approach to ${gex_flip:.0f}")
+                    else:
+                        _entry_score = "CAUTION"; _entry_emoji = "⚠️"
+                        data["_gex_entry_score"] = "WAIT"
+                        _entry_notes.append(f"Stock {abs(_flip_dist_pct):.1f}% below flip — cascade move done")
+                else:
+                    _entry_notes.append("Negative GEX — drops amplified")
 
-        if gex_flip and _spot_gex:
-            _above_flip = _spot_gex > gex_flip
-            if is_call and not _above_flip:
-                dist_flip = round(((gex_flip - _spot_gex) / _spot_gex) * 100, 1)
-                _entry_notes.append(f"Stock {dist_flip:.1f}% below gamma flip ${gex_flip:.0f} — wait for break above")
-                _entry_score = "WAIT"
-                _entry_emoji = "⏳"
-                data["_gex_entry_score"] = "WAIT"
-            elif is_call and _above_flip:
-                _entry_notes.append(f"Stock above gamma flip ${gex_flip:.0f} ✅")
-
+        # Walls between entry and strike (for call wall section)
         if _walls_between and is_call:
             _wall_count = len(_walls_between)
             _biggest    = _walls_between[0]
             def _fmt_m(v): return f"${v/1_000_000:.0f}M" if abs(v)>=1_000_000 else f"${v/1_000:.0f}K"
             _entry_notes.append(
-                f"{_wall_count} positive GEX wall{'s' if _wall_count>1 else ''} between "
+                f"{_wall_count} GEX wall{'s' if _wall_count>1 else ''} between "
                 f"${_spot_gex:.0f} and ${_strike_f:.0f} "
                 f"(biggest: ${_biggest[0]:.0f} at {_fmt_m(_biggest[1])})"
             )
-            if _total_wall_gex > 50_000_000:
-                _entry_score = "POOR"
-                _entry_emoji = "❌"
-                data["_gex_entry_score"] = "POOR"
-            elif _total_wall_gex > 10_000_000 and _entry_score == "GOOD":
-                _entry_score = "CAUTION"
-                _entry_emoji = "⚠️"
+            if _total_wall_gex > 50_000_000 and _entry_score == "GOOD":
+                _entry_score = "CAUTION"; _entry_emoji = "⚠️"
                 data["_gex_entry_score"] = "WAIT"
 
-        if gex_call_wall and is_call and _strike_f:
             if gex_call_wall < _strike_f:
                 dist = round(((gex_call_wall - _spot_gex) / _spot_gex) * 100, 1)
                 _entry_notes.append(
