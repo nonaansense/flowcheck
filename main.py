@@ -1221,26 +1221,39 @@ def build_sms(trade: dict, data: dict, result: dict,
         has_fill    = bool(trade.get("avg_fill_price") or data.get("flow_fill_price"))
         opt_lower2  = (trade.get("option_type","call") or "call").lower()
         if has_fill:
-            # DTE-based limit: short-dated = high gamma = larger pullback achievable
-            _dte_lim = int(data.get("days_to_expiry", 30) or 30)
-            if _dte_lim <= 7:
-                _limit_disc = 0.50   # 50% below — gamma swings are huge
-            elif _dte_lim <= 14:
-                _limit_disc = 0.43   # 43% below
-            elif _dte_lim <= 30:
-                _limit_disc = 0.37   # 37% below
-            elif _dte_lim <= 60:
-                _limit_disc = 0.30   # 30% below
-            else:
-                _limit_disc = 0.25   # 25% below — long-dated
+            _dte_lim    = int(data.get("days_to_expiry", 30) or 30)
+            _gex_tag    = data.get("_gex_entry_score","")
+            _gex_good   = (_gex_tag == "GOOD")
 
-            if "put" in opt_lower2 and not is_put_sell:
-                entry_limit = round(op_float * (1 - _limit_disc), 2)
+            if _gex_good:
+                # GEX supports immediate entry — stock at/near dealer support or flip
+                # Enter near ask, not deep discount (support IS the entry point)
+                _limit_disc  = 0.05   # 5% below ask = near market
+                _limit_reason = "🎯 GEX entry zone — enter near ask"
+                _limit_flag   = "⚡ IMMEDIATE ENTRY — GEX conditions aligned"
             else:
-                entry_limit = round(op_float * (1 - _limit_disc), 2)
+                # Wait for pullback — DTE-based discount
+                if _dte_lim <= 7:
+                    _limit_disc = 0.50
+                elif _dte_lim <= 14:
+                    _limit_disc = 0.43
+                elif _dte_lim <= 30:
+                    _limit_disc = 0.37
+                elif _dte_lim <= 60:
+                    _limit_disc = 0.30
+                else:
+                    _limit_disc = 0.25
+                _limit_reason = f"GEX: wait for pullback — {_dte_lim}d DTE"
+                _limit_flag   = None
 
+            entry_limit = round(op_float * (1 - _limit_disc), 2)
             _pct_below  = round(_limit_disc * 100)
-            lines.append(f"💰 Flow filled @ ${op_float:.2f} | Limit: ${entry_limit:.2f} ({_pct_below}% below — {_dte_lim}d DTE)")
+
+            if _limit_flag:
+                lines.append(f"💰 Flow filled @ ${op_float:.2f} | Limit: ${entry_limit:.2f} ({_pct_below}% below)")
+                lines.append(f"   {_limit_flag}")
+            else:
+                lines.append(f"💰 Flow filled @ ${op_float:.2f} | Limit: ${entry_limit:.2f} ({_pct_below}% below — {_limit_reason})")
 
         from outcomes import get_stats
         stats      = get_stats()
