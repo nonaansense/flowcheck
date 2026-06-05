@@ -52,25 +52,33 @@ def score_conviction(data: dict, trade: dict, result: dict,
 
     # 5. Repeat flow: same ticker 2+ times in 7 days
     repeat = 0
-    if flow_history:
-        cutoff = time.time() - 7 * 86400
-        cur_id = data.get("analysis_id","")
-        for h in flow_history:
-            # Handle both Unix float and ISO string timestamps
-            _ts_raw = h.get("timestamp",0) or h.get("time",0) or 0
-            try:
-                if isinstance(_ts_raw, str) and "T" in _ts_raw:
-                    from datetime import datetime
-                    from zoneinfo import ZoneInfo
-                    _ts = datetime.fromisoformat(_ts_raw).timestamp()
-                else:
-                    _ts = float(_ts_raw or 0)
-            except:
-                _ts = 0
-            if (h.get("ticker","").upper() == ticker
-                    and _ts > cutoff
-                    and h.get("id","") != cur_id):
+    try:
+        from flow_intelligence import load_flow_history as _lfh
+        _recent = _lfh()  # already filtered to last 30 days
+        _cutoff_str = (datetime.now(ZoneInfo("America/New_York"))
+                       - __import__("datetime").timedelta(days=7)).isoformat()
+        cur_ticker  = ticker
+        for h in _recent:
+            if (h.get("ticker","").upper() == cur_ticker
+                    and h.get("timestamp","") >= _cutoff_str):
                 repeat += 1
+        if repeat > 0:
+            repeat -= 1  # exclude current alert (not yet in history but will be counted)
+    except Exception as _re:
+        # Fallback to passed-in flow_history
+        if flow_history:
+            cutoff = time.time() - 7 * 86400
+            for h in flow_history:
+                _ts_raw = h.get("timestamp",0) or h.get("time",0) or 0
+                try:
+                    if isinstance(_ts_raw, str) and "T" in _ts_raw:
+                        _ts = datetime.fromisoformat(_ts_raw).timestamp()
+                    else:
+                        _ts = float(_ts_raw or 0)
+                except:
+                    _ts = 0
+                if h.get("ticker","").upper() == ticker and _ts > cutoff:
+                    repeat += 1
     scores["repeat"] = repeat >= 1
     notes["repeat"]  = f"{repeat} prior in 7d" if repeat else "first occurrence"
 
