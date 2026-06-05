@@ -54,8 +54,19 @@ def score_conviction(data: dict, trade: dict, result: dict,
         cutoff = time.time() - 7 * 86400
         cur_id = data.get("analysis_id","")
         for h in flow_history:
+            # Handle both Unix float and ISO string timestamps
+            _ts_raw = h.get("timestamp",0) or h.get("time",0) or 0
+            try:
+                if isinstance(_ts_raw, str) and "T" in _ts_raw:
+                    from datetime import datetime
+                    from zoneinfo import ZoneInfo
+                    _ts = datetime.fromisoformat(_ts_raw).timestamp()
+                else:
+                    _ts = float(_ts_raw or 0)
+            except:
+                _ts = 0
             if (h.get("ticker","").upper() == ticker
-                    and float(h.get("timestamp",0) or h.get("time",0) or 0) > cutoff
+                    and _ts > cutoff
                     and h.get("id","") != cur_id):
                 repeat += 1
     scores["repeat"] = repeat >= 1
