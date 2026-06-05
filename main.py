@@ -358,7 +358,7 @@ async def startup():
             try:
                 from gex_monitor import run_gex_monitor
                 from sms import send_telegram as _stg_gm
-                _wl_gm = {e.get("ticker",""):e for e in _watchlist.values() if e.get("ticker")}
+                _wl_gm = {e.get("ticker",""):e for e in get_watchlist().values() if e.get("ticker")}
                 run_gex_monitor(_wl_gm, send_fn=_stg_gm)
             except Exception as _gme:
                 print(f"[GEX_MON] {_gme}")
