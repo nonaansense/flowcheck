@@ -249,7 +249,7 @@ def get_peak_return(occ_symbol: str, entry_price: float, trade_timestamp: float)
             },
             timeout=15
         )
-        if r.status_code == 200:
+        if r.status_code in (200, 201):
             return r.json()
         print(f"[BULLFLOW] peakReturn {r.status_code} for {occ_symbol}")
     except Exception as e:
@@ -269,7 +269,7 @@ def create_custom_alert(name: str, filters: dict) -> dict | None:
             headers={"Content-Type": "application/json"},
             timeout=10
         )
-        if r.status_code in (200, 201):  # 201 = Created (success)
+        if r.status_code in (200, 201):
             return r.json()
         print(f"[BULLFLOW] create_alert error {r.status_code}: {r.text[:200]}")
     except Exception as e:
@@ -345,13 +345,12 @@ def setup_flowcheck_filters():
         "premiumMin":    min_premium,
         "dteMin":        min_dte,
         "dteMax":        max_dte,
-        "maxOTM":        max_otm,
-        # Sweeps OR Splits only — highest conviction order types
+                # Sweeps OR Splits only — highest conviction order types
         # Singles and Blocks removed (low conviction / high noise)
         # Bid removed (ask-side only = aggressive buyers)
         # Neutral removed (no directional signal)
         # Mild removed (low conviction)
-        "quickFilters":  ["Stocks", "Sweeps", "Splits", "Bullish", "Bearish"],  # excludes SPX/SPXW/RUT/NDX
+        "quickFilters":  ["Stocks", "Sweeps"],  # Sweeps only — Splits/Bullish/Bearish labels not supported by API
     }
     if exclude_etf:
         filters["tickerBlocklist"] = etf_blocklist

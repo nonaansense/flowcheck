@@ -36,7 +36,7 @@ def create_spx_custom_alert():
             json=payload,
             timeout=15
         )
-        if r.status_code == 200:
+        if r.status_code in (200, 201):
             alert_id = r.json().get("id","")
             print(f"[SPX] Custom alert created: {alert_id}")
             return alert_id
