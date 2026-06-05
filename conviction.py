@@ -38,8 +38,10 @@ def score_conviction(data: dict, trade: dict, result: dict,
         notes["technical"]  = "N/A"
 
     # 4. Macro: VIX calm + SPY direction matches
-    vix    = float(data.get("vix", 20) or 20)
-    trend  = str(data.get("spy_trend","") or "")
+    # VIX and SPY trend are nested under data["market"]
+    _mkt   = data.get("market",{}) or {}
+    vix    = float(_mkt.get("vix") or data.get("vix") or 20)
+    trend  = str(_mkt.get("spy_trend","") or data.get("spy_trend","") or "")
     is_call = "put" not in (trade.get("option_type","call") or "call").lower()
     if is_call:
         macro_ok = vix < 22 and trend in ("uptrend","flat")
