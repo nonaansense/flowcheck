@@ -1207,6 +1207,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     # ══════════════════════════════════════════
     lines.append("")
     # Always show conviction block when available
+    print(f"[CONVICTION] _conv={type(_conv).__name__} total={_conv.get('total','N/A') if _conv else None}")
     if _conv:
         try:
             from conviction import format_conviction as _fc_out
