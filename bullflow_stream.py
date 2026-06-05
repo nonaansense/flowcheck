@@ -345,7 +345,7 @@ def setup_flowcheck_filters():
         "premiumMin":    min_premium,
         "dteMin":        min_dte,
         "dteMax":        max_dte,
-        "otmPercentMax": max_otm,
+        "maxOTM":        max_otm,
         # Sweeps OR Splits only — highest conviction order types
         # Singles and Blocks removed (low conviction / high noise)
         # Bid removed (ask-side only = aggressive buyers)
@@ -393,32 +393,10 @@ def setup_flowcheck_filters():
         _er = _rqc.get("https://api.bullflow.io/v1/alerts/custom-alerts",
                         params={"key": _ck}, timeout=8)
         _alerts_raw = _er.json().get("alerts",[]) if _er.status_code == 200 else []
-        _existing_alert = next((a for a in _alerts_raw if a.get("alertName") == alert_name), None)
-        _existing = [a.get("alertName","") for a in _alerts_raw]
-
-        # Check if existing alert has correct quickFilters (Sweeps+Splits, no Singles/Blocks/Bid)
-        _needs_update = False
-        if _existing_alert:
-            _qf = _existing_alert.get("quickFilters", _existing_alert.get("filters", []))
-            _has_sweeps = any("sweep" in str(f).lower() for f in _qf)
-            _has_singles = any("single" in str(f).lower() for f in _qf)
-            _has_bid = any("bid" in str(f).lower() for f in _qf)
-            if _has_singles or _has_bid or not _has_sweeps:
-                _needs_update = True
-                print(f"[BULLFLOW] Alert filters outdated (singles={_has_singles} bid={_has_bid}) — recreating")
-
-        if alert_name in _existing and not _needs_update:
-            print(f"[BULLFLOW] Custom alert '{alert_name}' exists with correct filters — skipping")
+        _existing_names = [a.get("alertName","") for a in _alerts_raw]
+        if alert_name in _existing_names:
+            print(f"[BULLFLOW] Custom alert '{alert_name}' already exists — skipping")
         else:
-            if _needs_update and _existing_alert:
-                # Delete old alert first
-                try:
-                    _del_id = _existing_alert.get("id","") or _existing_alert.get("alertId","")
-                    if _del_id:
-                        _rqc.delete(f"https://api.bullflow.io/v1/alerts/{_del_id}",
-                                    params={"key": _ck}, timeout=8)
-                        print(f"[BULLFLOW] Deleted outdated alert {_del_id}")
-                except: pass
             result = create_custom_alert(alert_name, filters)
             if result:
                 print(f"[BULLFLOW] Created custom alert: {result}")

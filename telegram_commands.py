@@ -847,10 +847,10 @@ def handle_command(text: str, from_chat_id: str):
 
     elif cmd in ("createalert", "create_alert", "resetalert"):
         import os as _os_ca, requests as _rq_ca
-        send_reply("\U0001F504 Recreating FlowCheck High Conviction alert...", reply_chat_id)
+        send_reply("\U0001F504 Recreating FlowCheck High Conviction alert...", from_chat_id)
         _key_ca = _os_ca.environ.get("BULLFLOW_API_KEY","")
         if not _key_ca:
-            send_reply("\u274C BULLFLOW_API_KEY not set", reply_chat_id)
+            send_reply("\u274C BULLFLOW_API_KEY not set", from_chat_id)
         else:
             try:
                 # Delete existing
@@ -877,11 +877,11 @@ def handle_command(text: str, from_chat_id: str):
                     _aid = _r2.json().get("id","")
                     send_reply(f"\u2705 FlowCheck High Conviction created\nID: {_aid}\n"
                                f"Premium: ${_mp:,}+ | DTE: {_mnd}-{_mxd} | OTM: \u2264{_otm}%\n"
-                               f"Filters: Sweeps + Splits | Bullish + Bearish", reply_chat_id)
+                               f"Filters: Sweeps + Splits | Bullish + Bearish", from_chat_id)
                 else:
-                    send_reply(f"\u274C Failed: {_r2.status_code} {_r2.text[:80]}", reply_chat_id)
+                    send_reply(f"\u274C Failed: {_r2.status_code} {_r2.text[:80]}", from_chat_id)
             except Exception as _e_ca:
-                send_reply(f"\u274C Error: {str(_e_ca)[:80]}", reply_chat_id)
+                send_reply(f"\u274C Error: {str(_e_ca)[:80]}", from_chat_id)
 
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
