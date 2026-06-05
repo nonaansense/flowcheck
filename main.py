@@ -753,10 +753,12 @@ def build_sms(trade: dict, data: dict, result: dict,
 
     # Pre-compute GEX entry score so it's available for the SIGNAL line
     # Use _px_pre (not _spot_gex) to avoid Python 3.12 unbound local variable error
-    _px_pre = float(data.get("stock_price") or trade.get("stock_price") or 0)
+    _px_pre      = float(data.get("stock_price") or trade.get("stock_price") or 0)
+    _is_call_pre = "put" not in (trade.get("option_type","call") or "call").lower()
     if not data.get("_gex_entry_score") and gex_regime and _px_pre:
-        _gex_strikes_pre = _gex_data.get("strikes",[]) if isinstance(_gex_data,dict) else []
-        if is_call:
+        _gd_pre = data.get("_gex_full") or {}  # fresh local, avoids _gex_data scoping issue
+        _gex_strikes_pre = _gd_pre.get("strikes",[]) if isinstance(_gd_pre,dict) else []
+        if _is_call_pre:
             if gex_regime == "positive":
                 _pre_supps = sorted([s for s in _gex_strikes_pre
                                      if float(s["strike"]) < _px_pre
@@ -771,7 +773,7 @@ def build_sms(trade: dict, data: dict, result: dict,
                 if gex_flip:
                     _pre_flip_dist = (gex_flip - _px_pre) / _px_pre * 100
                     data["_gex_entry_score"] = "GOOD" if 0 <= _pre_flip_dist <= 3.0 else "WAIT"
-        else:
+        else:  # puts
             if gex_regime == "positive":
                 _pre_ress = sorted([s for s in _gex_strikes_pre
                                     if float(s["strike"]) > _px_pre
