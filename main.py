@@ -1886,6 +1886,21 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
         else:
             print(f"[SMS] Suppressed (Bullflow {verdict_val}) — stored in analyses only")
 
+        # Route SPY/QQQ FlowGod alerts to SPX channel
+        _spx_chat = os.environ.get("TELEGRAM_SPX_CHAT_ID","")
+        _bot_tok  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+        _spx_tickers = {"SPY","QQQ","SPXW","SPXL","SPXS","SQQQ","TQQQ"}
+        _premium_val = float(trade.get("premium",0) or data.get("premium",0) or 0)
+        if (_spx_chat and _bot_tok and should_send
+                and ticker.upper() in _spx_tickers
+                and _premium_val >= 300_000):
+            try:
+                from spx_flow import send_spx_alert as _spxa
+                send_telegram(msg, _bot_tok, _spx_chat)
+                print(f"[SPX] FlowGod {ticker} ${_premium_val:,.0f} → SPX channel")
+            except Exception as _spxe:
+                print(f"[SPX] FlowGod route error: {_spxe}")
+
         # Send sector rotation alert if detected
         if intel.get("sector_rotation",{}).get("rotation_detected"):
             rot = intel["sector_rotation"]
