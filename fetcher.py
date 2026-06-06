@@ -1638,7 +1638,11 @@ def fetch_gex(ticker: str) -> dict:
             timeout=15
         )
         if r.status_code != 200:
-            print(f"[GEX] {ticker} HTTP {r.status_code}")
+            _etfs = {"SPY","QQQ","SPX","IWM","DIA","XLF","XLE","XLK","GLD","SLV","TLT"}
+            if ticker.upper() in _etfs:
+                print(f"[GEX] {ticker} HTTP {r.status_code} — ETF/index GEX not supported, skipping")
+            else:
+                print(f"[GEX] {ticker} HTTP {r.status_code}")
             return {}
 
         data    = r.json()

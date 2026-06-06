@@ -1895,9 +1895,11 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                 and ticker.upper() in _spx_tickers
                 and _premium_val >= 300_000):
             try:
-                from spx_flow import send_spx_alert as _spxa
-                send_telegram(msg, _bot_tok, _spx_chat)
-                print(f"[SPX] FlowGod {ticker} ${_premium_val:,.0f} → SPX channel")
+                _spx_ok = send_telegram(msg, _bot_tok, _spx_chat)
+                if _spx_ok:
+                    print(f"[SPX] ✅ FlowGod {ticker} ${_premium_val:,.0f} → SPX channel")
+                else:
+                    print(f"[SPX] ❌ FlowGod {ticker} send failed — check bot is in SPX channel and TELEGRAM_SPX_CHAT_ID is correct")
             except Exception as _spxe:
                 print(f"[SPX] FlowGod route error: {_spxe}")
 
