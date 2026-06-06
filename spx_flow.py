@@ -121,10 +121,12 @@ def format_spx_alert(alert: dict, gex_data: dict = None) -> str:
 
     # Direction bias summary
     if opt_type:
+        _is_qqq = "QQQ" in (sym or "").upper()
+        _index  = "NASDAQ (QQQ)" if _is_qqq else "SPX/SPY"
         if "call" in opt_type.lower():
-            lines.append("📈 Bullish 0DTE sweep — institutional buy pressure")
+            lines.append(f"📈 Bullish sweep — institutional {_index} buy pressure")
         else:
-            lines.append("📉 Bearish 0DTE sweep — institutional sell pressure")
+            lines.append(f"📉 Bearish sweep — institutional {_index} sell pressure")
 
     lines.append(f"📈 https://www.tradingview.com/chart/?symbol=SPY")
     return chr(10).join(lines)
