@@ -847,41 +847,49 @@ def handle_command(text: str, from_chat_id: str):
 
     elif cmd in ("createalert", "create_alert", "resetalert"):
         import os as _os_ca, requests as _rq_ca
-        send_reply("\U0001F504 Recreating FlowCheck High Conviction alert...", from_chat_id)
+        send_reply("\U0001F504 Recreating Bullflow custom alerts...", from_chat_id)
         _key_ca = _os_ca.environ.get("BULLFLOW_API_KEY","")
         if not _key_ca:
             send_reply("\u274C BULLFLOW_API_KEY not set", from_chat_id)
         else:
             try:
-                # Delete existing
-                _r_ca = _rq_ca.get("https://api.bullflow.io/v1/alerts/custom-alerts",
-                                    params={"key":_key_ca}, timeout=10)
-                if _r_ca.status_code == 200:
-                    for _a in _r_ca.json().get("alerts",[]):
-                        if _a.get("alertName") == "FlowCheck High Conviction":
+                _alerts_to_create = [
+                    ("FlowCheck High Conviction", {
+                        "premiumMin": 500_000, "dteMin": 2, "dteMax": 30,
+                        "minOTMPercent": 1, "maxOTMPercent": 30,
+                        "minSigScore": 0.51, "maxIV": 100,
+                        "quickFilters": ["Stocks","Sweeps","AA","Vol>OI"],
+                    }),
+                    ("ETFs-Order-Flow", {
+                        "tickerAllowlist": ["SPY","QQQ"],
+                        "premiumMin": 300_000, "dteMin": 2, "dteMax": 30,
+                        "minOTMPercent": 2, "maxOTMPercent": 45,
+                        "minSigScore": 0.51, "maxIV": 30,
+                        "quickFilters": ["Sweeps","AA","Unusual","Vol>OI"],
+                    }),
+                ]
+                # Delete existing versions
+                _er = _rq_ca.get("https://api.bullflow.io/v1/alerts/custom-alerts",
+                                  params={"key":_key_ca}, timeout=10)
+                if _er.status_code == 200:
+                    for _a in _er.json().get("alerts",[]):
+                        if _a.get("alertName","") in [n for n,_ in _alerts_to_create]:
                             _rq_ca.delete(f"https://api.bullflow.io/v1/alerts/{_a['id']}",
-                                           params={"key":_key_ca}, timeout=8)
-                # Create with correct filters
-                _mp  = int(_os_ca.environ.get("FILTER_MIN_PREMIUM","750000"))
-                _mnd = int(_os_ca.environ.get("FILTER_MIN_DTE","14"))
-                _mxd = int(_os_ca.environ.get("FILTER_MAX_DTE","90"))
-                _otm = float(_os_ca.environ.get("FILTER_MAX_OTM","10"))
-                _r2  = _rq_ca.post("https://api.bullflow.io/v1/alerts/create-alert",
-                                   params={"key":_key_ca},
-                                   json={"name":"FlowCheck High Conviction",
-                                         "premiumMin":_mp, "dteMin":_mnd, "dteMax":_mxd,
-                                         "otmPercentMax":_otm,
-                                         "quickFilters":["Stocks","Sweeps","Splits","Bullish","Bearish"]},
-                                   timeout=15)
-                if _r2.status_code == 200:
-                    _aid = _r2.json().get("id","")
-                    send_reply(f"\u2705 FlowCheck High Conviction created\nID: {_aid}\n"
-                               f"Premium: ${_mp:,}+ | DTE: {_mnd}-{_mxd} | OTM: \u2264{_otm}%\n"
-                               f"Filters: Sweeps + Splits | Bullish + Bearish", from_chat_id)
-                else:
-                    send_reply(f"\u274C Failed: {_r2.status_code} {_r2.text[:80]}", from_chat_id)
+                                          params={"key":_key_ca}, timeout=8)
+                # Create both
+                _results = []
+                for _aname, _afilters in _alerts_to_create:
+                    _r = _rq_ca.post("https://api.bullflow.io/v1/alerts/create-alert",
+                                     params={"key":_key_ca},
+                                     json={"name":_aname, **_afilters},
+                                     timeout=15)
+                    if _r.status_code in (200,201):
+                        _results.append(f"\u2705 {_aname}: {_r.json().get('id','?')}")
+                    else:
+                        _results.append(f"\u274C {_aname}: {_r.status_code} {_r.text[:60]}")
+                send_reply("\n".join(_results), from_chat_id)
             except Exception as _e_ca:
-                send_reply(f"\u274C Error: {str(_e_ca)[:80]}", from_chat_id)
+                send_reply(f"\u274C Error: {str(_e_ca)[:100]}", from_chat_id)
 
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)

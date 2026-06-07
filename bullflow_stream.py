@@ -316,75 +316,77 @@ def setup_flowcheck_filters():
     except Exception as e:
         print(f"[BULLFLOW] Could not check existing alerts: {e}")
 
-    print("[BULLFLOW] Creating custom alert filter...")
+    # ── FlowCheck High Conviction ─────────────────────────────────────────────
+    print("[BULLFLOW] Creating custom alert filters...")
 
-    # Get filter thresholds from env
-    min_premium = int(os.environ.get("FILTER_MIN_PREMIUM", 150000))
-    min_dte     = int(os.environ.get("FILTER_MIN_DTE", 2))
-    max_dte     = int(os.environ.get("FILTER_MAX_DTE", 120))
-    max_otm     = float(os.environ.get("FILTER_MAX_OTM", 20.0))
-    max_itm     = float(os.environ.get("FILTER_MAX_ITM", 10.0))  # Filter deep ITM options
-
-    # Blocklist — only exclude instruments that are almost always hedges/protection
-    # NOT excluding SPY/QQQ calls — those can be genuine directional
-    # NOT excluding sector ETFs — unusual flow there is worth seeing
-    etf_blocklist = [
-        # Pure hedge/protection instruments
-        "VIX","VIXY","UVXY","SVXY",          # Volatility
-        "SQQQ","SPXS","SDOW","SPXU",         # Leveraged inverse
-        "TLT","IEF","SHY","TBT","TMF","TMV", # Bonds
-        "GLD","SLV","GDX","GDXJ",            # Gold/silver
-        "USO","UCO","SCO",                   # Oil ETFs
-    ]
-    exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","true").lower() != "false"
-
-    # Stocks only + DTE range + OTM filter
-    # Don't raise premium — low-price stocks have lower absolute premiums
-    # Instead filter by: stocks only, reasonable DTE, not deep ITM
-    filters = {
-        "premiumMin":    min_premium,
-        "dteMin":        min_dte,
-        "dteMax":        max_dte,
-                # Sweeps OR Splits only — highest conviction order types
-        # Singles and Blocks removed (low conviction / high noise)
-        # Bid removed (ask-side only = aggressive buyers)
-        # Neutral removed (no directional signal)
-        # Mild removed (low conviction)
-        "quickFilters":  ["Stocks", "Sweeps"],  # Sweeps only — Splits/Bullish/Bearish labels not supported by API
+    # High Conviction — read from Railway env vars (BF_HC_*)
+    hc_filters = {
+        "premiumMin":    int(os.environ.get("BF_HC_MIN_PREMIUM",    "500000")),
+        "dteMin":        int(os.environ.get("BF_HC_MIN_DTE",        "2")),
+        "dteMax":        int(os.environ.get("BF_HC_MAX_DTE",        "30")),
+        "minOTMPercent": float(os.environ.get("BF_HC_MIN_OTM",     "1")),
+        "maxOTMPercent": float(os.environ.get("BF_HC_MAX_OTM",     "30")),
+        "minSigScore":   float(os.environ.get("BF_HC_MIN_SIGSCORE", "0.51")),
+        "maxIV":         float(os.environ.get("BF_HC_MAX_IV",       "100")),
+        "quickFilters":  ["Stocks", "Sweeps", "AA", "Vol>OI"],
     }
-    if exclude_etf:
-        filters["tickerBlocklist"] = etf_blocklist
-    print(f"[BULLFLOW] Filter: ${min_premium:,} + Stocks + DTE {min_dte}-{max_dte} + OTM≤{max_otm}% + ITM≤{max_itm}%")
+    print(f"[BULLFLOW] High Conviction: ${hc_filters['premiumMin']:,}+ | "
+          f"DTE {hc_filters['dteMin']}-{hc_filters['dteMax']} | "
+          f"OTM {hc_filters['minOTMPercent']}-{hc_filters['maxOTMPercent']}% | "
+          f"SigScore≥{hc_filters['minSigScore']} | IV≤{hc_filters['maxIV']}%")
 
-    # Create SPX 0DTE custom alert if SPX channel is configured
-    _spx_chat = os.environ.get("TELEGRAM_SPX_CHAT_ID","")
-    if _spx_chat:
-        try:
-            import requests as _rq_spx
-            _bk = os.environ.get("BULLFLOW_API_KEY","")
-            # Check if FlowCheck SPX 0DTE alert already exists
-            _ar = _rq_spx.get("https://api.bullflow.io/v1/alerts/custom-alerts",
-                               params={"key": _bk}, timeout=8)
-            _existing_names = []
-            if _ar.status_code == 200:
-                _existing_names = [a.get("alertName","") for a in _ar.json().get("alerts",[])]
-            _spx_exists = next((a for a in _ar.json().get("alerts",[]) if a.get("alertName") == "FlowCheck SPX 0DTE"), None) if _ar.status_code == 200 else None
-            if _spx_exists and _spx_exists.get("minPremium",0) <= 500_000:
-                print(f"[BULLFLOW] SPX alert already registered — skipping creation")
+    # ── ETFs-Order-Flow (SPY + QQQ) ───────────────────────────────────────────
+    # ETF Order Flow — read from Railway env vars (BF_ETF_*)
+    _etf_tickers = os.environ.get("BF_ETF_TICKERS", "SPY,QQQ").split(",")
+    etf_filters = {
+        "tickerAllowlist": [t.strip() for t in _etf_tickers],
+        "premiumMin":    int(os.environ.get("BF_ETF_MIN_PREMIUM",    "300000")),
+        "dteMin":        int(os.environ.get("BF_ETF_MIN_DTE",        "2")),
+        "dteMax":        int(os.environ.get("BF_ETF_MAX_DTE",        "30")),
+        "minOTMPercent": float(os.environ.get("BF_ETF_MIN_OTM",     "2")),
+        "maxOTMPercent": float(os.environ.get("BF_ETF_MAX_OTM",     "45")),
+        "minSigScore":   float(os.environ.get("BF_ETF_MIN_SIGSCORE", "0.51")),
+        "maxIV":         float(os.environ.get("BF_ETF_MAX_IV",       "30")),
+        "quickFilters":  ["Sweeps", "AA", "Unusual", "Vol>OI"],
+    }
+    print(f"[BULLFLOW] ETFs-Order-Flow: ${etf_filters['premiumMin']:,}+ | "
+          f"Tickers: {','.join(etf_filters['tickerAllowlist'])} | "
+          f"DTE {etf_filters['dteMin']}-{etf_filters['dteMax']} | "
+          f"OTM {etf_filters['minOTMPercent']}-{etf_filters['maxOTMPercent']}% | "
+          f"SigScore≥{etf_filters['minSigScore']} | IV≤{etf_filters['maxIV']}%")
+
+    # ── Create/verify both alerts ─────────────────────────────────────────────
+    _bk2 = os.environ.get("BULLFLOW_API_KEY","")
+    _all_alerts = []
+    try:
+        import requests as _rqc2
+        _er2 = _rqc2.get("https://api.bullflow.io/v1/alerts/custom-alerts",
+                          params={"key": _bk2}, timeout=8)
+        if _er2.status_code == 200:
+            _all_alerts = _er2.json().get("alerts", [])
+    except Exception as _ae:
+        print(f"[BULLFLOW] Could not fetch existing alerts: {_ae}")
+
+    _existing_names2 = [a.get("alertName","") for a in _all_alerts]
+
+    for _aname, _afilters in [
+        ("FlowCheck High Conviction", hc_filters),
+        ("ETFs-Order-Flow",            etf_filters),
+    ]:
+        if _aname in _existing_names2:
+            print(f"[BULLFLOW] '{_aname}' already exists — skipping")
+        else:
+            _res = create_custom_alert(_aname, _afilters)
+            if _res:
+                print(f"[BULLFLOW] Created '{_aname}': {_res.get('id','?')}")
             else:
-                # Create or recreate with updated parameters
-                from spx_flow import create_spx_custom_alert
-                _spx_id = create_spx_custom_alert()
-                if _spx_id:
-                    print(f"[BULLFLOW] SPX 0DTE alert registered: {_spx_id}")
-                else:
-                    print(f"[BULLFLOW] SPX alert creation failed")
-        except Exception as _se:
-            print(f"[BULLFLOW] SPX alert setup error: {_se}")
-    if exclude_etf:
-        filters["tickerBlocklist"] = etf_blocklist
+                print(f"[BULLFLOW] Failed to create '{_aname}'")
 
-    # Check if alert already exists before creating — prevents duplicates on every deploy
+    # Pass High Conviction filters forward for legacy alert_name check
+    filters = hc_filters.copy()
+
+    # NOTE: SPX 0DTE alert removed — managed manually in Bullflow dashboard
+
     alert_name = filters.pop("name", "FlowCheck High Conviction")
     try:
         import requests as _rqc
