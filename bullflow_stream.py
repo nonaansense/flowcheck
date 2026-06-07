@@ -376,6 +376,7 @@ def setup_flowcheck_filters():
         if _aname in _existing_names2:
             print(f"[BULLFLOW] '{_aname}' already exists — skipping")
         else:
+            time.sleep(2)  # avoid 429 rate limit between creation calls
             _res = create_custom_alert(_aname, _afilters)
             if _res:
                 print(f"[BULLFLOW] Created '{_aname}': {_res.get('id','?')}")
