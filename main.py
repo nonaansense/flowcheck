@@ -383,6 +383,21 @@ async def startup():
         scheduler.add_job(lambda: check_exit_signals(),
                           "cron", day_of_week="mon-fri", hour="10-15", minute="*/15", id="exit_signals")
 
+        # Cloudflare queue poller — drains buffered tweets during Railway outages
+        if os.environ.get("CF_WORKER_URL"):
+            def _poll_cf_queue():
+                try:
+                    from cf_queue_poller import poll_cf_queue
+                    from main import handle_webhook_tweet
+                    count = poll_cf_queue(process_fn=handle_webhook_tweet)
+                    if count: print(f"[CF_QUEUE] Processed {count} buffered tweet(s)")
+                except Exception as _cfe:
+                    print(f"[CF_QUEUE] Scheduler error: {_cfe}")
+            scheduler.add_job(_poll_cf_queue, "interval", seconds=60,
+                              id="cf_queue_poller", max_instances=1)
+            print("[SCHEDULER] Cloudflare queue poller active (60s interval)")
+
+
         def _run_trailing_stop():
             try:
                 from trailing_stop import check_trailing_stop

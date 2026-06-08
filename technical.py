@@ -904,16 +904,52 @@ def run_technical_scan(send_sms_fn):
                             if _gex_ok_tc:
                                 watch_entry["tech_confirm_alerted"] = time.time()
                                 _flip_str_tc = f"| flip ${_flip_tc:.0f}" if _flip_tc else ""
-                                _upgrade_msg = (
-                                    f"📡 TECHNICAL CONFIRMATION: ${ticker}\n"
-                                    f"Signal: {strength} [{tfs}] + GEX aligned\n"
-                                    f"Stock: ${_px_tc:.2f} {_flip_str_tc}\n"
-                                    f"{msg.split(chr(10),2)[2] if chr(10) in msg else ''}\n"
-                                    f"Flow: {ticker} {watch_entry.get('strike','')}"
-                                    f"{(watch_entry.get('option_type','C') or 'C')[0].upper()} "
-                                    f"{watch_entry.get('expiry','')} "
-                                    f"[{watch_entry.get('flow_score','?')}/7 TRADE]"
-                                )
+                                _base_url_tc  = _os_tech.environ.get("BASE_URL","https://web-production-19e44.up.railway.app")
+                                _aid_tc       = watch_entry.get("analysis_id","")
+                                _prem_tc      = float(watch_entry.get("premium",0) or 0)
+                                _fill_tc      = watch_entry.get("fill_label","") or watch_entry.get("fill_type","")
+                                _sweep_tc     = watch_entry.get("is_sweep",False)
+                                _voi_tc       = watch_entry.get("vol_oi_label","") or watch_entry.get("vol_oi_ratio","")
+                                _entry_lim_tc = float(watch_entry.get("entry_limit_price",0) or 0)
+                                _stop_tc      = float(watch_entry.get("stop_price",0) or 0)
+                                _conv_tc      = watch_entry.get("conviction_total",0)
+                                _conv_lbl_tc  = watch_entry.get("conviction_label","")
+                                _tweet_tc     = watch_entry.get("tweet_url","")
+                                _src_tc       = watch_entry.get("source","").upper()
+                                _src_badge_tc = "🐦" if _src_tc == "FLOWGOD" else "🅱" if _src_tc == "BULLFLOW" else ""
+                                _prem_str_tc  = (f"${_prem_tc/1_000_000:.1f}M" if _prem_tc >= 1_000_000
+                                                 else f"${_prem_tc/1_000:.0f}K" if _prem_tc > 0 else "")
+
+                                _tc_parts = [
+                                    f"📡 TECHNICAL CONFIRMATION: ${ticker} {_src_badge_tc}",
+                                    f"Signal: {strength} [{tfs}] + GEX aligned",
+                                    f"Stock: ${_px_tc:.2f} {_flip_str_tc}",
+                                    f"{msg.split(chr(10),2)[2] if chr(10) in msg else ''}",
+                                    "",
+                                    f"━━━ ORIGINAL FLOW ━━━",
+                                ]
+                                if _prem_str_tc:
+                                    _flow_line_tc = _prem_str_tc
+                                    if _fill_tc:  _flow_line_tc += f" {_fill_tc}"
+                                    if _sweep_tc: _flow_line_tc += " ⚡ SWEEP"
+                                    if _voi_tc:   _flow_line_tc += f" | {_voi_tc}"
+                                    _tc_parts.append(_flow_line_tc)
+                                if _entry_lim_tc:
+                                    _tc_parts.append(f"💰 Limit: ${_entry_lim_tc:.2f} | Stop: ${_stop_tc:.2f}")
+                                if _conv_tc:
+                                    _tc_parts.append(f"📊 Conviction: {_conv_tc}/6 {_conv_lbl_tc}")
+                                _otype_tc = (watch_entry.get("option_type","C") or "C")[0].upper()
+                                _tc_parts += [
+                                    "",
+                                    f"Flow: ${ticker} {watch_entry.get('strike','')}{_otype_tc} "
+                                    f"{watch_entry.get('expiry','')} [{watch_entry.get('flow_score','?')}/7 TRADE]",
+                                    f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
+                                ]
+                                if _aid_tc:
+                                    _tc_parts.append(f"🔗 {_base_url_tc}/analysis/{_aid_tc}")
+                                if _tweet_tc:
+                                    _tc_parts.append(f"🐦 {_tweet_tc}")
+                                _upgrade_msg = "\n".join(p for p in _tc_parts if p is not None)
                                 send_telegram(_upgrade_msg, _bot, _trade_ch)
                                 print(f"[TECHNICAL] ⬆️ Pushed {ticker} STRONG+GEX to priority (24h cooldown started)")
                             else:
