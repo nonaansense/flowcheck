@@ -97,19 +97,44 @@ def add_to_watchlist(ticker, trade, result, data=None, send_sms_fn=None):
         except:
             pass
 
+    _d = data or {}
     _watch_list[ticker] = {
-        "added":            time.time(),
-        "strike":           trade.get("strike","?"),
-        "option_type":      trade.get("option_type","call"),
-        "added_at":         time.time(),  # when flow alert originally fired
-        "expiry":           trade.get("expiry","?"),
-        "expiry_raw":       expiry_raw,
-        "flow_score":       result.get("final_score",0),
-        "verdict":          result.get("verdict","WATCH"),
-        "flow_stock_price": flow_stock_price,
-        "flow_option_price":flow_option_price,
-        "dte_remaining":    dte_remaining,
-        "alerted":          {},
+        # Core identifiers
+        "added":             time.time(),
+        "added_at":          time.time(),
+        "ticker":            ticker,
+        "strike":            trade.get("strike","?"),
+        "option_type":       trade.get("option_type","call"),
+        "expiry":            trade.get("expiry","?"),
+        "expiry_raw":        expiry_raw,
+        "dte_remaining":     dte_remaining,
+        # Flow info
+        "flow_score":        result.get("final_score",0),
+        "verdict":           result.get("verdict","WATCH"),
+        "flow_stock_price":  flow_stock_price,
+        "flow_option_price": flow_option_price,
+        "premium":           trade.get("premium") or _d.get("premium_raw",0),
+        "fill_type":         _d.get("fill_type",""),
+        "fill_label":        _d.get("fill_label",""),
+        "vol_oi_label":      _d.get("vol_oi_label",""),
+        "vol_oi_ratio":      _d.get("vol_oi_ratio",""),
+        "is_sweep":          _d.get("is_sweep",False),
+        # GEX
+        "gex_entry_score":   _d.get("_gex_entry_score",""),
+        "gex_regime":        _d.get("gex_regime",""),
+        "gex_flip":          _d.get("gex_flip",""),
+        # Entry plan
+        "entry_limit_price": _d.get("entry_limit_price",0),
+        "stop_price":        _d.get("stop_price",0),
+        "stock_price_at_alert": flow_stock_price,
+        # Context
+        "source":            _d.get("source",""),
+        "analysis_id":       _d.get("analysis_id",""),
+        "tweet_url":         trade.get("tweet_url","") or _d.get("tweet_url",""),
+        # Conviction
+        "conviction_total":  (_d.get("conviction") or {}).get("total",0),
+        "conviction_label":  (_d.get("conviction") or {}).get("label",""),
+        "alerted":           {},
     }
     dte_str = str(dte_remaining) + "d left" if dte_remaining else "DTE unknown"
     print(f"[TECHNICAL] Added {ticker} to watchlist — {dte_str} — monitoring M5/M10/M15/M30/H1")
@@ -1077,19 +1102,59 @@ def run_technical_scan(send_sms_fn):
                             _days_since = int((time.time() - _flow_ts) / 86400)
                             _age_str    = f"Day {_days_since+1} since flow" if _days_since > 0 else "Same day as flow"
 
-                            _entry_msg = (
-                                f"🎯 ENTRY WINDOW: ${ticker}\n"
-                                f"GEX + Technical aligned — {strength} [{tfs}]\n"
-                                f"📅 {_age_str}\n"
-                                f"Stock: ${_px_tw:.2f} | {_flip_str}\n"
-                                f"{_regime_str}\n"
-                                f"{_wall_str}\n"
-                                f"{_supp_str}\n"
-                                f"{_cascade_str}\n"
-                                f"→ {msg.split(chr(10))[-2] if chr(10) in msg else ''}\n"
-                                f"👀 {ticker} {_strike}{str(_opt_type)[0].upper()} "
-                                f"{_expiry} [{_score}/7 WATCH → consider entering]"
-                            )
+                            _base_url_ew    = _os_tech.environ.get("BASE_URL","https://web-production-19e44.up.railway.app")
+                            _analysis_id_ew = watch_entry.get("analysis_id","")
+                            _premium_ew     = float(watch_entry.get("premium",0) or 0)
+                            _fill_ew        = watch_entry.get("fill_label","") or watch_entry.get("fill_type","")
+                            _voi_ew         = watch_entry.get("vol_oi_label","") or watch_entry.get("vol_oi_ratio","")
+                            _sweep_ew       = watch_entry.get("is_sweep",False)
+                            _entry_lim_ew   = float(watch_entry.get("entry_limit_price",0) or 0)
+                            _stop_ew        = float(watch_entry.get("stop_price",0) or 0)
+                            _conv_ew        = watch_entry.get("conviction_total",0)
+                            _conv_lbl_ew    = watch_entry.get("conviction_label","")
+                            _tweet_ew       = watch_entry.get("tweet_url","")
+                            _src_ew         = watch_entry.get("source","").upper()
+                            _src_badge_ew   = "🐦" if _src_ew == "FLOWGOD" else "🅱" if _src_ew == "BULLFLOW" else ""
+
+                            # Format premium
+                            _prem_str_ew = (f"${_premium_ew/1_000_000:.1f}M" if _premium_ew >= 1_000_000
+                                           else f"${_premium_ew/1_000:.0f}K" if _premium_ew > 0 else "")
+
+                            _entry_parts = [
+                                f"🎯 ENTRY WINDOW: ${ticker} {_src_badge_ew}",
+                                f"Technical confirmed — {strength} [{tfs}] | 📅 {_age_str}",
+                                "",
+                                f"━━━ ORIGINAL FLOW ━━━",
+                            ]
+                            if _prem_str_ew:
+                                _flow_line = _prem_str_ew
+                                if _fill_ew:  _flow_line += f" {_fill_ew}"
+                                if _sweep_ew: _flow_line += " ⚡ SWEEP"
+                                if _voi_ew:   _flow_line += f" | {_voi_ew}"
+                                _entry_parts.append(_flow_line)
+                            if _entry_lim_ew:
+                                _entry_parts.append(f"💰 Limit: ${_entry_lim_ew:.2f} | Stop: ${_stop_ew:.2f}")
+                            if _conv_ew:
+                                _entry_parts.append(f"📊 Conviction: {_conv_ew}/6 {_conv_lbl_ew}")
+                            _entry_parts += [
+                                "",
+                                f"━━━ ENTRY SIGNAL ━━━",
+                                f"Stock: ${_px_tw:.2f} | {_flip_str}",
+                                f"{_regime_str}",
+                                f"{_wall_str}",
+                                f"{_supp_str}",
+                                f"{_cascade_str}",
+                                f"→ {msg.split(chr(10))[-2] if chr(10) in msg else ''}",
+                                "",
+                                f"👀 ${ticker} {_strike}{str(_opt_type)[0].upper()} {_expiry} [{_score}/7 WATCH]",
+                                f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
+                            ]
+                            if _analysis_id_ew:
+                                _entry_parts.append(f"🔗 {_base_url_ew}/analysis/{_analysis_id_ew}")
+                            if _tweet_ew:
+                                _entry_parts.append(f"🐦 {_tweet_ew}")
+
+                            _entry_msg = "\n".join(p for p in _entry_parts if p is not None)
                             send_telegram(_entry_msg, _bot, _trade_ch)
                             print(f"[TECHNICAL] 🎯 ENTRY WINDOW sent: {ticker} — GEX+tech aligned")
                             # Persist cooldown timestamp
