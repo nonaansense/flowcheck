@@ -400,23 +400,46 @@ def track_sector_flow(trade: dict, result: dict) -> dict | None:
 
     flows      = sector_data["sectors"][sector]
     flow_count = len(flows)
+    tickers    = list(set(f["ticker"] for f in flows))
 
-    if flow_count >= 3:
-        tickers       = list(set(f["ticker"] for f in flows))
-        total_premium = sum(safe_premium(f.get("premium",0)) for f in flows)
-        prem_str      = (f"${total_premium/1000000:.1f}M" if total_premium >= 1000000
-                         else f"${total_premium/1000:.0f}K")
-        return {
-            "rotation_detected": True,
-            "sector":            sector,
-            "flow_count":        flow_count,
-            "tickers":           tickers,
-            "total_premium":     total_premium,
-            "alert":             (f"📊 SECTOR ROTATION: {flow_count} flows in "
-                                  f"{_SECTOR_NAMES_MAP.get(sector, sector)} ({sector}) today — "
-                                  f"{', '.join(tickers[:4])} — {prem_str} total premium"),
-        }
-    return None
+    # Require: 3+ flows, 2+ different tickers, $1M+ total premium
+    total_premium = sum(safe_premium(f.get("premium",0)) for f in flows)
+    if flow_count < 3 or len(tickers) < 2 or total_premium < 1_000_000:
+        return None
+
+    # Require: sector ETF is actually moving in the right direction
+    # No point alerting if the sector is flat or down while flow is bullish
+    try:
+        from fetcher import fetch_sector_conditions
+        _sec_data = fetch_sector_conditions(ticker)
+        _sec_trend = _sec_data.get("sector_trend","")
+        _sec_pct   = float(_sec_data.get("etf_5d_pct",0) or 0)
+        # Only alert if sector ETF has meaningful positive momentum
+        if _sec_pct < 0.5:
+            print(f"[INTEL] Sector rotation suppressed — {sector} ETF only {_sec_pct:+.1f}% (no confirmation)")
+            return None
+        _sec_emoji = _sec_data.get("sector_emoji","📊")
+    except:
+        _sec_trend = "N/A"
+        _sec_emoji = "📊"
+        _sec_pct   = 0
+
+    prem_str = (f"${total_premium/1000000:.1f}M" if total_premium >= 1000000
+                else f"${total_premium/1000:.0f}K")
+    _sec_name = _SECTOR_NAMES_MAP.get(sector, sector)
+
+    return {
+        "rotation_detected": True,
+        "sector":            sector,
+        "flow_count":        flow_count,
+        "tickers":           tickers,
+        "total_premium":     total_premium,
+        "sector_trend":      _sec_trend,
+        "sector_pct":        _sec_pct,
+        "alert":             (f"📊 SECTOR ROTATION: {flow_count} flows in "
+                              f"{_sec_name} ({sector}) — {_sec_emoji} ETF {_sec_pct:+.1f}% — "
+                              f"{', '.join(tickers[:4])} — {prem_str} total premium"),
+    }
 
 # ── 6. Dark Pool Cross-Reference ──────────────────────────────────────
 

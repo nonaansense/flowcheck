@@ -482,11 +482,14 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             premium    = float(alert_data.get("alertPremium",0) or 0)
 
                             # Route SPX/SPY to dedicated channel (algo + custom alerts)
-                            _is_spx_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","O:SPX","SPXL","SPXS"])
+                            _is_etf_alert  = alert_name in ("ETFs-Unusual-Flow","ETFs-Order-Flow")
                             _is_spx_alert  = (alert_name == "FlowCheck SPX 0DTE")
+                            _is_spy_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","SPXL","SPXS"])
+                            _is_qqq_ticker = any(t in (symbol or "").upper() for t in ["QQQ","SQQQ","TQQQ"])
+                            _is_spx_ticker = _is_spy_ticker
                             # $1M min for algo alerts on SPX, $5M min for custom alert
                             _spx_min_prem  = 500_000
-                            if (_is_spx_alert or _is_spx_ticker) and premium >= _spx_min_prem:
+                            if (_is_etf_alert and premium >= 300_000) or (_is_spx_alert and premium >= 500_000) or ((_is_spy_ticker or _is_qqq_ticker) and premium >= 500_000):
                                 try:
                                     from spx_flow import send_spx_alert as _ssa
                                     from fetcher import fetch_gex as _fgs

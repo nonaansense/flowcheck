@@ -354,6 +354,21 @@ async def startup():
         scheduler.add_job(lambda: run_technical_scan(send_sms),
                           "interval", minutes=5, id="technical_scan")
 
+        # Morning top setups briefing — 9:45 AM ET
+        def _run_morning_summary():
+            try:
+                from morning_summary import send_morning_summary
+                from sms import send_telegram as _stg_ms
+                _wl_ms = get_watchlist()
+                send_morning_summary(_wl_ms, send_fn=_stg_ms)
+            except Exception as _mse:
+                print(f"[MORNING] {_mse}")
+        scheduler.add_job(_run_morning_summary, "cron",
+                          day_of_week="mon-fri", hour=9, minute=45,
+                          id="morning_summary", max_instances=1)
+        print("[SCHEDULER] Morning top setups briefing scheduled: 9:45 AM ET")
+
+
         def _run_gex_mon():
             try:
                 from gex_monitor import run_gex_monitor
@@ -1214,6 +1229,43 @@ def build_sms(trade: dict, data: dict, result: dict,
             lines.append(_fc_out(_conv))
         except Exception as _fce:
             print(f"[CONVICTION] Format error: {_fce}")
+
+    # Signal quality checks (trend alignment, relative premium, IV rank, clustering)
+    try:
+        from signal_quality import run_quality_checks
+        # Fetch price history for SMA calculation if not already in data
+        _price_hist = data.get("price_history",[]) or []
+        if not _price_hist:
+            try:
+                from fetcher import fetch_price_history as _fph_sq
+                _price_hist = _fph_sq(ticker, days=30) or []
+                if _price_hist:
+                    data["price_history"] = _price_hist
+            except: pass
+        _fh_sq = []
+        try:
+            from storage import db_get as _dg_sq
+            import json as _json_sq
+            _fh_sq = _json_sq.loads(_dg_sq("flow_history") or "[]")
+        except: pass
+        _quality = run_quality_checks(
+            ticker, trade, result, _price_hist, _fh_sq
+        )
+        data["signal_quality"] = _quality
+        # Add quality notes to alert
+        _q_notes = []
+        if not _quality.get("trend",{}).get("aligned", True):
+            _q_notes.append(_quality["trend"]["note"])
+        if _quality.get("iv_rank",{}).get("flag") == "HIGH":
+            _q_notes.append(_quality["iv_rank"]["note"])
+        if _quality.get("relative",{}).get("flag") in ("EXTREME","HIGH"):
+            _q_notes.append(_quality["relative"]["note"])
+        if _quality.get("cluster",{}).get("clustering") in ("CONCENTRATED","SCATTERED"):
+            _q_notes.append(_quality["cluster"]["note"])
+        for _qn in _q_notes:
+            lines.append(_qn)
+    except Exception as _qe:
+        print(f"[QUALITY] Error: {_qe}")
 
     lines.append("━━━ ENTRY ━━━")
 

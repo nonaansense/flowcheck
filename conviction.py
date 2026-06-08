@@ -41,12 +41,15 @@ def score_conviction(data: dict, trade: dict, result: dict,
     # VIX and SPY trend are nested under data["market"]
     _mkt   = data.get("market",{}) or {}
     vix    = float(_mkt.get("vix") or data.get("vix") or 20)
-    trend  = str(_mkt.get("spy_trend","") or data.get("spy_trend","") or "")
-    is_call = "put" not in (trade.get("option_type","call") or "call").lower()
-    if is_call:
-        macro_ok = vix < 22 and trend in ("uptrend","flat")
+    trend_raw  = str(_mkt.get("spy_trend","") or data.get("spy_trend","") or "")
+    trend      = trend_raw.lower()
+    is_call_cv = "put" not in (trade.get("option_type","call") or "call").lower()
+    _bull_spy  = any(w in trend for w in ("uptrend","up","strong","bull","flat"))
+    _bear_spy  = any(w in trend for w in ("downtrend","down","weak","bear","drop","flat"))
+    if is_call_cv:
+        macro_ok = vix < 22 and _bull_spy
     else:
-        macro_ok = vix < 22 and trend in ("downtrend","flat")
+        macro_ok = vix < 22 and _bear_spy
     scores["macro"] = macro_ok
     notes["macro"]  = f"VIX {vix:.1f} | SPY {trend or 'unknown'}"
 

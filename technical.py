@@ -821,7 +821,11 @@ def run_technical_scan(send_sms_fn):
                 import os as _os_tech
                 from sms import send_telegram
                 _bot  = _os_tech.environ.get("TELEGRAM_BOT_TOKEN","")
-                _cid  = _os_tech.environ.get("TELEGRAM_CHAT_ID","")
+                # MILD → all-alerts channel (FYI); MODERATE+ → main channel
+                if strength.startswith("MILD"):
+                    _cid = _os_tech.environ.get("TELEGRAM_ALL_CHAT_ID","") or _os_tech.environ.get("TELEGRAM_CHAT_ID","")
+                else:
+                    _cid = _os_tech.environ.get("TELEGRAM_CHAT_ID","")
                 if _bot and _cid:
                     send_telegram(msg, _bot, _cid)
                 # Store technical confirmation timestamp for conviction scoring
