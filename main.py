@@ -352,7 +352,7 @@ async def startup():
                           "cron", day_of_week="mon-fri", hour=16, minute=10, id="daily_pnl",
                           max_instances=1, coalesce=True)
         scheduler.add_job(lambda: run_technical_scan(send_sms),
-                          "interval", minutes=5, id="technical_scan")
+                          "cron", day_of_week="mon-fri", hour="10-15", minute="*/10", id="technical_scan")
 
         # Morning top setups briefing — 9:45 AM ET
         def _run_morning_summary():
@@ -377,11 +377,11 @@ async def startup():
                 run_gex_monitor(_wl_gm, send_fn=_stg_gm)
             except Exception as _gme:
                 print(f"[GEX_MON] {_gme}")
-        scheduler.add_job(_run_gex_mon, "interval", minutes=5,
+        scheduler.add_job(_run_gex_mon, "cron", day_of_week="mon-fri", hour="10-15", minute="*/5",
                           id="gex_monitor", max_instances=1)
 
         scheduler.add_job(lambda: check_exit_signals(),
-                          "interval", minutes=15, id="exit_signals")
+                          "cron", day_of_week="mon-fri", hour="10-15", minute="*/15", id="exit_signals")
 
         def _run_trailing_stop():
             try:
@@ -390,7 +390,7 @@ async def startup():
                 check_trailing_stop(get_watchlist(), send_fn=_stg_ts)
             except Exception as _tse:
                 print(f"[TRAILING] {_tse}")
-        scheduler.add_job(_run_trailing_stop, "interval", minutes=15,
+        scheduler.add_job(_run_trailing_stop, "cron", day_of_week="mon-fri", hour="10-15", minute="*/15",
                           id="trailing_stop", max_instances=1)
 
         scheduler.add_job(lambda: track_outcomes(analyses),
