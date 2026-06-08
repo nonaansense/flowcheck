@@ -382,6 +382,17 @@ async def startup():
 
         scheduler.add_job(lambda: check_exit_signals(),
                           "interval", minutes=15, id="exit_signals")
+
+        def _run_trailing_stop():
+            try:
+                from trailing_stop import check_trailing_stop
+                from sms import send_telegram as _stg_ts
+                check_trailing_stop(get_watchlist(), send_fn=_stg_ts)
+            except Exception as _tse:
+                print(f"[TRAILING] {_tse}")
+        scheduler.add_job(_run_trailing_stop, "interval", minutes=15,
+                          id="trailing_stop", max_instances=1)
+
         scheduler.add_job(lambda: track_outcomes(analyses),
                           "cron", day_of_week="mon-fri", hour=16, minute=0, id="outcome_track")
         scheduler.add_job(lambda: send_premarket_gap_alerts(get_watchlist()) if is_market_open() else None,
@@ -932,7 +943,26 @@ def build_sms(trade: dict, data: dict, result: dict,
 
     if context_lines:
         lines.append("")
-        lines.append("━━━ CONTEXT ━━━")
+
+    # Spread leg detection — add to FLOW section
+    try:
+        from spread_detector import check_spread_likelihood as _csl
+        _fh_sp = []
+        try:
+            from storage import db_get as _dg_sp
+            import json as _json_sp
+            _fh_sp = _json_sp.loads(_dg_sp("flow_history") or "[]")
+        except: pass
+        _spread = _csl(ticker, str(trade.get("strike","")),
+                       str(trade.get("expiry","")),
+                       str(trade.get("option_type","call")),
+                       str(data.get("fill_type","") or trade.get("fill_type","")),
+                       float(trade.get("premium",0) or 0), _fh_sp)
+        if _spread.get("spread_likely") or _spread.get("score",0) >= 1:
+            lines.append(_spread["note"])
+    except Exception as _spe:
+        print(f"[SPREAD] {_spe}")
+
         lines.extend(context_lines)
 
     # ══════════════════════════════════════════
@@ -1221,12 +1251,28 @@ def build_sms(trade: dict, data: dict, result: dict,
     # SECTION 4: ENTRY
     # ══════════════════════════════════════════
     lines.append("")
-    # Always show conviction block when available
+    # Apply confidence decay then show conviction block
     if _conv:
+        try:
+            from confidence_decay import apply_decay, format_decay_note
+            _cur_px_dec = float(data.get("stock_price", current_price) or current_price)
+            _watch_entry_dec = {}
+            try:
+                from technical import get_watchlist as _gwl_dec
+                _watch_entry_dec = _gwl_dec().get(ticker, {})
+            except: pass
+            _conv = apply_decay(_conv, _watch_entry_dec, _cur_px_dec)
+            _decay_note = format_decay_note(_conv)
+        except Exception as _dce:
+            print(f"[DECAY] {_dce}")
+            _decay_note = ""
+
         try:
             from conviction import format_conviction as _fc_out
             lines.append("")
             lines.append(_fc_out(_conv))
+            if _decay_note:
+                lines.append(_decay_note)
         except Exception as _fce:
             print(f"[CONVICTION] Format error: {_fce}")
 
@@ -1266,6 +1312,26 @@ def build_sms(trade: dict, data: dict, result: dict,
             lines.append(_qn)
     except Exception as _qe:
         print(f"[QUALITY] Error: {_qe}")
+
+    # ATR-based move probability
+    try:
+        from atr_analysis import calc_atr, calc_move_probability, format_atr_line
+        _ph_atr    = data.get("price_history",[]) or []
+        if not _ph_atr:
+            from fetcher import fetch_price_history as _fph_atr
+            _ph_atr = _fph_atr(ticker, days=20) or []
+        _atr_val   = calc_atr(_ph_atr)
+        _strike_f2 = float(str(trade.get("strike","0")).replace("C","").replace("P","") or 0)
+        _dte2      = int(data.get("days_to_expiry",30) or 30)
+        if _atr_val and _strike_f2 and current_price:
+            _atr_res = calc_move_probability(
+                current_price, _strike_f2, is_call, _dte2, _atr_val
+            )
+            _atr_line = format_atr_line(_atr_res)
+            if _atr_line:
+                lines.append(_atr_line)
+    except Exception as _ae:
+        print(f"[ATR] Error: {_ae}")
 
     lines.append("━━━ ENTRY ━━━")
 

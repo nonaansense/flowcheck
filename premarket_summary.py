@@ -82,21 +82,17 @@ def send_premarket_summary(analyses: list):
     else:
         lines.append("✅ No major macro events today — clean trading day.")
 
-    # Carryover + OI confirmation — load YESTERDAY'S alerts, not today's
-    yesterday_analyses = load_yesterday_analyses()
-    # Also check in-memory for any that have yesterday's date
-    yesterday_str = (now_et.date() - __import__("datetime").timedelta(days=1)).isoformat()
-    in_mem_yest   = [a for a in analyses if isinstance(a, dict) and a.get("date","") == yesterday_str]
-    # Merge, dedup by id
-    seen_ids = {a.get("id") for a in yesterday_analyses}
-    for a in in_mem_yest:
-        if a.get("id") not in seen_ids:
-            yesterday_analyses.append(a)
-    watches   = [a for a in yesterday_analyses if isinstance(a, dict) and
-                 a.get("result",{}).get("verdict") in ("WATCH","TRADE")]
+    # Carryover — use live watchlist (persists across days, always current)
+    try:
+        from technical import get_watchlist as _gwl_pm
+        _wl_pm = _gwl_pm()
+        watches_wl = list(_wl_pm.values()) if _wl_pm else []
+    except:
+        watches_wl = []
     lines.append("")
-    lines.append(f"🔄 CARRYOVER FROM YESTERDAY ({len(watches)})")
+    lines.append(f"🔄 ACTIVE WATCHLIST ({len(watches_wl)} positions)")
 
+    watches = watches_wl  # alias for display section below
     if watches:
         # Check OI for each carryover via Tradier
         oi_lines = []
@@ -166,6 +162,12 @@ def send_premarket_summary(analyses: list):
             model="claude-haiku-4-5-20251001", max_tokens=80,
             messages=[{"role":"user","content":_bp}])
         _b2  = _r2.content[0].text.strip()
+        # Strip markdown headers/formatting Haiku sometimes adds
+        import re as _re2
+        _b2 = _re2.sub(r'^[#]+\s+', '', _b2, flags=_re2.MULTILINE)
+        _b2 = _re2.sub(r'\*\*(.+?)\*\*', r'\1', _b2)              # remove **bold**
+        _b2 = _re2.sub(r'\*(.+?)\*', r'\1', _b2)                  # remove *italic*
+        _b2 = _b2.strip()
         if _b2:
             msg += chr(10) + chr(10) + "🤖 " + _b2
     except Exception as _be2:

@@ -891,6 +891,40 @@ def handle_command(text: str, from_chat_id: str):
             except Exception as _e_ca:
                 send_reply(f"\u274C Error: {str(_e_ca)[:100]}", from_chat_id)
 
+
+    elif cmd in ("pnl", "positions", "p&l"):
+        import os as _os_pnl, time as _tm_pnl
+        from technical import get_watchlist as _gwl_pnl
+        from fetcher import fetch_price as _fp_pnl
+        _wl = _gwl_pnl()
+        if not _wl:
+            send_reply("No open positions.", from_chat_id)
+        else:
+            lines_pnl = ["📊 OPEN POSITIONS P&L\n"]
+            _total_cost = 0.0
+            _total_val  = 0.0
+            for _tk, _e in sorted(_wl.items()):
+                try:
+                    _px      = float(_fp_pnl(_tk) or 0)
+                    _strike  = _e.get("strike","?")
+                    _expiry  = _e.get("expiry","?")
+                    _otype   = "C" if "put" not in (_e.get("option_type","call") or "call").lower() else "P"
+                    _score   = _e.get("flow_score","?")
+                    _verdict = _e.get("verdict","WATCH")
+                    _entry   = float(_e.get("entry_limit_price",0) or _e.get("option_price",0) or 0)
+                    _dte     = int(_e.get("dte",0) or 0)
+                    _days    = int((_tm_pnl.time()-float(_e.get("added_at",_tm_pnl.time()) or _tm_pnl.time()))/86400)
+                    _itm_pct = round((_px-float(str(_strike).replace("C","").replace("P","") or 0))/float(str(_strike).replace("C","").replace("P","") or 1)*100,1) if _otype=="C" else round((float(str(_strike).replace("C","").replace("P","") or 0)-_px)/float(str(_strike).replace("C","").replace("P","") or 1)*100,1)
+                    _itm_str = f" {_itm_pct:+.1f}% ITM" if _itm_pct > 0 else f" {abs(_itm_pct):.1f}% OTM"
+                    lines_pnl.append(f"{_tk} {_strike}{_otype} {_expiry} [{_score}/7 {_verdict}]")
+                    lines_pnl.append(f"  Stock: ${_px:.2f}{_itm_str} | DTE: {_dte}d | Day {_days+1} since flow")
+                    if _entry:
+                        lines_pnl.append(f"  Entry limit: ${_entry:.2f}")
+                    lines_pnl.append("")
+                except Exception as _pe:
+                    lines_pnl.append(f"  {_tk}: error {_pe}")
+            send_reply("\n".join(lines_pnl[:80]), from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
