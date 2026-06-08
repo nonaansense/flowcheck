@@ -593,6 +593,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     risk  = risk  or {}
 
     ticker    = trade.get("ticker","?")
+    _tsym     = "$" + str(ticker)  # $ prefix for display
     strike    = str(trade.get("strike","") or "?")
     otype     = ((trade.get("option_type","call") or "call")[0]).upper()
     expiry    = str(trade.get("expiry","") or "?")
@@ -3929,7 +3930,6 @@ async def _run_backtest(tweet: str, tweet_url: str, tweet_time: str):
             return
 
         ticker  = trade.get("ticker","?")
-        _tsym = "$" + str(ticker)
         strike  = trade.get("strike","?")
         otype   = trade.get("option_type","call")[0].upper()
         expiry  = trade.get("expiry","?")

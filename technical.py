@@ -766,9 +766,15 @@ def run_technical_scan(send_sms_fn):
     if not _watch_list:
         return
 
+
+    # Prioritise tickers with active flow score >= 5.0
+    _active  = {t: e for t, e in _watch_list.items() if float(e.get("flow_score",0) or 0) >= 5.0}
+    _general = {t: e for t, e in _watch_list.items() if t not in _active}
+    _wl_ordered = {**_active, **_general}
+
     print(f"[TECHNICAL] Scanning {len(_watch_list)} tickers — {now_et.strftime('%H:%M ET')}: {list(_watch_list.keys())}")
 
-    for ticker, watch_entry in list(_watch_list.items()):
+    for ticker, watch_entry in list(_wl_ordered.items()):
         try:
             time.sleep(0.3)  # ~120 req/min — at Tradier limit but fine
             # Update DTE remaining for cleanup logic
@@ -869,8 +875,9 @@ def run_technical_scan(send_sms_fn):
                     _stale     = False
                     _str_tc    = float(watch_entry.get("strike",0) or 0)
                     _isp_tc    = "put" in (watch_entry.get("option_type","call") or "call").lower()
-                    if _str_tc > 0 and current_price > 0:
-                        _itm_tc = (current_price-_str_tc)/_str_tc*100 if not _isp_tc else (_str_tc-current_price)/_str_tc*100
+                    _cur_px_tc = float(watch_entry.get("flow_stock_price",0) or 0)
+                    if _str_tc > 0 and _cur_px_tc > 0:
+                        _itm_tc = (_cur_px_tc-_str_tc)/_str_tc*100 if not _isp_tc else (_str_tc-_cur_px_tc)/_str_tc*100
                         if _itm_tc > 5.0:
                             _stale = True
                             print(f"[TECHNICAL] {ticker} {'call' if not _isp_tc else 'put'} {_itm_tc:.1f}% ITM — thesis done")
@@ -883,7 +890,7 @@ def run_technical_scan(send_sms_fn):
                             from fetcher import fetch_gex as _fgex_tc, fetch_price as _fpx_tc
                             import time as _ttc; _ttc.sleep(5)
                             _gex_tc  = _fgex_tc(ticker)
-                            _px_tc   = _fpx_tc(ticker) or current_price
+                            _px_tc   = _fpx_tc(ticker) or _cur_px_tc
                             _flip_tc = _gex_tc.get("gamma_flip") if _gex_tc else None
                             _reg_tc  = _gex_tc.get("regime","") if _gex_tc else ""
                             _is_put_tc = "put" in (watch_entry.get("option_type","call") or "call").lower()
