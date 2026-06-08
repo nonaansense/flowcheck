@@ -111,7 +111,10 @@ def build_trade_from_alert(alert: dict) -> dict | None:
     _bid_px   = float(alert.get("bidPrice",0) or alert.get("bid",0) or 0)
     _mid_px   = (_ask_px + _bid_px) / 2 if _ask_px and _bid_px else 0
 
-    if _side_raw in ("ASK", "ABOVE_ASK", "A"):
+    if alert_name in ("FlowCheck High Conviction", "ETFs-Order-Flow"):
+        # Our custom alerts use Ask-side only quickFilters — always FULL_ASK
+        fill_type = "FULL_ASK"
+    elif _side_raw in ("ASK", "ABOVE_ASK", "A"):
         fill_type = "FULL_ASK"
     elif _side_raw in ("BID", "B"):
         opt = "put" if parsed and parsed.get("option_type") == "put" else "call"

@@ -130,7 +130,7 @@ def _format_alert(ticker: str, watch_entry: dict, spot: float,
     flip_str = f"Gamma flip: ${flip:.0f}" if flip else ""
 
     lines = [
-        f"🎯 GEX ENTRY ZONE: {ticker}",
+        f"🎯 GEX ENTRY ZONE: ${ticker}",
         f"Stock {action} ({dist_pct:.1f}% away)",
         f"📅 {age_str}",
         f"",
@@ -141,7 +141,7 @@ def _format_alert(ticker: str, watch_entry: dict, spot: float,
         f"💵 Current: ${spot:.2f} | Entry: ~${spot:.2f}",
         f"🛑 Stop: {stop}",
         f"",
-        f"👀 {ticker} {opt_strike}{'C' if is_call else 'P'} {expiry} [{score}/7 {verdict}]",
+        f"👀 ${ticker} {opt_strike}{'C' if is_call else 'P'} {expiry} [{score}/7 {verdict}]",
     ]
     return "\n".join(l for l in lines if l is not None)
 

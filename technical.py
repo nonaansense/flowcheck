@@ -873,7 +873,7 @@ def run_technical_scan(send_sms_fn):
                                 watch_entry["tech_confirm_alerted"] = time.time()
                                 _flip_str_tc = f"| flip ${_flip_tc:.0f}" if _flip_tc else ""
                                 _upgrade_msg = (
-                                    f"📡 TECHNICAL CONFIRMATION: {ticker}\n"
+                                    f"📡 TECHNICAL CONFIRMATION: ${ticker}\n"
                                     f"Signal: {strength} [{tfs}] + GEX aligned\n"
                                     f"Stock: ${_px_tc:.2f} {_flip_str_tc}\n"
                                     f"{msg.split(chr(10),2)[2] if chr(10) in msg else ''}\n"
@@ -1078,7 +1078,7 @@ def run_technical_scan(send_sms_fn):
                             _age_str    = f"Day {_days_since+1} since flow" if _days_since > 0 else "Same day as flow"
 
                             _entry_msg = (
-                                f"🎯 ENTRY WINDOW: {ticker}\n"
+                                f"🎯 ENTRY WINDOW: ${ticker}\n"
                                 f"GEX + Technical aligned — {strength} [{tfs}]\n"
                                 f"📅 {_age_str}\n"
                                 f"Stock: ${_px_tw:.2f} | {_flip_str}\n"

@@ -99,12 +99,12 @@ def check_trailing_stop(watchlist: dict, send_fn=None):
                 verdict  = entry.get("verdict", "WATCH")
 
                 msg = (
-                    f"🛑 TRAILING STOP: {ticker}\n"
+                    f"🛑 TRAILING STOP: ${ticker}\n"
                     f"Peak: ${prev_hwm:.2f} → Now: ${px:.2f} "
                     f"({drop_pct:.1f}% from peak)\n"
                     f"Threshold: {threshold:.0f}% | "
                     f"Drop: ${prev_hwm-px:.2f}\n"
-                    f"📋 {ticker} {strike}C {expiry} [{score}/7 {verdict}]\n"
+                    f"📋 ${ticker} {strike}C {expiry} [{score}/7 {verdict}]\n"
                     f"→ Consider exiting or moving stop to ${px*0.97:.2f}"
                 )
 

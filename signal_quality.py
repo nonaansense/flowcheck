@@ -22,7 +22,7 @@ def check_trend_alignment(ticker: str, is_call: bool, price_history: list) -> di
     Bearish flow + stock above SMA = possible protection → penalize
 
     price_history: list of closing prices, most recent last
-    Returns: {aligned: bool, sma20: float, current: float, note: str}
+    Returns: {aligned: bool, sma_val: float, current: float, note: str}
     """
     if not price_history or len(price_history) < 10:
         return {"aligned": True, "note": "insufficient price history"}
@@ -32,7 +32,7 @@ def check_trend_alignment(ticker: str, is_call: bool, price_history: list) -> di
     sma_val  = sum(closes) / len(closes)
     current  = closes[-1]
     above    = current > sma_val
-    pct_diff = round((current - sma20) / sma20 * 100, 1)
+    pct_diff = round((current - sma_val) / sma_val * 100, 1)
 
     if is_call and not above:
         return {

@@ -825,7 +825,7 @@ def build_sms(trade: dict, data: dict, result: dict,
                  else (f" | \U0001F4D0 WAIT (${gex_flip:.0f})" if gex_flip else " | \U0001F4D0 WAIT") if _gex_vtag in ("WAIT","CAUTION")
                  else " | \U0001F4D0 GEX POOR" if _gex_vtag=="POOR" else "")
     lines += [
-        f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}",
+        f"{verdict_emoji} {_tsym} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}",
         f"{raw_score}/7{adj_str}→ {final_score}/7 {verdict}{_gex_vstr}",
         f"VIX {vix_str} · SPY {spy_str}{stock_5d_str}{regime_str}",
     ]
@@ -898,11 +898,10 @@ def build_sms(trade: dict, data: dict, result: dict,
     industry     = data.get("company_industry","")
     earn_date    = data.get("next_earnings","")
 
-    context_lines = []
-    # Company name as clickable Yahoo Finance profile link
-    yf_url = f"https://finance.yahoo.com/quote/{ticker}/profile"
+    context_lines = ["━━━ CONTEXT ━━━"]
+    # Company name — plain text (escape_html destroys HTML tags)
     name_str = company_name if company_name else ticker
-    context_lines.append(f'🏢 <a href="{yf_url}">{name_str}</a>')
+    context_lines.append(f"🏢 {name_str}")
 
     # One-line description
     if company_desc:
@@ -963,7 +962,9 @@ def build_sms(trade: dict, data: dict, result: dict,
     except Exception as _spe:
         print(f"[SPREAD] {_spe}")
 
-        lines.extend(context_lines)
+        if context_lines:
+            lines.append("")
+            lines.extend(context_lines)
 
     # ══════════════════════════════════════════
     # SECTION 4: THESIS
@@ -1255,7 +1256,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     if _conv:
         try:
             from confidence_decay import apply_decay, format_decay_note
-            _cur_px_dec = float(data.get("stock_price", current_price) or current_price)
+            _cur_px_dec = float(data.get("stock_price") or trade.get("stock_price") or 0)
             _watch_entry_dec = {}
             try:
                 from technical import get_watchlist as _gwl_dec
@@ -1323,9 +1324,10 @@ def build_sms(trade: dict, data: dict, result: dict,
         _atr_val   = calc_atr(_ph_atr)
         _strike_f2 = float(str(trade.get("strike","0")).replace("C","").replace("P","") or 0)
         _dte2      = int(data.get("days_to_expiry",30) or 30)
-        if _atr_val and _strike_f2 and current_price:
+        _cur_px_atr = float(data.get("stock_price") or trade.get("stock_price") or 0)
+        if _atr_val and _strike_f2 and _cur_px_atr:
             _atr_res = calc_move_probability(
-                current_price, _strike_f2, is_call, _dte2, _atr_val
+                _cur_px_atr, _strike_f2, is_call, _dte2, _atr_val
             )
             _atr_line = format_atr_line(_atr_res)
             if _atr_line:
@@ -1476,7 +1478,7 @@ def build_sms(trade: dict, data: dict, result: dict,
         _h_flags.append(f"⚠️ Wide spread ({_spread_pct:.0f}%) — may be hedge or spread leg")
     if _short_int > 20 and _is_call and _otm_pct > 5:
         _h_flags.append(f"⚠️ Short interest {_short_int:.0f}% — call may be short covering hedge")
-    if _dte_h <= 5 and _prem_h >= 500000 and _is_call:
+    if _dte_h > 0 and _dte_h <= 5 and _prem_h >= 500000 and _is_call:
         _h_flags.append("⚠️ ≤5d DTE on large flow — likely spread leg or expiry hedge")
     if _otm_pct and _otm_pct > 15 and _is_call:
         _h_flags.append(f"⚠️ OTM {_otm_pct:.0f}% — far OTM calls often event hedges, not price targets")
@@ -1538,7 +1540,7 @@ def build_sms(trade: dict, data: dict, result: dict,
         if earn_banner:
             short_lines.append(earn_banner)
         # Line 1: verdict + ticker + option + price + source
-        short_lines.append(f"{verdict_emoji} {ticker} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}")
+        short_lines.append(f"{verdict_emoji} {_tsym} {strike}{otype} {expiry}{dte_str}{px_tag}{src_badge}")
 
         # Line 2: score + key flow data
         prem_raw  = data.get("premium_raw", 0) or 0
@@ -3927,6 +3929,7 @@ async def _run_backtest(tweet: str, tweet_url: str, tweet_time: str):
             return
 
         ticker  = trade.get("ticker","?")
+        _tsym = "$" + str(ticker)
         strike  = trade.get("strike","?")
         otype   = trade.get("option_type","call")[0].upper()
         expiry  = trade.get("expiry","?")

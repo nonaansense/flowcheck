@@ -101,7 +101,7 @@ def _score_setup(ticker: str, entry: dict) -> dict | None:
         otype = "C" if is_call else "P"
         return {
             "ticker":      ticker,
-            "label":       f"{ticker} {strike}{otype} {expiry}",
+            "label":       f"${ticker} {strike}{otype} {expiry}",
             "flow_score":  flow_score,
             "verdict":     verdict,
             "rank_score":  round(rank_score, 2),
