@@ -101,7 +101,7 @@ def send_premarket_summary(analyses: list):
             strike   = str(a.get("strike","") or "?")
             opt_type = str(a.get("option_type","call") or "call")
             expiry   = str(a.get("expiry","") or a.get("expiry_raw","") or "")
-            orig_oi  = 0
+            orig_oi  = int(a.get("open_interest",0) or 0)
             verdict  = str(a.get("verdict","WATCH") or "WATCH")
             score    = a.get("flow_score","?")
             emoji    = "✅" if verdict == "TRADE" else "👀"
@@ -117,13 +117,13 @@ def send_premarket_summary(analyses: list):
                             oi_change = current_oi - orig_oi
                             oi_pct    = round((oi_change / orig_oi) * 100, 1)
                             if oi_change < -orig_oi * 0.20:
-                                oi_str = f" ⚠️ OI -{abs(oi_pct)}% ({orig_oi}→{current_oi}) likely day trade"
-                            elif oi_change > 0:
-                                oi_str = f" ✅ OI +{oi_pct}% ({orig_oi}→{current_oi}) held overnight"
+                                oi_str = f" ⚠️ OI dropped {abs(oi_pct):.0f}% ({orig_oi:,}→{current_oi:,}) — likely closed"
+                            elif oi_change > orig_oi * 0.20:
+                                oi_str = f" ✅ OI grew {oi_pct:.0f}% ({orig_oi:,}→{current_oi:,}) — accumulating"
                             else:
-                                oi_str = f" OI unchanged ({current_oi})"
+                                oi_str = f" OI {current_oi:,} (unchanged)"
                         else:
-                            oi_str = f" OI: {current_oi} (no baseline)"
+                            oi_str = f" OI {current_oi:,}"
                 except Exception as e:
                     print(f"[PREMARKET] OI check error for {ticker}: {e}")
 

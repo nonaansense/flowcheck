@@ -130,6 +130,7 @@ def add_to_watchlist(ticker, trade, result, data=None, send_sms_fn=None):
         # Context
         "source":            _d.get("source",""),
         "analysis_id":       _d.get("analysis_id",""),
+        "open_interest":     int(_d.get("open_interest",0) or _d.get("oi",0) or 0),
         "tweet_url":         trade.get("tweet_url","") or _d.get("tweet_url",""),
         # Conviction
         "conviction_total":  (_d.get("conviction") or {}).get("total",0),
