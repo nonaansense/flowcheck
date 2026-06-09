@@ -94,17 +94,17 @@ def send_premarket_summary(analyses: list):
 
     watches = watches_wl  # alias for display section below
     if watches:
-        # Check OI for each carryover via Tradier
         oi_lines = []
-        for a in watches[:5]:
-            t          = a.get("trade",{})
-            ticker     = t.get("ticker","")
-            strike     = str(t.get("strike",""))
-            opt_type   = t.get("option_type","call")
-            expiry     = t.get("expiry_raw","") or t.get("expiry","")
-            orig_oi    = int(a.get("data",{}).get("open_interest",0) or 0)
-            verdict    = a.get("result",{}).get("verdict","")
-            emoji      = "✅" if verdict == "TRADE" else "👀"
+        for a in list(watches.values())[:5] if isinstance(watches, dict) else watches[:5]:
+            # Watchlist entries are flat dicts (from get_watchlist())
+            ticker   = str(a.get("ticker","") or "")
+            strike   = str(a.get("strike","") or "?")
+            opt_type = str(a.get("option_type","call") or "call")
+            expiry   = str(a.get("expiry","") or a.get("expiry_raw","") or "")
+            orig_oi  = 0
+            verdict  = str(a.get("verdict","WATCH") or "WATCH")
+            score    = a.get("flow_score","?")
+            emoji    = "✅" if verdict == "TRADE" else "👀"
 
             oi_str = ""
             print(f"[PREMARKET OI] {ticker} {strike} expiry={expiry} orig_oi={orig_oi}")
@@ -159,7 +159,7 @@ def send_premarket_summary(analyses: list):
         _bp  = (f"Today is {now_et.strftime('%A %B %d, %Y')}. {_vx2}. "
                 f"In 2 sentences, give a concise setup brief for an options flow trader today. No disclaimers.")
         _r2  = _ant2.Anthropic(api_key=_os2.environ.get("ANTHROPIC_API_KEY","")).messages.create(
-            model="claude-haiku-4-5-20251001", max_tokens=80,
+            model="claude-haiku-4-5-20251001", max_tokens=120,
             messages=[{"role":"user","content":_bp}])
         _b2  = _r2.content[0].text.strip()
         # Strip markdown headers/formatting Haiku sometimes adds
