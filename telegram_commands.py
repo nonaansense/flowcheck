@@ -925,6 +925,35 @@ def handle_command(text: str, from_chat_id: str):
                     lines_pnl.append(f"  {_tk}: error {_pe}")
             send_reply("\n".join(lines_pnl[:80]), from_chat_id)
 
+    elif cmd in ("strangle", "s"):
+        _arg = args[0].upper() if args else ""
+        if not _arg:
+            send_reply("Usage: /strangle TICKER\nExample: /strangle NVDA", from_chat_id)
+        else:
+            send_reply(f"Scoring strangle for {_arg}...", from_chat_id)
+            try:
+                from fetcher import fetch_price as _fp_st
+                from fetcher import fetch_price_history as _fph_st
+                from strangle_scorer import score_strangle
+                from signal_quality import check_iv_rank
+                _px_st  = float(_fp_st(_arg) or 0)
+                if not _px_st:
+                    send_reply(f"No price data for {_arg}", from_chat_id)
+                else:
+                    _ph_st    = _fph_st(_arg, days=252) or []
+                    _iv_res   = check_iv_rank(_arg, 0)
+                    _iv_st    = _iv_res.get("iv_rank")
+                    _res_st   = score_strangle(_arg, _px_st, _ph_st, _iv_st)
+                    if _res_st.get("verdict") == "SKIP":
+                        _reason = _res_st.get("reason","no data")
+                        send_reply(f"${_arg} — {_reason}", from_chat_id)
+                    else:
+                        _fmt = _res_st.get("formatted","")
+                        _msg = f"🎭 STRANGLE: ${_arg} @ ${_px_st:.2f}\n\n{_fmt}"
+                        send_reply(_msg, from_chat_id)
+            except Exception as _ste:
+                send_reply(f"Error: {_ste}", from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -1447,6 +1476,20 @@ def handle_test_command(reply_chat_id: str):
                 lines.append("⚠️ SPX Channel — " + _spx_err[:60])
     else:
         lines.append("⚠️ SPX Channel — TELEGRAM_SPX_CHAT_ID not set")
+
+
+    # Cloudflare queue status
+    try:
+        from cf_queue_poller import get_queue_status
+        _cf = get_queue_status()
+        if _cf.get("configured"):
+            _cf_n = _cf.get("pending", 0)
+            lines.append((ok if _cf_n == 0 else warn) +
+                         f" CF Queue — {_cf_n} pending item(s)")
+        else:
+            lines.append(warn + " CF Queue — not configured")
+    except:
+        lines.append(warn + " CF Queue — not configured")
 
     send_reply(chr(10).join(lines), reply_chat_id)
 

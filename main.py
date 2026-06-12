@@ -334,17 +334,17 @@ async def startup():
         scheduler.add_job(lambda: send_premarket_summary(analyses),
                           "cron", day_of_week="mon-fri", hour=8, minute=0, id="premarket")
         scheduler.add_job(preload_earnings_calendar,
-                          "cron", day_of_week="mon-fri", hour=8, minute=30, id="earnings_preload")
+                          "cron", day_of_week="mon-fri", hour=8, minute=30, id="earnings_preload", max_instances=1)
         scheduler.add_job(lambda: verify_eod_positions(analyses),
-                          "cron", day_of_week="mon-fri", hour=16, minute=15, id="eod_oi")
+                          "cron", day_of_week="mon-fri", hour=16, minute=15, id="eod_oi", max_instances=1)
         scheduler.add_job(lambda: send_eod_summary(analyses) if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=30, id="eod_summary")
         scheduler.add_job(cleanup_expired_positions,
-                          "cron", day_of_week="mon-fri", hour=16, minute=2, id="expire_cleanup")
+                          "cron", day_of_week="mon-fri", hour=16, minute=2, id="expire_cleanup", max_instances=1)
         scheduler.add_job(cleanup_old_analyses,
-                          "cron", hour=0, minute=1, id="analyses_cleanup")
+                          "cron", hour=0, minute=1, id="analyses_cleanup", max_instances=1)
         scheduler.add_job(lambda: remind_open_journal_trades() if is_market_open() else None,
-                          "cron", day_of_week="mon-fri", hour=16, minute=10, id="journal_reminder")
+                          "cron", day_of_week="mon-fri", hour=16, minute=10, id="journal_reminder", max_instances=1)
         scheduler.add_job(lambda: send_position_check() if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=5, id="position_check",
                           max_instances=1, coalesce=True)
@@ -419,7 +419,7 @@ async def startup():
                           "interval", seconds=60, id="price_alerts",
                           max_instances=1, coalesce=True)
         scheduler.add_job(send_weekly_report,
-                          "cron", day_of_week="fri", hour=16, minute=45, id="weekly_report")
+                          "cron", day_of_week="fri", hour=16, minute=45, id="weekly_report", max_instances=1)
 
         # SPY GEX snapshots for day trading context
         if os.environ.get("TELEGRAM_SPX_CHAT_ID"):
@@ -433,7 +433,7 @@ async def startup():
         scheduler.add_job(lambda: check_polygon_health() if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=9, minute=25, id="polygon_health")
         scheduler.add_job(update_paper_outcomes,
-                          "cron", day_of_week="mon-fri", hour=16, minute=5, id="paper_outcomes")
+                          "cron", day_of_week="mon-fri", hour=16, minute=5, id="paper_outcomes", max_instances=1)
         scheduler.add_job(keep_alive_ping,
                           "interval", minutes=5, id="keep_alive")
         scheduler.add_job(check_ifttt_watchdog,
@@ -1537,8 +1537,32 @@ def build_sms(trade: dict, data: dict, result: dict,
 
     if risk_lines:
         lines.append("")
-        lines.append("━━━ RISK ━━━")
-        lines.extend(risk_lines)
+        # Strangle scorer — runs for every alert
+    try:
+        from strangle_scorer import score_strangle
+        _px_str   = float(data.get("stock_price") or trade.get("stock_price") or 0)
+        _ph_str   = data.get("price_history",[]) or []
+        if not _ph_str:
+            try:
+                from fetcher import fetch_price_history as _fph_str
+                _ph_str = _fph_str(ticker, days=252) or []
+            except: pass
+        _iv_str   = None
+        try:
+            from signal_quality import check_iv_rank
+            _iv_res = check_iv_rank(ticker, float(trade.get("iv",0) or 0))
+            _iv_str = _iv_res.get("iv_rank")
+        except: pass
+        if _px_str and _ph_str:
+            _strangle = score_strangle(ticker, _px_str, _ph_str, _iv_str)
+            if _strangle.get("verdict") not in ("SKIP", "PASS"):
+                lines.append("")
+                lines.append(_strangle.get("formatted",""))
+    except Exception as _ste:
+        print(f"[STRANGLE] Error: {_ste}")
+
+    lines.append("━━━ RISK ━━━")
+    lines.extend(risk_lines)
 
     # ══════════════════════════════════════════
     # FOOTER
