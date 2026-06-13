@@ -484,7 +484,53 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             symbol     = alert_data.get("symbol","")
                             premium    = float(alert_data.get("alertPremium",0) or 0)
 
-                            # Route SPX/SPY to dedicated channel (algo + custom alerts)
+                            # ── Repeater channel routing ──────────────────
+                            # "Urgent Repeater" and "Repeat Buyer" with DTE ≤ 14
+                            _is_repeater = any(w in alert_name for w in
+                                               ("Urgent Repeater","Bullflow Repeater",
+                                                "Repeat Buyer","Repeater"))
+                            if _is_repeater:
+                                try:
+                                    _parsed_rep = parse_bullflow_alert(alert_data)
+                                    _dte_rep    = _parsed_rep.get("dte", 99) or 99
+                                    _rep_chat   = os.environ.get("TELEGRAM_REPEATER_CHAT_ID","")
+                                    _rep_bot    = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                                    if _rep_chat and _rep_bot and 0 < _dte_rep <= 14:
+                                        from sms import send_telegram as _st_rep
+                                        _tkr_rep   = _parsed_rep.get("ticker","?")
+                                        _strk_rep  = _parsed_rep.get("strike","?")
+                                        _exp_rep   = _parsed_rep.get("expiry","?")
+                                        _otype_rep = (_parsed_rep.get("option_type","call") or "call")[0].upper()
+                                        _prem_rep  = float(alert_data.get("alertPremium",0) or 0)
+                                        _fill_rep  = _parsed_rep.get("fill_type","")
+                                        _px_rep    = float(alert_data.get("spotPrice") or
+                                                           alert_data.get("stockPrice") or 0)
+                                        _otm_rep   = float(alert_data.get("percentOtm") or
+                                                           alert_data.get("otmPercent") or 0)
+                                        _prem_str  = (f"${_prem_rep/1_000_000:.1f}M"
+                                                      if _prem_rep >= 1_000_000
+                                                      else f"${_prem_rep/1_000:.0f}K")
+                                        _rep_msg = (
+                                            f"🔁 {alert_name.upper()}: ${_tkr_rep}\n"
+                                            f"{_strk_rep}{_otype_rep} {_exp_rep} | {_dte_rep}d DTE\n"
+                                            f"{_prem_str} {_fill_rep}"
+                                            f"{' ⚡ SWEEP' if _parsed_rep.get('is_sweep') else ''}\n"
+                                            f"Stock: ${_px_rep:.2f}"
+                                            f"{f' | OTM {_otm_rep:.1f}%' if _otm_rep else ''}\n"
+                                            f"⚠️ Short dated — consider spreads\n"
+                                            f"📈 https://www.tradingview.com/chart/?symbol={_tkr_rep}"
+                                        )
+                                        _st_rep(_rep_msg, _rep_bot, _rep_chat)
+                                        print(f"[REPEATER] 🔁 {_tkr_rep} {alert_name} "
+                                              f"{_dte_rep}d → repeater channel")
+                                    elif _dte_rep > 14:
+                                        print(f"[REPEATER] Skipped {alert_name} "
+                                              f"— {_dte_rep}d DTE > 14d")
+                                except Exception as _re:
+                                    print(f"[REPEATER] Error: {_re}")
+                                # Still falls through to normal processing below
+
+                            # ── SPX/ETF channel routing ───────────────────
                             _is_etf_alert  = alert_name in ("ETFs-Unusual-Flow","ETFs-Order-Flow")
                             _is_spx_alert  = (alert_name == "FlowCheck SPX 0DTE")
                             _is_spy_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","SPXL","SPXS"])
