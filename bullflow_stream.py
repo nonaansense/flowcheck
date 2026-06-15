@@ -484,6 +484,35 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             symbol     = alert_data.get("symbol","")
                             premium    = float(alert_data.get("alertPremium",0) or 0)
 
+                            # ── Tape Watcher routing ─────────────────────
+                            _tape_alert_names = [
+                                n.strip() for n in
+                                os.environ.get("TAPE_ALERT_NAMES","Testing-Tape-Watching").split(",")
+                            ]
+                            if alert_name in _tape_alert_names:
+                                try:
+                                    from tape_watcher import process_tape, build_tape_alert
+                                    _parsed_tape = parse_bullflow_alert(alert_data)
+                                    _tape_result = process_tape(_parsed_tape)
+                                    if _tape_result:
+                                        _tape_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                                        _tape_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","")
+                                                      or os.environ.get("TELEGRAM_CHAT_ID",""))
+                                        if _tape_bot and _tape_chat:
+                                            from sms import send_telegram as _st_tape
+                                            _tape_msg = build_tape_alert(_tape_result, alert_name)
+                                            _st_tape(_tape_msg, _tape_bot, _tape_chat)
+                                            # Also send to all-alerts channel
+                                            _all_chat_tape = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+                                            if _all_chat_tape:
+                                                _st_tape(_tape_msg, _tape_bot, _all_chat_tape)
+                                            print(f"[TAPE] ✅ Alert sent: "
+                                                  f"{_tape_result['ticker']} "
+                                                  f"#{_tape_result['occurrence']} fill")
+                                except Exception as _te:
+                                    print(f"[TAPE] Error: {_te}")
+                                # Still falls through to normal FlowCheck processing
+
                             # ── Repeater channel routing ──────────────────
                             # "Urgent Repeater" and "Repeat Buyer" with DTE ≤ 14
                             _is_repeater = any(w in alert_name for w in
