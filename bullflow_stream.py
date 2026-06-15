@@ -413,6 +413,264 @@ def setup_flowcheck_filters():
         print(f"[BULLFLOW] Alert check failed, attempted create: {result}")
 
 
+def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
+    """Process a single Bullflow alert event. Extracted to avoid Python 3.12 scoping issues."""
+    import os, time
+    alert_name = alert_data.get("alertName", "")
+    alert_type = alert_data.get("alertType", "")
+    symbol     = alert_data.get("symbol", "")
+    premium    = float(alert_data.get("alertPremium", 0) or 0)
+    alert_id   = msg.get("id","")
+    alert_data = msg.get("data",{})
+    alert_type = alert_data.get("alertType","")
+    alert_name = alert_data.get("alertName","")
+    symbol     = alert_data.get("symbol","")
+    premium    = float(alert_data.get("alertPremium",0) or 0)
+    
+    # ── Tape Watcher routing ─────────────────────
+    _tape_alert_names = [
+        n.strip() for n in
+        os.environ.get("TAPE_ALERT_NAMES","Testing-Tape-Watching").split(",")
+    ]
+    if alert_name in _tape_alert_names:
+        try:
+            from tape_watcher import process_tape, build_tape_alert
+            # Parse alert_data inline (no separate parse function)
+            _sym_raw  = alert_data.get("symbol","") or ""
+            import re as _re_tp
+            _tk_m = _re_tp.match(r"O:([A-Z]+)\d", _sym_raw)
+            _tkr_tp   = _tk_m.group(1) if _tk_m else _sym_raw
+            _fill_px  = float(alert_data.get("averageFillPrice",0) or 0)
+            _stk_px   = float(alert_data.get("spotPrice") or
+                              alert_data.get("stockPrice") or 0)
+            _prem_tp  = float(alert_data.get("alertPremium",0) or 0)
+            _exp_tp   = alert_data.get("expiry","") or alert_data.get("expirationDate","")
+            _strk_tp  = str(alert_data.get("strike","") or "")
+            _otype_tp = alert_data.get("optionType","call") or "call"
+            _otm_tp   = float(alert_data.get("percentOtm") or
+                              alert_data.get("otmPercent") or 0)
+            _dte_tp   = int(alert_data.get("dte") or 0)
+            _vol_tp   = int(alert_data.get("volume") or
+                            alert_data.get("vol") or 0)
+            _oi_tp    = int(alert_data.get("openInterest") or
+                            alert_data.get("oi") or 1)
+            _sweep_tp = "sweep" in (alert_data.get("alertType","") or "").lower()
+            _parsed_tape = {
+                "ticker":      _tkr_tp,
+                "strike":      _strk_tp,
+                "expiry":      _exp_tp,
+                "option_type": _otype_tp,
+                "option_price": _fill_px,
+                "premium":     _prem_tp,
+                "fill_type":   "FULL_ASK",
+                "is_sweep":    _sweep_tp,
+                "stock_price": _stk_px,
+                "otm_pct":     _otm_tp,
+                "dte":         _dte_tp,
+                "vol_oi_ratio": round(_vol_tp / max(_oi_tp,1), 1),
+            }
+            _tape_result = process_tape(_parsed_tape)
+            if _tape_result:
+                _tape_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                _tape_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","")
+                              or os.environ.get("TELEGRAM_CHAT_ID",""))
+                if _tape_bot and _tape_chat:
+                    from sms import send_telegram as _st_tape
+                    _tape_msg = build_tape_alert(_tape_result, alert_name)
+                    _st_tape(_tape_msg, _tape_bot, _tape_chat)
+                    # Also send to all-alerts channel
+                    _all_chat_tape = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+                    if _all_chat_tape:
+                        _st_tape(_tape_msg, _tape_bot, _all_chat_tape)
+                    print(f"[TAPE] ✅ Alert sent: "
+                          f"{_tape_result['ticker']} "
+                          f"#{_tape_result['occurrence']} fill")
+        except Exception as _te:
+            print(f"[TAPE] Error: {_te}")
+        # Still falls through to normal FlowCheck processing
+    
+    # ── Repeater channel routing ──────────────────
+    # "Urgent Repeater" and "Repeat Buyer" with DTE ≤ 14
+    _is_repeater = any(w in alert_name for w in
+                       ("Urgent Repeater","Bullflow Repeater",
+                        "Repeat Buyer","Repeater"))
+    if _is_repeater:
+        try:
+            # Parse inline — parse_bullflow_alert doesn't exist as a standalone fn
+            _sym_r2  = alert_data.get('symbol','') or ''
+            import re as _re_rp
+            _tk_m2   = _re_rp.match(r'O:([A-Z]+)[0-9]', _sym_r2)
+            _parsed_rep = {
+                'ticker':      _tk_m2.group(1) if _tk_m2 else _sym_r2,
+                'strike':      str(alert_data.get('strike','') or ''),
+                'expiry':      alert_data.get('expiry','') or alert_data.get('expirationDate',''),
+                'option_type': alert_data.get('optionType','call') or 'call',
+                'dte':         int(alert_data.get('dte') or 0),
+                'fill_type':   'FULL_ASK',
+                'is_sweep':    'sweep' in (alert_data.get('alertType','') or '').lower(),
+                'stock_price': float(alert_data.get('spotPrice') or alert_data.get('stockPrice') or 0),
+                'otm_pct':     float(alert_data.get('percentOtm') or alert_data.get('otmPercent') or 0),
+            }
+            _dte_rep    = _parsed_rep.get("dte", 99) or 99
+            _rep_chat   = os.environ.get("TELEGRAM_REPEATER_CHAT_ID","")
+            _rep_bot    = os.environ.get("TELEGRAM_BOT_TOKEN","")
+            if _rep_chat and _rep_bot and 0 < _dte_rep <= 14:
+                from sms import send_telegram as _st_rep
+                _tkr_rep   = _parsed_rep.get("ticker","?")
+                _strk_rep  = _parsed_rep.get("strike","?")
+                _exp_rep   = _parsed_rep.get("expiry","?")
+                _otype_rep = (_parsed_rep.get("option_type","call") or "call")[0].upper()
+                _prem_rep  = float(alert_data.get("alertPremium",0) or 0)
+                _fill_rep  = _parsed_rep.get("fill_type","")
+                _px_rep    = float(alert_data.get("spotPrice") or
+                                   alert_data.get("stockPrice") or 0)
+                _otm_rep   = float(alert_data.get("percentOtm") or
+                                   alert_data.get("otmPercent") or 0)
+                _prem_str  = (f"${_prem_rep/1_000_000:.1f}M"
+                              if _prem_rep >= 1_000_000
+                              else f"${_prem_rep/1_000:.0f}K")
+                _rep_msg = (
+                    f"🔁 {alert_name.upper()}: ${_tkr_rep}\n"
+                    f"{_strk_rep}{_otype_rep} {_exp_rep} | {_dte_rep}d DTE\n"
+                    f"{_prem_str} {_fill_rep}"
+                    f"{' ⚡ SWEEP' if _parsed_rep.get('is_sweep') else ''}\n"
+                    f"Stock: ${_px_rep:.2f}"
+                    f"{f' | OTM {_otm_rep:.1f}%' if _otm_rep else ''}\n"
+                    f"⚠️ Short dated — consider spreads\n"
+                    f"📈 https://www.tradingview.com/chart/?symbol={_tkr_rep}"
+                )
+                _st_rep(_rep_msg, _rep_bot, _rep_chat)
+                print(f"[REPEATER] 🔁 {_tkr_rep} {alert_name} "
+                      f"{_dte_rep}d → repeater channel")
+            elif _dte_rep > 14:
+                print(f"[REPEATER] Skipped {alert_name} "
+                      f"— {_dte_rep}d DTE > 14d")
+        except Exception as _re:
+            print(f"[REPEATER] Error: {_re}")
+        # Still falls through to normal processing below
+    
+    # ── SPX/ETF channel routing ───────────────────
+    _is_etf_alert  = alert_name in ("ETFs-Unusual-Flow","ETFs-Order-Flow")
+    _is_spx_alert  = (alert_name == "FlowCheck SPX 0DTE")
+    _is_spy_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","SPXL","SPXS"])
+    _is_qqq_ticker = any(t in (symbol or "").upper() for t in ["QQQ","SQQQ","TQQQ"])
+    _is_spx_ticker = _is_spy_ticker
+    # $1M min for algo alerts on SPX, $5M min for custom alert
+    _spx_min_prem  = 500_000
+    if (_is_etf_alert and premium >= 300_000) or (_is_spx_alert and premium >= 500_000) or ((_is_spy_ticker or _is_qqq_ticker) and premium >= 500_000):
+        try:
+            from spx_flow import send_spx_alert as _ssa
+            from fetcher import fetch_gex as _fgs
+            import time as _ts2; _ts2.sleep(5)
+            _ssa(alert_data, _fgs("SPY"))
+            print(f"[SPX] Routed {symbol} ${premium:,.0f}")
+        except Exception as _e_spx:
+            print(f"[SPX] {_e_spx}")
+        continue
+    
+    
+    
+    premium    = alert_data.get("alertPremium",0)
+    
+    # Allow all hours — Bullflow filters at source
+    # After-hours and pre-market flow is valid signal
+    
+    print(f"[BULLFLOW] Alert: {alert_id} {alert_type} {symbol} "
+          f"${premium:,.0f} [{alert_name}]")
+    
+    trade = build_trade_from_alert(alert_data)
+    if not trade:
+        continue
+    
+    # Deduplicate — same TICKER within 2 hours = skip
+    # Prevents SNOW 180C, SNOW 185C, SNOW 190C all firing
+    # Dedup on Bullflow alert ID first (catches double-sends)
+    alert_id_key = msg.get("id","")
+    if alert_id_key and alert_id_key in _seen_symbols:
+        print(f"[BULLFLOW] Alert ID dedup skip: {alert_id_key[:8]}... (duplicate)")
+        continue
+    if alert_id_key:
+        _seen_symbols.add(alert_id_key)
+    
+    ticker_dedup_key = f"{trade['ticker']}_{int(float(alert_data.get('timestamp',0)) // 7200)}"
+    symbol_dedup_key = f"{symbol}_{int(float(alert_data.get('timestamp',0)) // 60)}"
+    if ticker_dedup_key in _seen_tickers:
+        print(f"[BULLFLOW] Ticker dedup skip: {trade['ticker']} (already processed in last 2h)")
+        continue
+    if symbol_dedup_key in _seen_symbols:
+        print(f"[BULLFLOW] Symbol dedup skip: {symbol}")
+        continue
+    _seen_symbols.add(symbol_dedup_key)
+    _seen_tickers.add(ticker_dedup_key)
+    if len(_seen_symbols) > 500:
+        _seen_symbols.clear()
+    if len(_seen_tickers) > 200:
+        _seen_tickers.clear()
+    
+    # Filter out ETF hedges if configured
+    exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","").lower() == "true"
+    hedge_etfs  = {"VIX","VIXY","UVXY","SVXY",
+                  "SQQQ","SPXS","SDOW","SPXU",
+                  "TLT","IEF","SHY","TBT","TMF","TMV",
+                  "GLD","SLV","GDX","GDXJ",
+                  "USO","UCO","SCO",
+                  # Index options — always hedges/institutional
+                  "SPX","SPXW","NDX","RUT","VIX"}
+    if exclude_etf and trade["ticker"] in hedge_etfs:
+        print(f"[BULLFLOW] Hedge instrument skip: {symbol}")
+        continue
+    
+    # Skip Grenade trades unless ALLOW_GRENADES=true
+    allow_grenades = os.environ.get("ALLOW_GRENADES","").lower() == "true"
+    if not allow_grenades and "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
+        print(f"[BULLFLOW] Grenade skip (DTE≤7): {symbol}")
+        continue
+    
+    # Skip splits (multi-exchange non-sweep orders)
+    if "split" in alert_name.lower() and "sweep" not in alert_name.lower():
+        print(f"[BULLFLOW] Split order skip: {symbol}")
+        continue
+    
+    # Premium sanity check against Railway variable
+    min_prem = float(os.environ.get("FILTER_MIN_PREMIUM","500000"))
+    if premium < min_prem:
+        print(f"[BULLFLOW] Premium ${premium:,.0f} < ${min_prem:,.0f} skip")
+        continue
+    
+    # ── Prefilter: ITM, sector, DTE, OTM ──────────
+    try:
+        from prefilter import prefilter as _pf
+        _pf_result = _pf(trade)
+        if not _pf_result.get("pass"):
+            print(f"[BULLFLOW] {trade['ticker']} filtered: {_pf_result.get('reason','')}")
+            continue
+    except Exception as _pfe:
+        print(f"[BULLFLOW] Prefilter error: {_pfe}")
+    
+    # Build a synthetic tweet text for the pipeline
+    tweet = (f"${trade['ticker']} - ${premium:,.0f} "
+            f"{trade['option_type'].title()} "
+            f"{trade['strike']} [{alert_name}] via Bullflow")
+    
+    # Process in a separate thread so SSE loop is never blocked
+    # Blocking here causes Bullflow to close the connection mid-stream
+    def _run_process():
+        import asyncio as _aio
+        try:
+            _loop = _aio.new_event_loop()
+            _loop.run_until_complete(process_fn(tweet, None, trade))
+            _loop.close()
+        except RuntimeError as _pe:
+            _msg = str(_pe)
+            if "interpreter shutdown" in _msg or "cannot schedule" in _msg:
+                return
+            print(f"[BULLFLOW] process_alert RuntimeError: {_pe}")
+        except Exception as _pe:
+            print(f"[BULLFLOW] process_alert error: {_pe}")
+    import threading as _thr_bf
+    _thr_bf.Thread(target=_run_process, daemon=True).start()
+    
+
 def stream_alerts(process_fn, send_sms_fn=None):
     """
     Connect to Bullflow SSE stream and process alerts.
@@ -461,7 +719,6 @@ def stream_alerts(process_fn, send_sms_fn=None):
                 retry_delay = 5  # Reset on successful connect
 
                 for line in resp.iter_lines(decode_unicode=True):
-                    alert_name = ''  # safety default — may be overwritten inside elif event=='alert'
                     if not line:
                         continue
                     if not line.startswith("data: "):
@@ -478,256 +735,13 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             pass  # Expected every 10s
 
                         elif event == "alert":
-                            alert_id   = msg.get("id","")
-                            alert_data = msg.get("data",{})
-                            alert_type = alert_data.get("alertType","")
-                            alert_name = alert_data.get("alertName","")
-                            symbol     = alert_data.get("symbol","")
-                            premium    = float(alert_data.get("alertPremium",0) or 0)
-
-                            # ── Tape Watcher routing ─────────────────────
-                            _tape_alert_names = [
-                                n.strip() for n in
-                                os.environ.get("TAPE_ALERT_NAMES","Testing-Tape-Watching").split(",")
-                            ]
-                            if alert_name in _tape_alert_names:
-                                try:
-                                    from tape_watcher import process_tape, build_tape_alert
-                                    # Parse alert_data inline (no separate parse function)
-                                    _sym_raw  = alert_data.get("symbol","") or ""
-                                    import re as _re_tp
-                                    _tk_m = _re_tp.match(r"O:([A-Z]+)\d", _sym_raw)
-                                    _tkr_tp   = _tk_m.group(1) if _tk_m else _sym_raw
-                                    _fill_px  = float(alert_data.get("averageFillPrice",0) or 0)
-                                    _stk_px   = float(alert_data.get("spotPrice") or
-                                                      alert_data.get("stockPrice") or 0)
-                                    _prem_tp  = float(alert_data.get("alertPremium",0) or 0)
-                                    _exp_tp   = alert_data.get("expiry","") or alert_data.get("expirationDate","")
-                                    _strk_tp  = str(alert_data.get("strike","") or "")
-                                    _otype_tp = alert_data.get("optionType","call") or "call"
-                                    _otm_tp   = float(alert_data.get("percentOtm") or
-                                                      alert_data.get("otmPercent") or 0)
-                                    _dte_tp   = int(alert_data.get("dte") or 0)
-                                    _vol_tp   = int(alert_data.get("volume") or
-                                                    alert_data.get("vol") or 0)
-                                    _oi_tp    = int(alert_data.get("openInterest") or
-                                                    alert_data.get("oi") or 1)
-                                    _sweep_tp = "sweep" in (alert_data.get("alertType","") or "").lower()
-                                    _parsed_tape = {
-                                        "ticker":      _tkr_tp,
-                                        "strike":      _strk_tp,
-                                        "expiry":      _exp_tp,
-                                        "option_type": _otype_tp,
-                                        "option_price": _fill_px,
-                                        "premium":     _prem_tp,
-                                        "fill_type":   "FULL_ASK",
-                                        "is_sweep":    _sweep_tp,
-                                        "stock_price": _stk_px,
-                                        "otm_pct":     _otm_tp,
-                                        "dte":         _dte_tp,
-                                        "vol_oi_ratio": round(_vol_tp / max(_oi_tp,1), 1),
-                                    }
-                                    _tape_result = process_tape(_parsed_tape)
-                                    if _tape_result:
-                                        _tape_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
-                                        _tape_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","")
-                                                      or os.environ.get("TELEGRAM_CHAT_ID",""))
-                                        if _tape_bot and _tape_chat:
-                                            from sms import send_telegram as _st_tape
-                                            _tape_msg = build_tape_alert(_tape_result, alert_name)
-                                            _st_tape(_tape_msg, _tape_bot, _tape_chat)
-                                            # Also send to all-alerts channel
-                                            _all_chat_tape = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
-                                            if _all_chat_tape:
-                                                _st_tape(_tape_msg, _tape_bot, _all_chat_tape)
-                                            print(f"[TAPE] ✅ Alert sent: "
-                                                  f"{_tape_result['ticker']} "
-                                                  f"#{_tape_result['occurrence']} fill")
-                                except Exception as _te:
-                                    print(f"[TAPE] Error: {_te}")
-                                # Still falls through to normal FlowCheck processing
-
-                            # ── Repeater channel routing ──────────────────
-                            # "Urgent Repeater" and "Repeat Buyer" with DTE ≤ 14
-                            _is_repeater = any(w in alert_name for w in
-                                               ("Urgent Repeater","Bullflow Repeater",
-                                                "Repeat Buyer","Repeater"))
-                            if _is_repeater:
-                                try:
-                                    # Parse inline — parse_bullflow_alert doesn't exist as a standalone fn
-                                    _sym_r2  = alert_data.get('symbol','') or ''
-                                    import re as _re_rp
-                                    _tk_m2   = _re_rp.match(r'O:([A-Z]+)[0-9]', _sym_r2)
-                                    _parsed_rep = {
-                                        'ticker':      _tk_m2.group(1) if _tk_m2 else _sym_r2,
-                                        'strike':      str(alert_data.get('strike','') or ''),
-                                        'expiry':      alert_data.get('expiry','') or alert_data.get('expirationDate',''),
-                                        'option_type': alert_data.get('optionType','call') or 'call',
-                                        'dte':         int(alert_data.get('dte') or 0),
-                                        'fill_type':   'FULL_ASK',
-                                        'is_sweep':    'sweep' in (alert_data.get('alertType','') or '').lower(),
-                                        'stock_price': float(alert_data.get('spotPrice') or alert_data.get('stockPrice') or 0),
-                                        'otm_pct':     float(alert_data.get('percentOtm') or alert_data.get('otmPercent') or 0),
-                                    }
-                                    _dte_rep    = _parsed_rep.get("dte", 99) or 99
-                                    _rep_chat   = os.environ.get("TELEGRAM_REPEATER_CHAT_ID","")
-                                    _rep_bot    = os.environ.get("TELEGRAM_BOT_TOKEN","")
-                                    if _rep_chat and _rep_bot and 0 < _dte_rep <= 14:
-                                        from sms import send_telegram as _st_rep
-                                        _tkr_rep   = _parsed_rep.get("ticker","?")
-                                        _strk_rep  = _parsed_rep.get("strike","?")
-                                        _exp_rep   = _parsed_rep.get("expiry","?")
-                                        _otype_rep = (_parsed_rep.get("option_type","call") or "call")[0].upper()
-                                        _prem_rep  = float(alert_data.get("alertPremium",0) or 0)
-                                        _fill_rep  = _parsed_rep.get("fill_type","")
-                                        _px_rep    = float(alert_data.get("spotPrice") or
-                                                           alert_data.get("stockPrice") or 0)
-                                        _otm_rep   = float(alert_data.get("percentOtm") or
-                                                           alert_data.get("otmPercent") or 0)
-                                        _prem_str  = (f"${_prem_rep/1_000_000:.1f}M"
-                                                      if _prem_rep >= 1_000_000
-                                                      else f"${_prem_rep/1_000:.0f}K")
-                                        _rep_msg = (
-                                            f"🔁 {alert_name.upper()}: ${_tkr_rep}\n"
-                                            f"{_strk_rep}{_otype_rep} {_exp_rep} | {_dte_rep}d DTE\n"
-                                            f"{_prem_str} {_fill_rep}"
-                                            f"{' ⚡ SWEEP' if _parsed_rep.get('is_sweep') else ''}\n"
-                                            f"Stock: ${_px_rep:.2f}"
-                                            f"{f' | OTM {_otm_rep:.1f}%' if _otm_rep else ''}\n"
-                                            f"⚠️ Short dated — consider spreads\n"
-                                            f"📈 https://www.tradingview.com/chart/?symbol={_tkr_rep}"
-                                        )
-                                        _st_rep(_rep_msg, _rep_bot, _rep_chat)
-                                        print(f"[REPEATER] 🔁 {_tkr_rep} {alert_name} "
-                                              f"{_dte_rep}d → repeater channel")
-                                    elif _dte_rep > 14:
-                                        print(f"[REPEATER] Skipped {alert_name} "
-                                              f"— {_dte_rep}d DTE > 14d")
-                                except Exception as _re:
-                                    print(f"[REPEATER] Error: {_re}")
-                                # Still falls through to normal processing below
-
-                            # ── SPX/ETF channel routing ───────────────────
-                            _is_etf_alert  = alert_name in ("ETFs-Unusual-Flow","ETFs-Order-Flow")
-                            _is_spx_alert  = (alert_name == "FlowCheck SPX 0DTE")
-                            _is_spy_ticker = any(t in (symbol or "").upper() for t in ["SPY","SPXW","SPXL","SPXS"])
-                            _is_qqq_ticker = any(t in (symbol or "").upper() for t in ["QQQ","SQQQ","TQQQ"])
-                            _is_spx_ticker = _is_spy_ticker
-                            # $1M min for algo alerts on SPX, $5M min for custom alert
-                            _spx_min_prem  = 500_000
-                            if (_is_etf_alert and premium >= 300_000) or (_is_spx_alert and premium >= 500_000) or ((_is_spy_ticker or _is_qqq_ticker) and premium >= 500_000):
-                                try:
-                                    from spx_flow import send_spx_alert as _ssa
-                                    from fetcher import fetch_gex as _fgs
-                                    import time as _ts2; _ts2.sleep(5)
-                                    _ssa(alert_data, _fgs("SPY"))
-                                    print(f"[SPX] Routed {symbol} ${premium:,.0f}")
-                                except Exception as _e_spx:
-                                    print(f"[SPX] {_e_spx}")
-                                continue
-
-
-
-                            premium    = alert_data.get("alertPremium",0)
-
-                            # Allow all hours — Bullflow filters at source
-                            # After-hours and pre-market flow is valid signal
-
-                            print(f"[BULLFLOW] Alert: {alert_id} {alert_type} {symbol} "
-                                  f"${premium:,.0f} [{alert_name}]")
-
-                            trade = build_trade_from_alert(alert_data)
-                            if not trade:
-                                continue
-
-                            # Deduplicate — same TICKER within 2 hours = skip
-                            # Prevents SNOW 180C, SNOW 185C, SNOW 190C all firing
-                            # Dedup on Bullflow alert ID first (catches double-sends)
-                            alert_id_key = msg.get("id","")
-                            if alert_id_key and alert_id_key in _seen_symbols:
-                                print(f"[BULLFLOW] Alert ID dedup skip: {alert_id_key[:8]}... (duplicate)")
-                                continue
-                            if alert_id_key:
-                                _seen_symbols.add(alert_id_key)
-
-                            ticker_dedup_key = f"{trade['ticker']}_{int(float(alert_data.get('timestamp',0)) // 7200)}"
-                            symbol_dedup_key = f"{symbol}_{int(float(alert_data.get('timestamp',0)) // 60)}"
-                            if ticker_dedup_key in _seen_tickers:
-                                print(f"[BULLFLOW] Ticker dedup skip: {trade['ticker']} (already processed in last 2h)")
-                                continue
-                            if symbol_dedup_key in _seen_symbols:
-                                print(f"[BULLFLOW] Symbol dedup skip: {symbol}")
-                                continue
-                            _seen_symbols.add(symbol_dedup_key)
-                            _seen_tickers.add(ticker_dedup_key)
-                            if len(_seen_symbols) > 500:
-                                _seen_symbols.clear()
-                            if len(_seen_tickers) > 200:
-                                _seen_tickers.clear()
-
-                            # Filter out ETF hedges if configured
-                            exclude_etf = os.environ.get("FILTER_EXCLUDE_ETF_HEDGES","").lower() == "true"
-                            hedge_etfs  = {"VIX","VIXY","UVXY","SVXY",
-                                          "SQQQ","SPXS","SDOW","SPXU",
-                                          "TLT","IEF","SHY","TBT","TMF","TMV",
-                                          "GLD","SLV","GDX","GDXJ",
-                                          "USO","UCO","SCO",
-                                          # Index options — always hedges/institutional
-                                          "SPX","SPXW","NDX","RUT","VIX"}
-                            if exclude_etf and trade["ticker"] in hedge_etfs:
-                                print(f"[BULLFLOW] Hedge instrument skip: {symbol}")
-                                continue
-
-                            # Skip Grenade trades unless ALLOW_GRENADES=true
-                            allow_grenades = os.environ.get("ALLOW_GRENADES","").lower() == "true"
-                            if not allow_grenades and "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
-                                print(f"[BULLFLOW] Grenade skip (DTE≤7): {symbol}")
-                                continue
-
-                            # Skip splits (multi-exchange non-sweep orders)
-                            if "split" in alert_name.lower() and "sweep" not in alert_name.lower():
-                                print(f"[BULLFLOW] Split order skip: {symbol}")
-                                continue
-
-                            # Premium sanity check against Railway variable
-                            min_prem = float(os.environ.get("FILTER_MIN_PREMIUM","500000"))
-                            if premium < min_prem:
-                                print(f"[BULLFLOW] Premium ${premium:,.0f} < ${min_prem:,.0f} skip")
-                                continue
-
-                            # ── Prefilter: ITM, sector, DTE, OTM ──────────
+                            alert_data2 = msg.get("data", {})
                             try:
-                                from prefilter import prefilter as _pf
-                                _pf_result = _pf(trade)
-                                if not _pf_result.get("pass"):
-                                    print(f"[BULLFLOW] {trade['ticker']} filtered: {_pf_result.get('reason','')}")
-                                    continue
-                            except Exception as _pfe:
-                                print(f"[BULLFLOW] Prefilter error: {_pfe}")
-
-                            # Build a synthetic tweet text for the pipeline
-                            tweet = (f"${trade['ticker']} - ${premium:,.0f} "
-                                    f"{trade['option_type'].title()} "
-                                    f"{trade['strike']} [{alert_name}] via Bullflow")
-
-                            # Process in a separate thread so SSE loop is never blocked
-                            # Blocking here causes Bullflow to close the connection mid-stream
-                            def _run_process():
-                                import asyncio as _aio
-                                try:
-                                    _loop = _aio.new_event_loop()
-                                    _loop.run_until_complete(process_fn(tweet, None, trade))
-                                    _loop.close()
-                                except RuntimeError as _pe:
-                                    _msg = str(_pe)
-                                    if "interpreter shutdown" in _msg or "cannot schedule" in _msg:
-                                        return
-                                    print(f"[BULLFLOW] process_alert RuntimeError: {_pe}")
-                                except Exception as _pe:
-                                    print(f"[BULLFLOW] process_alert error: {_pe}")
-                            import threading as _thr_bf
-                            _thr_bf.Thread(target=_run_process, daemon=True).start()
-
+                                _handle_bullflow_alert(alert_data2, process_fn, send_sms_fn)
+                            except Exception as _hbe:
+                                print(f"[BULLFLOW] Alert handler error: {_hbe}")
+                                import traceback
+                                traceback.print_exc()
                     except json.JSONDecodeError:
                         pass
                     except Exception as e:
