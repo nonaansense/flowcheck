@@ -437,39 +437,48 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
         try:
             from tape_watcher import process_tape, build_tape_alert
             # Parse alert_data inline (no separate parse function)
-            _sym_raw  = alert_data.get("symbol","") or ""
+            # Parse from OCC symbol O:TSLA260618C00437500
             import re as _re_tp
-            _tk_m = _re_tp.match(r"O:([A-Z]+)\d", _sym_raw)
-            _tkr_tp   = _tk_m.group(1) if _tk_m else _sym_raw
+            from datetime import datetime as _dt_tp
+            _sym_raw  = alert_data.get("symbol","") or ""
             _fill_px  = float(alert_data.get("averageFillPrice",0) or 0)
             _stk_px   = float(alert_data.get("spotPrice") or
                               alert_data.get("stockPrice") or 0)
             _prem_tp  = float(alert_data.get("alertPremium",0) or 0)
-            _exp_tp   = alert_data.get("expiry","") or alert_data.get("expirationDate","")
-            _strk_tp  = str(alert_data.get("strike","") or "")
-            _otype_tp = alert_data.get("optionType","call") or "call"
+            _vol_tp   = int(alert_data.get("volume") or alert_data.get("vol") or 0)
+            _oi_tp    = int(alert_data.get("openInterest") or alert_data.get("oi") or 1)
+            _sweep_tp = "sweep" in (alert_type or "").lower()
             _otm_tp   = float(alert_data.get("percentOtm") or
-                              alert_data.get("otmPercent") or 0)
-            _dte_tp   = int(alert_data.get("dte") or 0)
-            _vol_tp   = int(alert_data.get("volume") or
-                            alert_data.get("vol") or 0)
-            _oi_tp    = int(alert_data.get("openInterest") or
-                            alert_data.get("oi") or 1)
-            _sweep_tp = "sweep" in (alert_data.get("alertType","") or "").lower()
+                               alert_data.get("otmPercent") or 0)
+            _sym_m = _re_tp.match(r"O:([A-Z]+)(\d{6})([CP])(\d+)", _sym_raw)
+            if _sym_m:
+                _tkr_tp   = _sym_m.group(1)
+                _exp_dt   = _dt_tp.strptime("20" + _sym_m.group(2), "%Y%m%d")
+                _exp_tp   = _exp_dt.strftime("%m/%d/%y")
+                _dte_tp   = max(0, (_exp_dt.date() - _dt_tp.now().date()).days)
+                _otype_tp = "call" if _sym_m.group(3) == "C" else "put"
+                _strk_tp  = str(int(_sym_m.group(4)) / 1000)
+            else:
+                _tkr_tp   = _sym_raw
+                _exp_tp   = alert_data.get("expiry","") or ""
+                _dte_tp   = int(alert_data.get("dte") or 0)
+                _otype_tp = alert_data.get("optionType","call") or "call"
+                _strk_tp  = str(alert_data.get("strike","") or "")
             _parsed_tape = {
-                "ticker":      _tkr_tp,
-                "strike":      _strk_tp,
-                "expiry":      _exp_tp,
-                "option_type": _otype_tp,
+                "ticker":       _tkr_tp,
+                "strike":       _strk_tp,
+                "expiry":       _exp_tp,
+                "option_type":  _otype_tp,
                 "option_price": _fill_px,
-                "premium":     _prem_tp,
-                "fill_type":   "FULL_ASK",
-                "is_sweep":    _sweep_tp,
-                "stock_price": _stk_px,
-                "otm_pct":     _otm_tp,
-                "dte":         _dte_tp,
+                "premium":      _prem_tp,
+                "fill_type":    "FULL_ASK",
+                "is_sweep":     _sweep_tp,
+                "stock_price":  _stk_px,
+                "otm_pct":      _otm_tp,
+                "dte":          _dte_tp,
                 "vol_oi_ratio": round(_vol_tp / max(_oi_tp,1), 1),
             }
+            print(f"[TAPE] Processing: {_tkr_tp} {_strk_tp} {_exp_tp} @ ${_fill_px:.2f}")
             _tape_result = process_tape(_parsed_tape)
             if _tape_result:
                 _tape_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")

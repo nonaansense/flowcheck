@@ -977,6 +977,7 @@ def run_technical_scan(send_sms_fn):
 
                         # Check cascade zones within 1% below
                         _cascade_near = False
+                        _above_flip   = bool(_flip_tw and _px_tw and _px_tw > _flip_tw)
                         if _strikes and _px_tw:
                             _danger = [s for s in _strikes
                                        if float(s["strike"]) < _px_tw
