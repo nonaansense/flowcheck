@@ -461,6 +461,7 @@ def stream_alerts(process_fn, send_sms_fn=None):
                 retry_delay = 5  # Reset on successful connect
 
                 for line in resp.iter_lines(decode_unicode=True):
+                    alert_name = ''  # safety default — may be overwritten inside elif event=='alert'
                     if not line:
                         continue
                     if not line.startswith("data: "):
@@ -492,7 +493,40 @@ def stream_alerts(process_fn, send_sms_fn=None):
                             if alert_name in _tape_alert_names:
                                 try:
                                     from tape_watcher import process_tape, build_tape_alert
-                                    _parsed_tape = parse_bullflow_alert(alert_data)
+                                    # Parse alert_data inline (no separate parse function)
+                                    _sym_raw  = alert_data.get("symbol","") or ""
+                                    import re as _re_tp
+                                    _tk_m = _re_tp.match(r"O:([A-Z]+)\d", _sym_raw)
+                                    _tkr_tp   = _tk_m.group(1) if _tk_m else _sym_raw
+                                    _fill_px  = float(alert_data.get("averageFillPrice",0) or 0)
+                                    _stk_px   = float(alert_data.get("spotPrice") or
+                                                      alert_data.get("stockPrice") or 0)
+                                    _prem_tp  = float(alert_data.get("alertPremium",0) or 0)
+                                    _exp_tp   = alert_data.get("expiry","") or alert_data.get("expirationDate","")
+                                    _strk_tp  = str(alert_data.get("strike","") or "")
+                                    _otype_tp = alert_data.get("optionType","call") or "call"
+                                    _otm_tp   = float(alert_data.get("percentOtm") or
+                                                      alert_data.get("otmPercent") or 0)
+                                    _dte_tp   = int(alert_data.get("dte") or 0)
+                                    _vol_tp   = int(alert_data.get("volume") or
+                                                    alert_data.get("vol") or 0)
+                                    _oi_tp    = int(alert_data.get("openInterest") or
+                                                    alert_data.get("oi") or 1)
+                                    _sweep_tp = "sweep" in (alert_data.get("alertType","") or "").lower()
+                                    _parsed_tape = {
+                                        "ticker":      _tkr_tp,
+                                        "strike":      _strk_tp,
+                                        "expiry":      _exp_tp,
+                                        "option_type": _otype_tp,
+                                        "option_price": _fill_px,
+                                        "premium":     _prem_tp,
+                                        "fill_type":   "FULL_ASK",
+                                        "is_sweep":    _sweep_tp,
+                                        "stock_price": _stk_px,
+                                        "otm_pct":     _otm_tp,
+                                        "dte":         _dte_tp,
+                                        "vol_oi_ratio": round(_vol_tp / max(_oi_tp,1), 1),
+                                    }
                                     _tape_result = process_tape(_parsed_tape)
                                     if _tape_result:
                                         _tape_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
@@ -520,7 +554,21 @@ def stream_alerts(process_fn, send_sms_fn=None):
                                                 "Repeat Buyer","Repeater"))
                             if _is_repeater:
                                 try:
-                                    _parsed_rep = parse_bullflow_alert(alert_data)
+                                    # Parse inline — parse_bullflow_alert doesn't exist as a standalone fn
+                                    _sym_r2  = alert_data.get('symbol','') or ''
+                                    import re as _re_rp
+                                    _tk_m2   = _re_rp.match(r'O:([A-Z]+)[0-9]', _sym_r2)
+                                    _parsed_rep = {
+                                        'ticker':      _tk_m2.group(1) if _tk_m2 else _sym_r2,
+                                        'strike':      str(alert_data.get('strike','') or ''),
+                                        'expiry':      alert_data.get('expiry','') or alert_data.get('expirationDate',''),
+                                        'option_type': alert_data.get('optionType','call') or 'call',
+                                        'dte':         int(alert_data.get('dte') or 0),
+                                        'fill_type':   'FULL_ASK',
+                                        'is_sweep':    'sweep' in (alert_data.get('alertType','') or '').lower(),
+                                        'stock_price': float(alert_data.get('spotPrice') or alert_data.get('stockPrice') or 0),
+                                        'otm_pct':     float(alert_data.get('percentOtm') or alert_data.get('otmPercent') or 0),
+                                    }
                                     _dte_rep    = _parsed_rep.get("dte", 99) or 99
                                     _rep_chat   = os.environ.get("TELEGRAM_REPEATER_CHAT_ID","")
                                     _rep_bot    = os.environ.get("TELEGRAM_BOT_TOKEN","")
