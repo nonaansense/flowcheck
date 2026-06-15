@@ -13,6 +13,9 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
+_seen_symbols: set = set()  # module-level for dedup across calls
+_seen_tickers: set = set()
+
 def parse_occ_symbol(sym: str) -> dict | None:
     """
     Parse OCC option symbol: O:TICKER[YYMMDD][C/P][STRIKE*1000 padded 8 digits]
@@ -694,8 +697,6 @@ def stream_alerts(process_fn, send_sms_fn=None):
 
     _conn_state = {"last_connected": 0.0}  # Avoids global scoping issues
     retry_delay   = 30  # Start high — avoid rapid reconnects on deploy
-    _seen_symbols = set()
-    _seen_tickers = set()
     while True:
         try:
             _now_conn = time.time()
