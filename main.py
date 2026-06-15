@@ -626,6 +626,9 @@ def build_sms(trade: dict, data: dict, result: dict,
 
     ticker    = trade.get("ticker","?")
     _tsym     = "$" + str(ticker)  # $ prefix for display
+    # Pre-compute watch format flag — must be early to avoid Python 3.12 scoping error
+    _watch_prem_pre = float(trade.get("premium",0) or 0)
+    _watch_full     = _watch_prem_pre >= float(os.environ.get("WATCH_FULL_PREMIUM","500000"))
     strike    = str(trade.get("strike","") or "?")
     otype     = ((trade.get("option_type","call") or "call")[0]).upper()
     expiry    = str(trade.get("expiry","") or "?")
@@ -1597,9 +1600,7 @@ def build_sms(trade: dict, data: dict, result: dict,
     lines.append(f"🔗 {base_url.rstrip('/')}/analysis/{analysis_id}")
 
     # WATCH/SKIP get compact format UNLESS premium is large (> $500K)
-    # Large premium WATCH alerts get full details — the flow size justifies it
-    _watch_prem   = float(trade.get("premium",0) or data.get("premium_raw",0) or 0)
-    _watch_full   = _watch_prem >= float(os.environ.get("WATCH_FULL_PREMIUM","500000"))
+    # _watch_full already computed at top of function to avoid Python 3.12 scoping error
     if verdict in ("WATCH", "SKIP") and not _watch_full:
         short_lines = []
         if earn_banner:
