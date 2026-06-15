@@ -785,11 +785,6 @@ def build_sms(trade: dict, data: dict, result: dict,
         dtc_str = f" | {round(float(dtc),1)}d to cover" if dtc else ""
         si_line = f"{si_emoji} Short interest: {si_pct}%{dtc_str} — {si_label}"
 
-    # WATCH banner for large-premium full-format alerts
-    if verdict == "WATCH" and _watch_full:
-        lines.append("👀 WATCH — monitor, no entry yet")
-        lines.append("")
-
     # ══════════════════════════════════════════
     # SECTION 1: SIGNAL
     # ══════════════════════════════════════════
@@ -856,9 +851,12 @@ def build_sms(trade: dict, data: dict, result: dict,
                     _pre_flip_dist = (_px_pre - gex_flip) / _px_pre * 100
                     data["_gex_entry_score"] = "GOOD" if 0 <= _pre_flip_dist <= 3.0 else "WAIT"
 
-    lines = [
-        f"━━━ SIGNAL ━━━",
-    ]
+    lines = []
+    # WATCH banner — must come after lines=[] to avoid Python 3.12 UnboundLocalError
+    if verdict == "WATCH" and _watch_full:
+        lines.append("👀 WATCH — monitor, no entry yet")
+        lines.append("")
+    lines.append("━━━ SIGNAL ━━━")
     if earn_banner:
         lines.append(earn_banner)
     _gex_vtag = data.get("_gex_entry_score","")
