@@ -566,7 +566,7 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
             print(f"[SPX] Routed {symbol} ${premium:,.0f}")
         except Exception as _e_spx:
             print(f"[SPX] {_e_spx}")
-        continue
+        return
     
     
     
@@ -580,7 +580,7 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
     
     trade = build_trade_from_alert(alert_data)
     if not trade:
-        continue
+        return
     
     # Deduplicate — same TICKER within 2 hours = skip
     # Prevents SNOW 180C, SNOW 185C, SNOW 190C all firing
@@ -588,7 +588,7 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
     alert_id_key = msg.get("id","")
     if alert_id_key and alert_id_key in _seen_symbols:
         print(f"[BULLFLOW] Alert ID dedup skip: {alert_id_key[:8]}... (duplicate)")
-        continue
+        return
     if alert_id_key:
         _seen_symbols.add(alert_id_key)
     
@@ -596,10 +596,10 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
     symbol_dedup_key = f"{symbol}_{int(float(alert_data.get('timestamp',0)) // 60)}"
     if ticker_dedup_key in _seen_tickers:
         print(f"[BULLFLOW] Ticker dedup skip: {trade['ticker']} (already processed in last 2h)")
-        continue
+        return
     if symbol_dedup_key in _seen_symbols:
         print(f"[BULLFLOW] Symbol dedup skip: {symbol}")
-        continue
+        return
     _seen_symbols.add(symbol_dedup_key)
     _seen_tickers.add(ticker_dedup_key)
     if len(_seen_symbols) > 500:
@@ -618,24 +618,24 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
                   "SPX","SPXW","NDX","RUT","VIX"}
     if exclude_etf and trade["ticker"] in hedge_etfs:
         print(f"[BULLFLOW] Hedge instrument skip: {symbol}")
-        continue
+        return
     
     # Skip Grenade trades unless ALLOW_GRENADES=true
     allow_grenades = os.environ.get("ALLOW_GRENADES","").lower() == "true"
     if not allow_grenades and "grenade" in alert_name.lower() and trade.get("dte",99) <= 7:
         print(f"[BULLFLOW] Grenade skip (DTE≤7): {symbol}")
-        continue
+        return
     
     # Skip splits (multi-exchange non-sweep orders)
     if "split" in alert_name.lower() and "sweep" not in alert_name.lower():
         print(f"[BULLFLOW] Split order skip: {symbol}")
-        continue
+        return
     
     # Premium sanity check against Railway variable
     min_prem = float(os.environ.get("FILTER_MIN_PREMIUM","500000"))
     if premium < min_prem:
         print(f"[BULLFLOW] Premium ${premium:,.0f} < ${min_prem:,.0f} skip")
-        continue
+        return
     
     # ── Prefilter: ITM, sector, DTE, OTM ──────────
     try:
@@ -643,7 +643,7 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
         _pf_result = _pf(trade)
         if not _pf_result.get("pass"):
             print(f"[BULLFLOW] {trade['ticker']} filtered: {_pf_result.get('reason','')}")
-            continue
+            return
     except Exception as _pfe:
         print(f"[BULLFLOW] Prefilter error: {_pfe}")
     
