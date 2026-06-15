@@ -413,7 +413,7 @@ def setup_flowcheck_filters():
         print(f"[BULLFLOW] Alert check failed, attempted create: {result}")
 
 
-def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
+def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert_id: str = ""):
     """Process a single Bullflow alert event. Extracted to avoid Python 3.12 scoping issues."""
     import os, time
     alert_name = alert_data.get("alertName", "")
