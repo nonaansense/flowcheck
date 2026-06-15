@@ -941,7 +941,15 @@ def handle_command(text: str, from_chat_id: str):
                     send_reply(f"No price data for {_arg}", from_chat_id)
                 else:
                     _ph_st    = _fph_st(_arg, days=252) or []
-                    _iv_res   = check_iv_rank(_arg, 0)
+                    # Try Tradier for live ATM IV first
+                    _iv_live_st = None
+                    try:
+                        from fetcher import fetch_iv_from_tradier as _fiv_st
+                        from datetime import datetime as _dt_st, timedelta as _td_st
+                        _exp_st = (_dt_st.now() + _td_st(days=30)).strftime("%m/%d/%y")
+                        _iv_live_st = _fiv_st(_arg, "0", "call", _exp_st)
+                    except: pass
+                    _iv_res   = check_iv_rank(_arg, _iv_live_st or 0)
                     _iv_st    = _iv_res.get("iv_rank")
                     _res_st   = score_strangle(_arg, _px_st, _ph_st, _iv_st)
                     if _res_st.get("verdict") == "SKIP":

@@ -1574,8 +1574,21 @@ def build_sms(trade: dict, data: dict, result: dict,
             except: pass
         _iv_str   = None
         try:
-            from signal_quality import check_iv_rank
-            _iv_res = check_iv_rank(ticker, float(trade.get("iv",0) or 0))
+            from signal_quality import check_iv_rank, update_iv_history
+            # Prefer Tradier for live IV — more accurate than Bullflow field
+            _iv_live = None
+            try:
+                from fetcher import fetch_iv_from_tradier as _fiv
+                _iv_live = _fiv(ticker,
+                                str(trade.get("strike","")),
+                                str(trade.get("option_type","call")),
+                                str(trade.get("expiry","")))
+            except: pass
+            # Fallback to Bullflow IV field
+            _iv_for_rank = _iv_live or float(trade.get("iv",0) or 0)
+            if _iv_for_rank:
+                update_iv_history(ticker, _iv_for_rank)
+            _iv_res = check_iv_rank(ticker, _iv_for_rank)
             _iv_str = _iv_res.get("iv_rank")
         except: pass
         if _px_str and _ph_str:

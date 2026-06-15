@@ -947,6 +947,63 @@ def fetch_greeks(ticker: str, strike: str, opt_type: str,
         print(f"[FETCHER] Greeks error: {e}")
     return None
 
+def fetch_iv_from_tradier(ticker: str, strike: str, opt_type: str,
+                           expiry_raw: str) -> float | None:
+    """
+    Fetch live implied volatility for a specific option from Tradier.
+    Uses smv_vol from the options chain (more reliable than Bullflow's IV field).
+    Returns IV as a percentage (e.g. 45.2 for 45.2%).
+    """
+    token = os.environ.get("TRADIER_TOKEN","")
+    if not token or not expiry_raw or not strike:
+        return None
+    try:
+        # Convert expiry to YYYY-MM-DD
+        parts = str(expiry_raw).split("/")
+        if len(parts) == 3:
+            m, d, y = parts
+            y = "20"+y if len(y) == 2 else y
+            exp_str = f"{y}-{m.zfill(2)}-{d.zfill(2)}"
+        else:
+            return None
+
+        r = requests.get(
+            "https://api.tradier.com/v1/markets/options/chains",
+            params={"symbol": ticker.upper(), "expiration": exp_str, "greeks": "true"},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=8,
+        )
+        if r.status_code != 200:
+            return None
+
+        contracts = r.json().get("options", {}).get("option", []) or []
+        strike_f  = float(strike)
+        cp        = "call" if "call" in (opt_type or "call").lower() else "put"
+
+        # Find closest matching contract
+        best  = None
+        best_diff = 9999
+        for c in contracts:
+            if (c.get("option_type","").lower() != cp):
+                continue
+            diff = abs(float(c.get("strike",0)) - strike_f)
+            if diff < best_diff:
+                best_diff = diff
+                best = c
+
+        if best:
+            # smv_vol is the model IV (0.0-1.0+), convert to percentage
+            iv_raw = float(best.get("greeks",{}).get("smv_vol") or
+                           best.get("smv_vol") or 0)
+            if iv_raw > 0:
+                iv_pct = round(iv_raw * 100, 1)
+                print(f"[FETCHER] IV from Tradier: {ticker} {strike} {opt_type}: {iv_pct}%")
+                return iv_pct
+    except Exception as e:
+        print(f"[FETCHER] Tradier IV error for {ticker}: {e}")
+    return None
+
+
 def fetch_option_mid(ticker: str, strike: str, opt_type: str, expiry: str) -> float | None:
     """Fetch current mid price of a single option leg via Tradier (free tier)."""
     tradier_token = os.environ.get("TRADIER_TOKEN","")
