@@ -765,6 +765,11 @@ def build_sms(trade: dict, data: dict, result: dict,
         dtc_str = f" | {round(float(dtc),1)}d to cover" if dtc else ""
         si_line = f"{si_emoji} Short interest: {si_pct}%{dtc_str} — {si_label}"
 
+    # WATCH banner for large-premium full-format alerts
+    if verdict == "WATCH" and _watch_full:
+        lines.append("👀 WATCH — monitor, no entry yet")
+        lines.append("")
+
     # ══════════════════════════════════════════
     # SECTION 1: SIGNAL
     # ══════════════════════════════════════════
@@ -1574,8 +1579,11 @@ def build_sms(trade: dict, data: dict, result: dict,
     lines.append(f"📈 https://www.tradingview.com/chart/?symbol={ticker}")
     lines.append(f"🔗 {base_url.rstrip('/')}/analysis/{analysis_id}")
 
-    # WATCH/SKIP get a compact format — full details at analysis URL
-    if verdict in ("WATCH", "SKIP"):
+    # WATCH/SKIP get compact format UNLESS premium is large (> $500K)
+    # Large premium WATCH alerts get full details — the flow size justifies it
+    _watch_prem   = float(trade.get("premium",0) or data.get("premium_raw",0) or 0)
+    _watch_full   = _watch_prem >= float(os.environ.get("WATCH_FULL_PREMIUM","500000"))
+    if verdict in ("WATCH", "SKIP") and not _watch_full:
         short_lines = []
         if earn_banner:
             short_lines.append(earn_banner)
@@ -1639,7 +1647,11 @@ def build_sms(trade: dict, data: dict, result: dict,
         if earn:
             short_lines.append(f"{data.get('expiry_timing_emoji','')} {earn}")
 
-        # Footer
+        # Footer — always include TV link + X link for FlowGod
+        short_lines.append(f"📈 https://www.tradingview.com/chart/?symbol={ticker}")
+        _tw_url_w = trade.get("tweet_url","") or data.get("tweet_url","")
+        if _tw_url_w and str(data.get("source","")).upper() == "FLOWGOD":
+            short_lines.append(f"🐦 {_tw_url_w}")
         short_lines.append(f"📋 Full analysis → {base_url.rstrip('/')}/analysis/{analysis_id}")
 
         return "\n".join([str(l) for l in short_lines if l is not None])
