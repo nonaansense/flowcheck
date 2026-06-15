@@ -437,25 +437,10 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
         try:
             from tape_watcher import process_tape, build_tape_alert
             # Parse alert_data inline (no separate parse function)
-            # Parse from OCC symbol O:TSLA260618C00437500
+            # Parse from OCC symbol O:TSLA260618C00437500 — ticker needed first for price fetch
             import re as _re_tp
             from datetime import datetime as _dt_tp
             _sym_raw  = alert_data.get("symbol","") or ""
-            _fill_px  = float(alert_data.get("averageFillPrice",0) or 0)
-            _stk_px   = float(alert_data.get("spotPrice") or
-                              alert_data.get("stockPrice") or
-                              alert_data.get("underlyingPrice") or 0)
-            if not _stk_px:
-                try:
-                    from fetcher import fetch_price as _gcp
-                    _stk_px = float(_gcp(_tkr_tp) or 0)
-                except: pass
-            _prem_tp  = float(alert_data.get("alertPremium",0) or 0)
-            _vol_tp   = int(alert_data.get("volume") or alert_data.get("vol") or 0)
-            _oi_tp    = int(alert_data.get("openInterest") or alert_data.get("oi") or 1)
-            _sweep_tp = "sweep" in (alert_type or "").lower()
-            _otm_tp   = float(alert_data.get("percentOtm") or
-                               alert_data.get("otmPercent") or 0)
             _sym_m = _re_tp.match(r"O:([A-Z]+)(\d{6})([CP])(\d+)", _sym_raw)
             if _sym_m:
                 _tkr_tp   = _sym_m.group(1)
@@ -470,6 +455,22 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 _dte_tp   = int(alert_data.get("dte") or 0)
                 _otype_tp = alert_data.get("optionType","call") or "call"
                 _strk_tp  = str(alert_data.get("strike","") or "")
+            _fill_px  = float(alert_data.get("averageFillPrice",0) or 0)
+            _prem_tp  = float(alert_data.get("alertPremium",0) or 0)
+            _vol_tp   = int(alert_data.get("volume") or alert_data.get("vol") or 0)
+            _oi_tp    = int(alert_data.get("openInterest") or alert_data.get("oi") or 1)
+            _sweep_tp = "sweep" in (alert_type or "").lower()
+            _otm_tp   = float(alert_data.get("percentOtm") or
+                               alert_data.get("otmPercent") or 0)
+            # Stock price — fetch live if Bullflow doesn't send it
+            _stk_px   = float(alert_data.get("spotPrice") or
+                              alert_data.get("stockPrice") or
+                              alert_data.get("underlyingPrice") or 0)
+            if not _stk_px and _tkr_tp:
+                try:
+                    from fetcher import fetch_price as _gcp
+                    _stk_px = float(_gcp(_tkr_tp) or 0)
+                except: pass
             _parsed_tape = {
                 "ticker":       _tkr_tp,
                 "strike":       _strk_tp,
