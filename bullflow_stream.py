@@ -443,7 +443,13 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             _sym_raw  = alert_data.get("symbol","") or ""
             _fill_px  = float(alert_data.get("averageFillPrice",0) or 0)
             _stk_px   = float(alert_data.get("spotPrice") or
-                              alert_data.get("stockPrice") or 0)
+                              alert_data.get("stockPrice") or
+                              alert_data.get("underlyingPrice") or 0)
+            if not _stk_px:
+                try:
+                    from fetcher import fetch_price as _gcp
+                    _stk_px = float(_gcp(_tkr_tp) or 0)
+                except: pass
             _prem_tp  = float(alert_data.get("alertPremium",0) or 0)
             _vol_tp   = int(alert_data.get("volume") or alert_data.get("vol") or 0)
             _oi_tp    = int(alert_data.get("openInterest") or alert_data.get("oi") or 1)
