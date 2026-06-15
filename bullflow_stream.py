@@ -420,8 +420,6 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
     alert_type = alert_data.get("alertType", "")
     symbol     = alert_data.get("symbol", "")
     premium    = float(alert_data.get("alertPremium", 0) or 0)
-    alert_id   = msg.get("id","")
-    alert_data = msg.get("data",{})
     alert_type = alert_data.get("alertType","")
     alert_name = alert_data.get("alertName","")
     symbol     = alert_data.get("symbol","")
@@ -585,7 +583,7 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None):
     # Deduplicate — same TICKER within 2 hours = skip
     # Prevents SNOW 180C, SNOW 185C, SNOW 190C all firing
     # Dedup on Bullflow alert ID first (catches double-sends)
-    alert_id_key = msg.get("id","")
+    alert_id_key = alert_id or alert_data.get("alertId","") or alert_data.get("id","")
     if alert_id_key and alert_id_key in _seen_symbols:
         print(f"[BULLFLOW] Alert ID dedup skip: {alert_id_key[:8]}... (duplicate)")
         return
@@ -736,8 +734,9 @@ def stream_alerts(process_fn, send_sms_fn=None):
 
                         elif event == "alert":
                             alert_data2 = msg.get("data", {})
+                            _alert_id2   = msg.get("id","")
                             try:
-                                _handle_bullflow_alert(alert_data2, process_fn, send_sms_fn)
+                                _handle_bullflow_alert(alert_data2, process_fn, send_sms_fn, _alert_id2)
                             except Exception as _hbe:
                                 print(f"[BULLFLOW] Alert handler error: {_hbe}")
                                 import traceback
