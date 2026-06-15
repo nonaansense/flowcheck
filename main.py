@@ -332,7 +332,8 @@ def check_ifttt_watchdog():
 async def startup():
     try:
         scheduler.add_job(lambda: send_premarket_summary(analyses),
-                          "cron", day_of_week="mon-fri", hour=8, minute=0, id="premarket")
+                          "cron", day_of_week="mon-fri", hour=8, minute=0,
+                          id="premarket", misfire_grace_time=1800, max_instances=1)
         scheduler.add_job(preload_earnings_calendar,
                           "cron", day_of_week="mon-fri", hour=8, minute=30, id="earnings_preload", max_instances=1)
         scheduler.add_job(lambda: verify_eod_positions(analyses),
@@ -438,6 +439,22 @@ async def startup():
                           "interval", minutes=5, id="keep_alive")
         scheduler.add_job(check_ifttt_watchdog,
                           "interval", minutes=30, id="ifttt_watchdog")
+
+        # Catch-up: fire pre-market on startup if missed due to Railway delay
+        try:
+            from zoneinfo import ZoneInfo as _ZI_st
+            from datetime import datetime as _DT_st
+            import threading as _thr_st
+            _now_st  = _DT_st.now(_ZI_st("America/New_York"))
+            _wday    = _now_st.weekday() < 5
+            _h, _m   = _now_st.hour, _now_st.minute
+            _in_win  = _wday and (_h == 7 and _m >= 50 or _h == 8 and _m <= 59)
+            if _in_win:
+                _thr_st.Timer(5, lambda: send_premarket_summary(analyses)).start()
+                print(f"[STARTUP] Pre-market catch-up fired at {_now_st.strftime(chr(37)+chr(72)+chr(58)+chr(37)+chr(77))} ET")
+        except Exception as _cue:
+            print(f"[STARTUP] Catch-up error: {_cue}")
+
         scheduler.start()
         print("[SCHEDULER] Started: all jobs running")
 
