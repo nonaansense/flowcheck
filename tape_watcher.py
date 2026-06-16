@@ -120,6 +120,7 @@ def process_tape(alert: dict) -> dict | None:
         "ticker":       ticker,
         "strike":       strike,
         "expiry":       expiry,
+        "option_type":  alert.get("option_type","call"),
         "flows":        list(entry["flows"]),  # snapshot — not a live reference
         "first_price":  first_price,
         "latest_price": trade_px,
@@ -128,6 +129,10 @@ def process_tape(alert: dict) -> dict | None:
         "stock_px":     stock_px,
         "otm_pct":      otm_pct,
         "dte":          dte,
+        "earnings_str": alert.get("earnings_str"),
+        "iv_pct":       alert.get("iv_pct"),
+        "iv_rank":      alert.get("iv_rank"),
+        "iv_note":      alert.get("iv_note"),
     }
 
 
@@ -145,11 +150,17 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     first_px = result["first_price"]
     last_px  = result["latest_price"]
 
-    otype    = "C"  # determined from option type if available
+    otype    = "C" if result.get("flows",[{}])[0].get("price",0) else "C"
+    opt_type = result.get("option_type", "call")
+    otype    = "C" if "call" in opt_type.lower() else "P"
     otm_str  = f" | OTM {otm_pct:.1f}%" if otm_pct else ""
     dte_str  = f" | {dte}d DTE" if dte else ""
     tot_str  = (f"${total/1_000_000:.1f}M" if total >= 1_000_000
                 else f"${total/1_000:.0f}K")
+    earn_str = result.get("earnings_str")
+    iv_pct   = result.get("iv_pct")
+    iv_rank  = result.get("iv_rank")
+    base_url = os.environ.get("BASE_URL","https://web-production-19e44.up.railway.app").rstrip("/")
 
     # Flow history lines
     flow_lines = []
@@ -168,6 +179,30 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     occ_label = {2:"2nd",3:"3rd"}.get(occ,f"{occ}th")
     total_chg = _pct_change(first_px, last_px)
 
+    # Build context lines
+    ctx_parts = []
+    if stock_px:  ctx_parts.append(f"${stock_px:.2f}")
+    if otm_str:   ctx_parts.append(otm_str.strip(" |"))
+    if dte_str:   ctx_parts.append(dte_str.strip(" |"))
+    ctx_line = " | ".join(ctx_parts) if ctx_parts else "—"
+
+    # Earnings line
+    earn_line = f"📅 Earnings: {earn_str}" if earn_str else "📅 Earnings: unknown"
+
+    # IV line
+    def _ordinal(n):
+        n = int(n)
+        if 11 <= (n % 100) <= 13: return f"{n}th"
+        return f"{n}{['th','st','nd','rd','th'][min(n%10,4)]}"
+
+    if iv_pct and iv_rank is not None:
+        iv_bar = "█" * int(iv_rank / 10) + "░" * (10 - int(iv_rank / 10))
+        iv_line = f"📊 IV: {iv_pct:.1f}% | Rank {_ordinal(iv_rank)} [{iv_bar}]"
+    elif iv_pct:
+        iv_line = f"📊 IV: {iv_pct:.1f}% (rank building)"
+    else:
+        iv_line = None
+
     lines = [
         f"🎬 {alert_name}",
         f"━━━ TAPE CONFIRMATION ({occ_label} fill) ━━━",
@@ -176,9 +211,15 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
         f"📊 ALL FILLS ({len(flows)} total | {tot_str} deployed):",
     ] + flow_lines + [
         f"",
-        f"Stock: ${stock_px:.2f}{otm_str}{dte_str}",
+        f"Stock: {ctx_line}",
+        earn_line,
+    ]
+    if iv_line:
+        lines.append(iv_line)
+    lines += [
         f"💡 Same strike/expiry bought {occ_label} time — accumulating position",
         f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
+        f"📋 {base_url}/analysis/latest?ticker={ticker}",
     ]
 
     return "\n".join(lines)

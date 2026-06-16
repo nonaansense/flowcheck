@@ -471,6 +471,31 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                     from fetcher import fetch_price as _gcp
                     _stk_px = float(_gcp(_tkr_tp) or 0)
                 except: pass
+            # Earnings date
+            _earn_str_tp = None
+            try:
+                from fetcher import fetch_earnings_date as _fed_tp
+                _earn_res_tp = _fed_tp(_tkr_tp)
+                if _earn_res_tp:
+                    _earn_str_tp = _earn_res_tp[0]
+                    _earn_timing = _earn_res_tp[3]
+                    if _earn_timing: _earn_str_tp += f" {_earn_timing}"
+            except: pass
+
+            # IV rank
+            _iv_pct_tp   = None
+            _iv_rank_tp  = None
+            _iv_note_tp  = None
+            try:
+                from fetcher import fetch_iv_from_tradier as _fiv_tp
+                from signal_quality import check_iv_rank as _civr_tp
+                _iv_pct_tp = _fiv_tp(_tkr_tp, _strk_tp, _otype_tp, _exp_tp)
+                if _iv_pct_tp:
+                    _ivr = _civr_tp(_tkr_tp, _iv_pct_tp)
+                    _iv_rank_tp = _ivr.get("iv_rank")
+                    _iv_note_tp = _ivr.get("note","")
+            except: pass
+
             _parsed_tape = {
                 "ticker":       _tkr_tp,
                 "strike":       _strk_tp,
@@ -484,6 +509,10 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 "otm_pct":      _otm_tp,
                 "dte":          _dte_tp,
                 "vol_oi_ratio": round(_vol_tp / max(_oi_tp,1), 1),
+                "earnings_str": _earn_str_tp,
+                "iv_pct":       _iv_pct_tp,
+                "iv_rank":      _iv_rank_tp,
+                "iv_note":      _iv_note_tp,
             }
             print(f"[TAPE] Processing: {_tkr_tp} {_strk_tp} {_exp_tp} @ ${_fill_px:.2f}")
             _tape_result = process_tape(_parsed_tape)
