@@ -208,7 +208,9 @@ def process_tape(alert: dict) -> dict | None:
         "unique_days":   unique_days,
         "multi_day":     multi_day,
         "total_premium": sum(f["premium"] for f in entry["flows"]),
-        "stock_px":      stock_px,
+        "stock_px":      (stock_px or
+                          next((f["stock_px"] for f in reversed(entry["flows"])
+                               if f.get("stock_px")), 0)),
         "otm_pct":       otm_pct,
         "dte":           dte,
         "earnings_str":  alert.get("earnings_str"),
@@ -239,25 +241,22 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     base_url    = os.environ.get("BASE_URL",
                   "https://web-production-19e44.up.railway.app").rstrip("/")
 
-    opt_type = result.get("option_type", "call")
-    otype    = "C" if "call" in opt_type.lower() else "P"
-    tot_str  = (f"${total/1_000_000:.1f}M" if total >= 1_000_000
-                else f"${total/1_000:.0f}K")
+    opt_type  = result.get("option_type", "call")
+    otype     = "C" if "call" in opt_type.lower() else "P"
+    tot_str   = (f"${total/1_000_000:.1f}M" if total >= 1_000_000
+                 else f"${total/1_000:.0f}K")
     total_chg = _pct_change(first_px, last_px)
     occ_label = _ordinal(occ)
 
     # Multi-day badge
-    if multi_day:
-        day_badge = f" 🗓️ {unique_days}-DAY ACCUMULATION"
-    else:
-        day_badge = ""
+    day_badge = f" \U0001f5d3\ufe0f {unique_days}-DAY ACCUMULATION" if multi_day else ""
 
-    # Flow history lines — show date when multi-day
+    # Flow history lines
     flow_lines = []
     for i, f in enumerate(flows, 1):
         prem_str  = (f"${f['premium']/1_000_000:.1f}M" if f['premium'] >= 1_000_000
                      else f"${f['premium']/1_000:.0f}K")
-        sweep_str = " ⚡" if f.get("sweep") else ""
+        sweep_str = " \u26a1" if f.get("sweep") else ""
         fill_str  = f" {f['fill']}" if f.get("fill") else ""
         chg_str   = _pct_change(first_px, f["price"]) if i > 1 else ""
         time_str  = _format_time(f["ts"])
@@ -267,30 +266,47 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
             f"{prem_str}{fill_str}{sweep_str} | {time_str}{date_str}"
         )
 
-    # Context line
+    # Context line — use latest non-zero stock price from any fill
+    if not stock_px:
+        stock_px = next(
+            (f["stock_px"] for f in reversed(flows) if f.get("stock_px")), 0
+        )
     ctx_parts = []
     if stock_px:  ctx_parts.append(f"${stock_px:.2f}")
     if otm_pct:   ctx_parts.append(f"OTM {otm_pct:.1f}%")
     if dte:       ctx_parts.append(f"{dte}d DTE")
-    ctx_line = " | ".join(ctx_parts) if ctx_parts else "—"
+    ctx_line = " | ".join(ctx_parts) if ctx_parts else "\u2014"
 
-    # Earnings
-    earn_line = f"📅 Earnings: {earn_str}" if earn_str else "📅 Earnings: unknown"
+    # Earnings line
+    earn_line = f"\U0001f4c5 Earnings: {earn_str}" if earn_str else "\U0001f4c5 Earnings: unknown"
 
-    # IV
+    # IV line
     iv_line = None
     if iv_pct and iv_rank is not None:
-        iv_bar  = "█" * int(iv_rank / 10) + "░" * (10 - int(iv_rank / 10))
-        iv_line = f"📊 IV: {iv_pct:.1f}% | Rank {_ordinal(iv_rank)} [{iv_bar}]"
+        iv_bar  = "\u2588" * int(iv_rank / 10) + "\u2591" * (10 - int(iv_rank / 10))
+        iv_line = f"\U0001f4ca IV: {iv_pct:.1f}% | Rank {_ordinal(iv_rank)} [{iv_bar}]"
     elif iv_pct:
-        iv_line = f"📊 IV: {iv_pct:.1f}% (rank building)"
+        iv_line = f"\U0001f4ca IV: {iv_pct:.1f}% (rank building)"
+
+    # Analysis link — resolve from watchlist
+    analysis_link = f"{base_url}/watchlist"
+    try:
+        from storage import get_watchlist as _gwl_ta
+        _wl = _gwl_ta()
+        if isinstance(_wl, dict):
+            _entry = _wl.get(ticker.upper(), {})
+            _aid   = str(_entry.get("analysis_id", "") or "")
+            if _aid and _aid != "0":
+                analysis_link = f"{base_url}/analysis/{_aid}"
+    except:
+        pass
 
     lines = [
-        f"🎬 {alert_name}{day_badge}",
-        f"━━━ TAPE CONFIRMATION ({occ_label} fill) ━━━",
-        f"✅ ${ticker} {strike}{otype} {expiry} — repeat buyer detected{total_chg}",
+        f"\U0001f3ac {alert_name}{day_badge}",
+        f"\u2501\u2501\u2501 TAPE CONFIRMATION ({occ_label} fill) \u2501\u2501\u2501",
+        f"\u2705 ${ticker} {strike}{otype} {expiry} \u2014 repeat buyer detected{total_chg}",
         f"",
-        f"📊 ALL FILLS ({len(flows)} total | {tot_str} deployed):",
+        f"\U0001f4ca ALL FILLS ({len(flows)} total | {tot_str} deployed):",
     ] + flow_lines + [
         f"",
         f"Stock: {ctx_line}",
@@ -299,9 +315,9 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     if iv_line:
         lines.append(iv_line)
     lines += [
-        f"💡 Same strike/expiry bought {occ_label} time — accumulating position",
-        f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
-        f"📋 {base_url}/analysis/latest?ticker={ticker}",
+        f"\U0001f4a1 Same strike/expiry bought {occ_label} time \u2014 accumulating position",
+        f"\U0001f4c8 https://www.tradingview.com/chart/?symbol={ticker}",
+        f"\U0001f4cb Full analysis \u2192 {analysis_link}",
     ]
 
     return "\n".join(lines)
