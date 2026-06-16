@@ -217,6 +217,7 @@ def process_tape(alert: dict) -> dict | None:
         "iv_pct":        alert.get("iv_pct"),
         "iv_rank":       alert.get("iv_rank"),
         "iv_note":       alert.get("iv_note"),
+        "news":          alert.get("news", []),
     }
 
 
@@ -238,6 +239,7 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     earn_str    = result.get("earnings_str")
     iv_pct      = result.get("iv_pct")
     iv_rank     = result.get("iv_rank")
+    news        = result.get("news", [])
     base_url    = os.environ.get("BASE_URL",
                   "https://web-production-19e44.up.railway.app").rstrip("/")
 
@@ -314,7 +316,19 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     ]
     if iv_line:
         lines.append(iv_line)
+    # News headlines
+    if news:
+        lines.append("")
+        lines.append("\U0001f4f0 Recent news:")
+        for _art in news[:3]:
+            _hl = (_art.get("headline","") or "")[:70]
+            _src = _art.get("source","") or ""
+            _age_h = int((time.time() - _art.get("datetime",0)) / 3600)
+            _age_str = f"{_age_h}h ago" if _age_h < 24 else f"{_age_h//24}d ago"
+            lines.append(f"  • {_hl} ({_src}, {_age_str})")
+
     lines += [
+        f"",
         f"\U0001f4a1 Same strike/expiry bought {occ_label} time \u2014 accumulating position",
         f"\U0001f4c8 https://www.tradingview.com/chart/?symbol={ticker}",
         f"\U0001f4cb Full analysis \u2192 {analysis_link}",

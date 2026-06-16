@@ -502,6 +502,13 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                     _iv_note_tp = _ivr.get("note","")
             except: pass
 
+            # Recent news (last 48h)
+            _news_tp = []
+            try:
+                from news_check import fetch_recent_news as _frn_tp
+                _news_tp = _frn_tp(_tkr_tp, hours=48)[:3]  # max 3 headlines
+            except: pass
+
             _parsed_tape = {
                 "ticker":       _tkr_tp,
                 "strike":       _strk_tp,
@@ -519,6 +526,7 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 "iv_pct":       _iv_pct_tp,
                 "iv_rank":      _iv_rank_tp,
                 "iv_note":      _iv_note_tp,
+                "news":         _news_tp,
             }
             print(f"[TAPE] Processing: {_tkr_tp} {_strk_tp} {_exp_tp} @ ${_fill_px:.2f}")
             _tape_result = process_tape(_parsed_tape)
