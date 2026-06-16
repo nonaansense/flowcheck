@@ -468,9 +468,15 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                               alert_data.get("underlyingPrice") or 0)
             if not _stk_px and _tkr_tp:
                 try:
-                    from fetcher import fetch_price as _gcp
-                    _stk_px = float(_gcp(_tkr_tp) or 0)
-                except: pass
+                    from fetcher import fetch_price as _gcp, _price_cache as _pc
+                    # Try cache first (populated by main scanner)
+                    _cached = _pc.get(_tkr_tp)
+                    if _cached:
+                        _stk_px = float(_cached[0] or 0)
+                    else:
+                        _stk_px = float(_gcp(_tkr_tp) or 0)
+                except Exception as _px_e:
+                    print(f"[TAPE] Price fetch error for {_tkr_tp}: {_px_e}")
             # Earnings date
             _earn_str_tp = None
             try:
