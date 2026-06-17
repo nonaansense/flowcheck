@@ -529,22 +529,41 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 "news":         _news_tp,
             }
             print(f"[TAPE] Processing: {_tkr_tp} {_strk_tp} {_exp_tp} @ ${_fill_px:.2f}")
+            _tape_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+            _tape_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","")
+                          or os.environ.get("TELEGRAM_CHAT_ID",""))
+            _all_chat_tape = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+
+            # Exact-match repeat buyer detection (same strike+expiry)
             _tape_result = process_tape(_parsed_tape)
             if _tape_result:
-                _tape_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
-                _tape_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","")
-                              or os.environ.get("TELEGRAM_CHAT_ID",""))
                 if _tape_bot and _tape_chat:
                     from sms import send_telegram as _st_tape
                     _tape_msg = build_tape_alert(_tape_result, alert_name)
                     _st_tape(_tape_msg, _tape_bot, _tape_chat)
-                    # Also send to all-alerts channel
-                    _all_chat_tape = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
                     if _all_chat_tape:
                         _st_tape(_tape_msg, _tape_bot, _all_chat_tape)
                     print(f"[TAPE] ✅ Alert sent: "
                           f"{_tape_result['ticker']} "
                           f"#{_tape_result['occurrence']} fill")
+
+            # Broad ticker-level cluster detection (different strikes/expiries,
+            # same direction, accumulating within a rolling window)
+            try:
+                from ticker_cluster import process_cluster, build_cluster_alert
+                _cluster_result = process_cluster(_parsed_tape)
+                if _cluster_result:
+                    if _tape_bot and _tape_chat:
+                        from sms import send_telegram as _st_cl
+                        _cluster_msg = build_cluster_alert(_cluster_result, alert_name)
+                        _st_cl(_cluster_msg, _tape_bot, _tape_chat)
+                        if _all_chat_tape:
+                            _st_cl(_cluster_msg, _tape_bot, _all_chat_tape)
+                        print(f"[CLUSTER] ✅ Alert sent: "
+                              f"{_cluster_result['ticker']} "
+                              f"{_cluster_result['distinct_count']} contracts")
+            except Exception as _ce:
+                print(f"[CLUSTER] Error: {_ce}")
         except Exception as _te:
             print(f"[TAPE] Error: {_te}")
         # Still falls through to normal FlowCheck processing

@@ -22,6 +22,19 @@ HIGH_IMPACT_KEYWORDS = [
     "ism manufacturing", "ism services",
 ]
 
+# Hardcoded FOMC decision dates (day 2 of each 2-day meeting) — Finnhub's free
+# tier calendar is unreliable for Fed events, so this guarantees we never miss one.
+# Source: federalreserve.gov/monetarypolicy/fomccalendars.htm
+FOMC_DECISION_DATES_2026 = [
+    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
+    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
+]
+FOMC_DECISION_DATES_2025 = [
+    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18",
+    "2025-07-30", "2025-09-17", "2025-10-29", "2025-12-10",
+]
+FOMC_DECISION_DATES = FOMC_DECISION_DATES_2025 + FOMC_DECISION_DATES_2026
+
 _cache: dict = {}
 _cache_ttl = 3600  # 1 hour
 
@@ -138,6 +151,21 @@ def get_today_warnings() -> dict:
         "avoid_until":   None,
     }
     events = get_economic_events()
+
+    # Hardcoded FOMC override — Finnhub's calendar is unreliable for Fed events
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    if today_str in FOMC_DECISION_DATES:
+        already_has_fomc = any("fomc" in str(e.get("event","")).lower() or
+                                "fed" in str(e.get("event","")).lower()
+                                for e in events)
+        if not already_has_fomc:
+            events.append({
+                "event":       "FOMC Rate Decision",
+                "impact":      "EXTREME",
+                "time_et":     "2:00 PM",
+                "avoid_until": "2:30 PM",
+            })
+            print(f"[CALENDAR] FOMC decision day detected (hardcoded override): {today_str}")
     for e in events:
         impact  = str(e.get("impact","LOW"))
         time_et = str(e.get("time_et",""))

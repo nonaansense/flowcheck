@@ -86,7 +86,14 @@ def send_premarket_summary(analyses: list):
     try:
         from technical import get_watchlist as _gwl_pm
         _wl_pm = _gwl_pm()
-        watches_wl = list(_wl_pm.values()) if _wl_pm else []
+        # Keep dict key as fallback ticker in case entry's internal field is stale/missing
+        watches_wl = []
+        if _wl_pm:
+            for _k, _v in _wl_pm.items():
+                if not _v.get("ticker"):
+                    _v = dict(_v)
+                    _v["ticker"] = _k
+                watches_wl.append(_v)
     except:
         watches_wl = []
     lines.append("")
