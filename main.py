@@ -13,7 +13,8 @@ from fetcher import fetch_trade_data
 from scorer import score_trade
 from sms import send_sms, send_telegram
 from economic_calendar import get_today_warnings
-from premarket_summary import send_premarket_summary, send_eod_summary, verify_eod_positions
+from premarket_summary import (send_premarket_summary, send_eod_summary,
+    verify_eod_positions, send_positions_eod_confirmation)
 from technical import add_to_watchlist, run_technical_scan, get_watchlist
 from outcomes import track_outcomes
 from exit_signals import add_position, check_exit_signals, get_open_positions
@@ -338,6 +339,18 @@ async def startup():
                           "cron", day_of_week="mon-fri", hour=8, minute=30, id="earnings_preload", max_instances=1)
         scheduler.add_job(lambda: verify_eod_positions(analyses),
                           "cron", day_of_week="mon-fri", hour=16, minute=15, id="eod_oi", max_instances=1)
+
+        # EOD tape watching summary — 4:00 PM
+        scheduler.add_job(
+            lambda: __import__('tape_watcher').send_tape_eod_summary(),
+            "cron", day_of_week="mon-fri", hour=16, minute=0,
+            id="tape_eod_summary", max_instances=1)
+
+        # EOD open positions confirmation — 4:05 PM
+        scheduler.add_job(
+            lambda: send_positions_eod_confirmation(),
+            "cron", day_of_week="mon-fri", hour=16, minute=5,
+            id="positions_eod", max_instances=1)
         scheduler.add_job(lambda: send_eod_summary(analyses) if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=30, id="eod_summary")
         scheduler.add_job(cleanup_expired_positions,

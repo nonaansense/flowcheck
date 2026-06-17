@@ -323,9 +323,12 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
         for _art in news[:3]:
             _hl = (_art.get("headline","") or "")[:70]
             _src = _art.get("source","") or ""
+            _url = _art.get("url","") or ""
             _age_h = int((time.time() - _art.get("datetime",0)) / 3600)
             _age_str = f"{_age_h}h ago" if _age_h < 24 else f"{_age_h//24}d ago"
             lines.append(f"  • {_hl} ({_src}, {_age_str})")
+            if _url:
+                lines.append(f"    {_url}")
 
     lines += [
         f"",
@@ -335,3 +338,80 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     ]
 
     return "\n".join(lines)
+
+
+def send_tape_eod_summary():
+    """
+    4:00 PM ET — send a summary of all tape watching alerts that fired today.
+    Sends to TRADE channel.
+    """
+    _load_tape()
+
+    ET_tz    = ZoneInfo("America/New_York")
+    today_str = datetime.now(ET_tz).strftime("%b %-d")
+    now      = time.time()
+
+    # Collect entries that had any fills today
+    today_alerts = []
+    for key, entry in _TAPE.items():
+        today_flows = [f for f in entry.get("flows", [])
+                       if f.get("date","") == today_str]
+        if not today_flows or entry.get("alert_count", 0) == 0:
+            continue
+
+        flows     = entry["flows"]
+        all_today = len(today_flows)
+        total_d   = len(set(f.get("date","") for f in flows))
+        prem_tot  = sum(f["premium"] for f in flows)
+        first_px  = entry.get("first_price", 0)
+        last_px   = today_flows[-1]["price"]
+        chg       = _pct_change(first_px, last_px).strip()
+        multi     = f" 🗓️ {total_d}d" if total_d > 1 else ""
+
+        prem_str  = (f"${prem_tot/1_000_000:.1f}M" if prem_tot >= 1_000_000
+                     else f"${prem_tot/1_000:.0f}K")
+
+        opt_type  = "C" if "call" in entry.get("option_type","call").lower() else "P"
+        ticker    = entry["ticker"]
+        strike    = entry["strike"]
+        expiry    = entry["expiry"]
+        fills     = len(flows)
+
+        today_alerts.append({
+            "ticker": ticker,
+            "line":   (f"  ${ticker} {strike}{opt_type} {expiry} "
+                       f"— {fills} fills | {prem_str} | ${first_px:.2f}→${last_px:.2f} {chg}{multi}"),
+            "prem":   prem_tot,
+        })
+
+    # Sort by total premium descending
+    today_alerts.sort(key=lambda x: x["prem"], reverse=True)
+
+    bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+    chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+            os.environ.get("TELEGRAM_CHAT_ID",""))
+
+    if not bot or not chat:
+        print("[TAPE-EOD] No bot/chat configured")
+        return
+
+    if not today_alerts:
+        msg = (f"🎬 Tape Watching EOD — {today_str}\n"
+               f"No repeat buyer alerts fired today.")
+    else:
+        lines = [
+            f"🎬 Tape Watching EOD — {today_str}",
+            f"━━━ {len(today_alerts)} ticker(s) with repeat flow ━━━",
+            "",
+        ]
+        for a in today_alerts:
+            lines.append(a["line"])
+        lines += ["", f"💡 Multi-day entries marked 🗓️ Nd"]
+        msg = "\n".join(lines)
+
+    try:
+        from sms import send_telegram
+        send_telegram(msg, bot, chat)
+        print(f"[TAPE-EOD] Sent summary — {len(today_alerts)} tickers")
+    except Exception as e:
+        print(f"[TAPE-EOD] Send error: {e}")

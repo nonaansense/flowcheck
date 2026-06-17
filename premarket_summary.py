@@ -318,3 +318,97 @@ def verify_eod_positions(analyses: list):
         print(f"[EOD-OI] Sent verification for {len(confirmations)} confirmed, {len(warnings)} warnings")
     else:
         print(f"[EOD-OI] OI verification complete — no significant changes")
+
+
+def send_positions_eod_confirmation():
+    """
+    4:05 PM ET — send a clean list of all positions still open at end of day.
+    Shows ticker, option, DTE remaining, conviction, entry price.
+    """
+    import os, time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    ET_tz    = ZoneInfo("America/New_York")
+    today    = datetime.now(ET_tz)
+    day_str  = today.strftime("%b %-d")
+
+    bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+    chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+            os.environ.get("TELEGRAM_CHAT_ID",""))
+    if not bot or not chat:
+        return
+
+    try:
+        from technical import get_watchlist
+        watches = get_watchlist()
+    except Exception as e:
+        print(f"[EOD-POS] Watchlist error: {e}")
+        return
+
+    if not watches:
+        return
+
+    positions = []
+    for ticker, entry in (watches.items() if isinstance(watches, dict) else {}):
+        expiry  = entry.get("expiry","") or entry.get("expiry_raw","")
+        dte     = int(entry.get("dte_remaining") or entry.get("dte") or 0)
+        strike  = entry.get("strike","")
+        otype   = entry.get("option_type","call")
+        verdict = entry.get("verdict","")
+        conv    = entry.get("conviction_total", entry.get("flow_score",""))
+        entry_px = entry.get("entry_limit_price") or entry.get("flow_price","")
+        score   = float(entry.get("flow_score") or 0)
+
+        opt_lbl = "C" if "call" in str(otype).lower() else "P"
+
+        # Current price
+        curr_px = None
+        try:
+            from fetcher import fetch_price as _fp
+            curr_px = _fp(ticker)
+        except: pass
+
+        # P&L vs entry
+        pnl_str = ""
+        if curr_px and entry_px:
+            try:
+                pct = (float(curr_px) - float(entry_px)) / float(entry_px) * 100
+                pnl_str = f" | stock {'+' if pct>0 else ''}{pct:.1f}%"
+            except: pass
+
+        dte_warn = " ⚠️" if 0 < dte <= 5 else ""
+        verdict_emoji = {"TRADE":"🎯","WATCH":"👀","MILD":"⚠️"}.get(verdict,"📋")
+
+        positions.append({
+            "ticker": ticker,
+            "dte":    dte,
+            "score":  score,
+            "line":   (f"  {verdict_emoji} ${ticker} {strike}{opt_lbl} {expiry} "
+                       f"[{dte}d{dte_warn}] | {conv}/7{pnl_str}"),
+        })
+
+    # Sort: TRADE first, then by DTE ascending
+    positions.sort(key=lambda x: (x["dte"] == 0, x["dte"]))
+
+    if not positions:
+        msg = f"📋 Open Positions EOD — {day_str}\nNo open positions."
+    else:
+        lines = [
+            f"📋 Open Positions EOD — {day_str}",
+            f"━━━ {len(positions)} position(s) still active ━━━",
+            "",
+        ]
+        for p in positions:
+            lines.append(p["line"])
+        lines += [
+            "",
+            "⚠️ = expires within 5 days — review tonight",
+        ]
+        msg = "\n".join(lines)
+
+    try:
+        from sms import send_telegram
+        send_telegram(msg, bot, chat)
+        print(f"[EOD-POS] Sent — {len(positions)} open positions")
+    except Exception as e:
+        print(f"[EOD-POS] Send error: {e}")
