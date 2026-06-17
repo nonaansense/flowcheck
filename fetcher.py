@@ -157,10 +157,11 @@ def get_option_chain_oi(ticker: str, strike: str, opt_type: str, expiry: str) ->
         except:
             pass
 
-        if opt_ticker and poly_key():
+        _poly_k = os.environ.get("POLYGON_API_KEY","")
+        if opt_ticker and _poly_k:
             r = requests.get(
                 f"https://api.polygon.io/v3/snapshot/options/{opt_ticker}",
-                params={"apiKey": poly_key()},
+                params={"apiKey": _poly_k},
                 timeout=8
             )
             if r.status_code == 200:

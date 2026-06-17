@@ -92,10 +92,10 @@ def send_premarket_summary(analyses: list):
     lines.append("")
     lines.append(f"🔄 ACTIVE WATCHLIST ({len(watches_wl)} positions)")
 
-    watches = watches_wl  # alias for display section below
+    watches = watches_wl  # already a list from get_watchlist().values()
     if watches:
         oi_lines = []
-        for a in list(watches.values())[:5] if isinstance(watches, dict) else watches[:5]:
+        for a in watches[:5]:
             # Watchlist entries are flat dicts (from get_watchlist())
             ticker   = str(a.get("ticker","") or "")
             strike   = str(a.get("strike","") or "?")
@@ -127,8 +127,8 @@ def send_premarket_summary(analyses: list):
                 except Exception as e:
                     print(f"[PREMARKET] OI check error for {ticker}: {e}")
 
-            exp_disp = (t.get("expiry_short") or t.get("expiry","?") or "?")
-            if exp_disp in ("None","none",""): exp_disp = t.get("expiry","?")
+            exp_disp = (a.get("expiry_short") or a.get("expiry","?") or "?")
+            if exp_disp in ("None","none",""): exp_disp = a.get("expiry","?")
             lines.append(
                 f"  {emoji} {ticker} {strike}{opt_type[0].upper()} "
                 f"{exp_disp}{oi_str}"
