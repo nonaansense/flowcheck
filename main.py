@@ -1602,6 +1602,54 @@ def build_sms(trade: dict, data: dict, result: dict,
             _iv_res = check_iv_rank(ticker, _iv_for_rank)
             _iv_str = _iv_res.get("iv_rank")
         except: pass
+
+        # Sell-the-news risk check — earnings proximity + IV + macro events
+        try:
+            from signal_quality import check_sell_the_news_risk
+            from fetcher import fetch_earnings_date as _fed_stn
+            from economic_calendar import days_to_next_macro_event as _dtm_stn
+
+            _days_earn_stn = None
+            _earn_past_stn = True
+            _earn_res_stn  = _fed_stn(ticker)
+            if _earn_res_stn:
+                _earn_date_stn = _earn_res_stn[1]
+                _earn_past_stn = _earn_res_stn[2]
+                if not _earn_past_stn:
+                    _days_earn_stn = (_earn_date_stn.date() -
+                                       datetime.now().date()).days
+
+            _macro_stn = _dtm_stn(max_days=14)
+            _days_macro_stn, _macro_name_stn = (_macro_stn if _macro_stn
+                                                 else (None, None))
+
+            _stn_risk = check_sell_the_news_risk(
+                ticker, _days_earn_stn, _earn_past_stn, _iv_str,
+                _days_macro_stn, _macro_name_stn
+            )
+            if _stn_risk.get("risk") in ("HIGH", "MODERATE"):
+                lines.append("")
+                lines.append(_stn_risk["note"])
+        except Exception as _stne:
+            print(f"[STN] Sell-the-news check error: {_stne}")
+
+        # Recent IPO risk check — thin float, no earnings history, signals less reliable
+        try:
+            from signal_quality import check_recent_ipo_risk
+            from fetcher import fetch_ipo_date as _fipo
+            _ipo_days = None
+            try:
+                _ipo_res = _fipo(ticker)
+                if _ipo_res:
+                    _ipo_days = _ipo_res[2]
+            except: pass
+            _ipo_risk = check_recent_ipo_risk(ticker, _ph_str, _ipo_days)
+            if _ipo_risk.get("is_recent_ipo"):
+                lines.append("")
+                lines.append(_ipo_risk["note"])
+        except Exception as _ipoe:
+            print(f"[IPO] Recent IPO check error: {_ipoe}")
+
         if _px_str and _ph_str:
             _strangle = score_strangle(ticker, _px_str, _ph_str, _iv_str)
             if _strangle.get("verdict") not in ("SKIP", "PASS"):

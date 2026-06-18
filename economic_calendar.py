@@ -217,3 +217,50 @@ def get_week_ahead() -> list:
             )
 
     return lines
+
+
+def days_to_next_macro_event(max_days: int = 14) -> tuple[int, str] | None:
+    """
+    Returns (days_until, event_name) for the nearest high-impact macro
+    event (FOMC, CPI, jobs report, etc) within max_days, or None if none.
+    """
+    now = datetime.now(ZoneInfo("America/New_York"))
+
+    # Check hardcoded FOMC dates first (most reliable)
+    for d in FOMC_DECISION_DATES:
+        try:
+            event_date = datetime.strptime(d, "%Y-%m-%d").date()
+            delta = (event_date - now.date()).days
+            if 0 <= delta <= max_days:
+                return (delta, "FOMC Rate Decision")
+        except:
+            pass
+
+    # Then check Finnhub calendar for CPI/NFP/etc
+    try:
+        from_dt = now.strftime("%Y-%m-%d")
+        to_dt   = (now + timedelta(days=max_days)).strftime("%Y-%m-%d")
+        raw     = _fetch_finnhub_calendar(from_dt, to_dt)
+        best    = None
+        for e in raw:
+            country = str(e.get("country","") or "").upper()
+            if country and country != "US":
+                continue
+            name = str(e.get("event","") or "")
+            if not any(k in name.lower() for k in HIGH_IMPACT_KEYWORDS):
+                continue
+            ev_date_str = str(e.get("time","") or "")[:10]
+            try:
+                ev_date = datetime.strptime(ev_date_str, "%Y-%m-%d").date()
+                delta = (ev_date - now.date()).days
+                if 0 <= delta <= max_days:
+                    if best is None or delta < best[0]:
+                        best = (delta, name)
+            except:
+                pass
+        if best:
+            return best
+    except Exception as e:
+        print(f"[CALENDAR] days_to_next_macro_event error: {e}")
+
+    return None

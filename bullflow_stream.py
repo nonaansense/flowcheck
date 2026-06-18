@@ -114,7 +114,7 @@ def build_trade_from_alert(alert: dict) -> dict | None:
     _bid_px   = float(alert.get("bidPrice",0) or alert.get("bid",0) or 0)
     _mid_px   = (_ask_px + _bid_px) / 2 if _ask_px and _bid_px else 0
 
-    if alert_nm in ("FlowCheck High Conviction", "ETFs-Order-Flow"):
+    if alert_nm in ("Big_Money_Order_Flow", "ETFs-Order-Flow"):
         # Our custom alerts use Ask-side only quickFilters — always FULL_ASK
         fill_type = "FULL_ASK"
     elif _side_raw in ("ASK", "ABOVE_ASK", "A"):
@@ -322,7 +322,7 @@ def setup_flowcheck_filters():
     except Exception as e:
         print(f"[BULLFLOW] Could not check existing alerts: {e}")
 
-    # ── FlowCheck High Conviction ─────────────────────────────────────────────
+    # ── Big_Money_Order_Flow ─────────────────────────────────────────────
     print("[BULLFLOW] Creating custom alert filters...")
 
     # High Conviction — read from Railway env vars (BF_HC_*)
@@ -376,7 +376,7 @@ def setup_flowcheck_filters():
     _existing_names2 = [a.get("alertName","") for a in _all_alerts]
 
     for _aname, _afilters in [
-        ("FlowCheck High Conviction", hc_filters),
+        ("Big_Money_Order_Flow", hc_filters),
         ("ETFs-Order-Flow",            etf_filters),
     ]:
         if _aname in _existing_names2:
@@ -394,7 +394,7 @@ def setup_flowcheck_filters():
 
     # NOTE: SPX 0DTE alert removed — managed manually in Bullflow dashboard
 
-    alert_name = filters.pop("name", "FlowCheck High Conviction")
+    alert_name = filters.pop("name", "Big_Money_Order_Flow")
     try:
         import requests as _rqc
         _ck = os.environ.get("BULLFLOW_API_KEY","")
@@ -431,7 +431,7 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     # ── Tape Watcher routing ─────────────────────
     _tape_alert_names = [
         n.strip() for n in
-        os.environ.get("TAPE_ALERT_NAMES","Testing-Tape-Watching").split(",")
+        os.environ.get("TAPE_ALERT_NAMES","Retail_Order_Flow").split(",")
     ]
     if alert_name in _tape_alert_names:
         try:
@@ -502,11 +502,40 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                     _iv_note_tp = _ivr.get("note","")
             except: pass
 
-            # Recent news (last 48h)
+            # Sell-the-news risk
+            _stn_risk_tp = None
+            try:
+                from signal_quality import check_sell_the_news_risk as _stn_tp
+                from economic_calendar import days_to_next_macro_event as _dtm_tp
+                _days_earn2_tp = None
+                _earn_past2_tp = True
+                if _earn_res_tp and not _earn_res_tp[2]:
+                    _earn_past2_tp = False
+                    _days_earn2_tp = (_earn_res_tp[1].date() -
+                                      datetime.now().date()).days
+                _macro2_tp = _dtm_tp(max_days=14)
+                _dmacro_tp, _mname_tp = _macro2_tp if _macro2_tp else (None, None)
+                _stn_risk_tp = _stn_tp(_tkr_tp, _days_earn2_tp, _earn_past2_tp,
+                                        _iv_rank_tp, _dmacro_tp, _mname_tp)
+            except: pass
+
+            # Recent IPO risk
+            _ipo_risk_tp = None
+            try:
+                from signal_quality import check_recent_ipo_risk as _ipr_tp
+                from fetcher import fetch_ipo_date as _fipo_tp
+                _ipo_days_tp = None
+                _ipo_res_tp = _fipo_tp(_tkr_tp)
+                if _ipo_res_tp:
+                    _ipo_days_tp = _ipo_res_tp[2]
+                _ipo_risk_tp = _ipr_tp(_tkr_tp, [], _ipo_days_tp)
+            except: pass
+
+            # Recent news (last 48h) — Finnhub + Google News RSS merged
             _news_tp = []
             try:
-                from news_check import fetch_recent_news as _frn_tp
-                _news_tp = _frn_tp(_tkr_tp, hours=48)[:3]  # max 3 headlines
+                from news_check import fetch_combined_news as _frn_tp
+                _news_tp = _frn_tp(_tkr_tp, hours=48, max_results=3)
             except: pass
 
             _parsed_tape = {
@@ -527,6 +556,9 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 "iv_rank":      _iv_rank_tp,
                 "iv_note":      _iv_note_tp,
                 "news":         _news_tp,
+                "stn_risk":     _stn_risk_tp.get("risk") if _stn_risk_tp else None,
+                "stn_note":     _stn_risk_tp.get("note") if _stn_risk_tp else None,
+                "ipo_note":     _ipo_risk_tp.get("note") if _ipo_risk_tp else None,
             }
             print(f"[TAPE] Processing: {_tkr_tp} {_strk_tp} {_exp_tp} @ ${_fill_px:.2f}")
             _tape_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
@@ -567,7 +599,61 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
         except Exception as _te:
             print(f"[TAPE] Error: {_te}")
         # Still falls through to normal FlowCheck processing
-    
+
+    # ── Cross-filter conviction detector ─────────────────────────────────
+    # Runs on EVERY alert from either filter — big money or retail/tape.
+    # Fires when BIG_MONEY_MIN + RETAIL_MIN thresholds both met, same direction.
+    try:
+        from cross_filter_conviction import process_conviction, build_conviction_alert
+        _cfc_alert_names = [
+            os.environ.get("CONVICTION_BIG_MONEY_FILTER", "Big_Money_Order_Flow"),
+            os.environ.get("CONVICTION_RETAIL_FILTER", "Retail_Order_Flow"),
+        ]
+        if alert_name in _cfc_alert_names:
+            # Re-use _parsed_tape if available (tape watcher block populated it)
+            # otherwise build a minimal dict from raw alert_data
+            _cfc_parsed = {}
+            try:
+                _cfc_parsed = _parsed_tape  # set by tape watcher block above
+            except NameError:
+                import re as _re_cfc
+                from datetime import datetime as _dt_cfc
+                _sym_cfc = alert_data.get("symbol","") or ""
+                _m_cfc   = _re_cfc.match(r"O:([A-Z]+)(\d{6})([CP])(\d+)", _sym_cfc)
+                if _m_cfc:
+                    _exp_cfc = _dt_cfc.strptime("20"+_m_cfc.group(2),"%Y%m%d")
+                    _cfc_parsed = {
+                        "ticker":      _m_cfc.group(1),
+                        "strike":      str(int(_m_cfc.group(4))/1000),
+                        "expiry":      _exp_cfc.strftime("%m/%d/%y"),
+                        "option_type": "call" if _m_cfc.group(3)=="C" else "put",
+                        "option_price": float(alert_data.get("averageFillPrice",0) or 0),
+                        "premium":     float(alert_data.get("alertPremium",0) or 0),
+                        "stock_price": float(alert_data.get("spotPrice") or
+                                             alert_data.get("stockPrice") or 0),
+                        "otm_pct":     float(alert_data.get("percentOtm") or 0),
+                        "dte":         max(0,(_exp_cfc.date()-_dt_cfc.now().date()).days),
+                        "is_sweep":    "sweep" in (alert_type or "").lower(),
+                    }
+
+            if _cfc_parsed.get("ticker"):
+                _cfc_result = process_conviction(_cfc_parsed, alert_name)
+                if _cfc_result:
+                    _cfc_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                    _cfc_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                                 os.environ.get("TELEGRAM_CHAT_ID",""))
+                    if _cfc_bot and _cfc_chat:
+                        from sms import send_telegram as _st_cfc
+                        _cfc_msg = build_conviction_alert(_cfc_result)
+                        _st_cfc(_cfc_msg, _cfc_bot, _cfc_chat)
+                        _all_chat_cfc = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+                        if _all_chat_cfc:
+                            _st_cfc(_cfc_msg, _cfc_bot, _all_chat_cfc)
+                        print(f"[CONVICTION] ✅ Alert sent: "
+                              f"{_cfc_result['ticker']} {_cfc_result['sentiment']}")
+    except Exception as _cfc_e:
+        print(f"[CONVICTION] Error: {_cfc_e}")
+
     # ── Repeater channel routing ──────────────────
     # "Urgent Repeater" and "Repeat Buyer" with DTE ≤ 14
     _is_repeater = any(w in alert_name for w in

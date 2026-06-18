@@ -153,6 +153,8 @@ def process_cluster(alert: dict) -> dict | None:
         "iv_pct":         alert.get("iv_pct"),
         "iv_rank":        alert.get("iv_rank"),
         "news":           alert.get("news", []),
+        "stn_note":       alert.get("stn_note"),
+        "ipo_note":       alert.get("ipo_note"),
     }
 
 
@@ -168,6 +170,8 @@ def build_cluster_alert(result: dict, alert_name: str) -> str:
     iv_pct      = result.get("iv_pct")
     iv_rank     = result.get("iv_rank")
     news        = result.get("news", [])
+    stn_note    = result.get("stn_note")
+    ipo_note    = result.get("ipo_note")
     base_url    = os.environ.get("BASE_URL",
                   "https://web-production-19e44.up.railway.app").rstrip("/")
 
@@ -234,6 +238,10 @@ def build_cluster_alert(result: dict, alert_name: str) -> str:
     ]
     if iv_line:
         lines.append(iv_line)
+    if stn_note:
+        lines.append(stn_note)
+    if ipo_note:
+        lines.append(ipo_note)
 
     if news:
         lines.append("")

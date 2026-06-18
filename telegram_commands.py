@@ -854,7 +854,7 @@ def handle_command(text: str, from_chat_id: str):
         else:
             try:
                 _alerts_to_create = [
-                    ("FlowCheck High Conviction", {
+                    ("Big_Money_Order_Flow", {
                         "premiumMin": 500_000, "dteMin": 2, "dteMax": 30,
                         "minOTMPercent": 1, "maxOTMPercent": 30,
                         "minSigScore": 0.51, "maxIV": 100,

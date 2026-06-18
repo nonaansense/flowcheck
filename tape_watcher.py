@@ -1,7 +1,7 @@
 """
 tape_watcher.py — Multi-day repeat buyer / tape watching detector.
 
-Monitors Bullflow "Testing-Tape-Watching" alert stream.
+Monitors Bullflow "Retail_Order_Flow" alert stream.
 When the same ticker + strike + expiry appears 2+ times with trade price
 same or higher → fires immediately to TRADE channel.
 
@@ -218,6 +218,9 @@ def process_tape(alert: dict) -> dict | None:
         "iv_rank":       alert.get("iv_rank"),
         "iv_note":       alert.get("iv_note"),
         "news":          alert.get("news", []),
+        "stn_risk":      alert.get("stn_risk"),
+        "stn_note":      alert.get("stn_note"),
+        "ipo_note":      alert.get("ipo_note"),
     }
 
 
@@ -240,6 +243,8 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     iv_pct      = result.get("iv_pct")
     iv_rank     = result.get("iv_rank")
     news        = result.get("news", [])
+    stn_note    = result.get("stn_note")
+    ipo_note    = result.get("ipo_note")
     base_url    = os.environ.get("BASE_URL",
                   "https://web-production-19e44.up.railway.app").rstrip("/")
 
@@ -316,6 +321,10 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     ]
     if iv_line:
         lines.append(iv_line)
+    if stn_note:
+        lines.append(stn_note)
+    if ipo_note:
+        lines.append(ipo_note)
     # News headlines
     if news:
         lines.append("")

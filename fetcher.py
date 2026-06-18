@@ -1775,3 +1775,30 @@ def fetch_gex(ticker: str) -> dict:
         return {}
 
 
+
+
+def fetch_ipo_date(ticker: str):
+    """
+    Checks Finnhub's IPO calendar (120-day lookback) for this ticker's
+    listing date. Returns (date_str, datetime_obj, days_since) or None.
+    """
+    try:
+        from datetime import datetime, timedelta
+        today    = datetime.now().date()
+        lookback = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+        forward  = datetime.now().strftime("%Y-%m-%d")
+        data = fh_get("/calendar/ipo", {"from": lookback, "to": forward})
+        if data and data.get("ipoCalendar"):
+            for e in data["ipoCalendar"]:
+                if str(e.get("symbol","")).upper() == ticker.upper():
+                    date_str = e.get("date","")
+                    if not date_str:
+                        continue
+                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                    days_since = (today - dt.date()).days
+                    print(f"[FETCHER] {ticker} IPO date: {dt.strftime('%b %d, %Y')} "
+                          f"({days_since}d ago)")
+                    return dt.strftime("%b %d, %Y"), dt, days_since
+    except Exception as e:
+        print(f"[FETCHER] IPO date lookup error for {ticker}: {e}")
+    return None

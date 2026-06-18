@@ -343,3 +343,124 @@ def run_quality_checks(ticker: str, trade: dict, result: dict,
         "iv_rank":  iv_rank,
         "cluster":  cluster,
     }
+
+
+def check_sell_the_news_risk(ticker: str, days_to_earnings: int | None,
+                              earnings_is_past: bool, iv_rank: float | None,
+                              days_to_macro: int | None = None,
+                              macro_event: str | None = None) -> dict:
+    """
+    Estimates whether a trade setup looks like a "buy the rumor, sell the
+    news" pattern — i.e. a nearby catalyst plus elevated IV suggests the
+    move may already be priced in.
+
+    Returns: {risk: "HIGH"/"MODERATE"/"LOW"/"UNKNOWN", note: str}
+    """
+    if days_to_earnings is None and iv_rank is None and days_to_macro is None:
+        return {"risk": "UNKNOWN", "note": "Insufficient data for sell-the-news check"}
+
+    earnings_near      = (days_to_earnings is not None and not earnings_is_past
+                           and 0 <= days_to_earnings <= 5)
+    earnings_very_near  = (days_to_earnings is not None and not earnings_is_past
+                            and 0 <= days_to_earnings <= 2)
+    earnings_far_or_none = (days_to_earnings is None or earnings_is_past
+                             or days_to_earnings > 5)
+
+    iv_elevated      = iv_rank is not None and iv_rank >= 60
+    iv_very_elevated = iv_rank is not None and iv_rank >= 75
+    iv_not_elevated  = iv_rank is None or iv_rank < 60
+
+    macro_near      = days_to_macro is not None and 0 <= days_to_macro <= 2
+    macro_very_near = days_to_macro is not None and days_to_macro == 0
+    macro_far_or_none = days_to_macro is None or days_to_macro > 2
+
+    # ── HIGH risk ──────────────────────────────────────────────────────
+    if macro_very_near:
+        return {"risk": "HIGH",
+                "note": f"⚠️ {macro_event} today — high reversal risk if priced in"}
+    if earnings_very_near and iv_elevated:
+        return {"risk": "HIGH",
+                "note": f"⚠️ Earnings in {days_to_earnings}d + IV rank "
+                        f"{iv_rank:.0f}th — likely priced in, sell-the-news risk"}
+    if earnings_near and iv_very_elevated:
+        return {"risk": "HIGH",
+                "note": f"⚠️ Earnings in {days_to_earnings}d + IV rank "
+                        f"{iv_rank:.0f}th (very elevated) — sell-the-news risk"}
+
+    # ── MODERATE risk ─────────────────────────────────────────────────
+    if earnings_near or macro_near or iv_very_elevated:
+        parts = []
+        if earnings_near:
+            parts.append(f"earnings in {days_to_earnings}d")
+        if macro_near:
+            parts.append(f"{macro_event} in {days_to_macro}d")
+        if iv_very_elevated and not earnings_near:
+            parts.append(f"IV rank {iv_rank:.0f}th (elevated)")
+        return {"risk": "MODERATE",
+                "note": f"📋 {' + '.join(parts)} — some sell-the-news risk, "
+                        f"consider tighter exit"}
+
+    # ── LOW risk ──────────────────────────────────────────────────────
+    if earnings_far_or_none and iv_not_elevated and macro_far_or_none:
+        return {"risk": "LOW",
+                "note": "✅ No nearby catalyst, IV not elevated — room to run"}
+
+    # ── Fallback ──────────────────────────────────────────────────────
+    return {"risk": "MODERATE", "note": "📋 Mixed signals — monitor for reversal"}
+
+
+
+def check_recent_ipo_risk(ticker: str, price_history: list = None,
+                           ipo_days_ago: int | None = None,
+                           threshold_days: int = 60) -> dict:
+    """
+    Flags tickers that recently IPO'd. Technical and flow-confirmation
+    signals are inherently less reliable here: thin public float, no
+    earnings history yet, and mechanical supply dynamics (lockup
+    expirations, insider unlocks) can override normal price action
+    regardless of how clean the flow or technicals look.
+
+    Uses the explicit IPO date when available (from Finnhub's IPO
+    calendar), falling back to price-history length as a proxy when the
+    date isn't found — short history is itself a tell.
+
+    Returns: {is_recent_ipo: bool, days_since_ipo: int|None,
+              trading_days: int, note: str|None}
+    """
+    trading_days = len(price_history) if price_history else 0
+
+    if ipo_days_ago is not None:
+        if ipo_days_ago <= threshold_days:
+            return {
+                "is_recent_ipo": True,
+                "days_since_ipo": ipo_days_ago,
+                "trading_days": trading_days,
+                "note": (f"🆕 IPO'd {ipo_days_ago}d ago — thin float, no "
+                         f"earnings history yet. Watch for lockup/insider "
+                         f"unlock dates; technical/flow signals less reliable."),
+            }
+        return {
+            "is_recent_ipo": False,
+            "days_since_ipo": ipo_days_ago,
+            "trading_days": trading_days,
+            "note": None,
+        }
+
+    # Fallback: short price history is itself a signal of a recent listing
+    # (~20 trading days/month, so 40 days ≈ 2 months of history)
+    if 0 < trading_days < 40:
+        return {
+            "is_recent_ipo": True,
+            "days_since_ipo": None,
+            "trading_days": trading_days,
+            "note": (f"🆕 Only {trading_days}d of price history — likely a "
+                      f"recent IPO. Technical/flow signals less reliable "
+                      f"until more history builds."),
+        }
+
+    return {
+        "is_recent_ipo": False,
+        "days_since_ipo": None,
+        "trading_days": trading_days,
+        "note": None,
+    }
