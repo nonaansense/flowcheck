@@ -152,6 +152,14 @@ def track_outcomes(analyses: list):
             if close_opt and float(entry_opt) > 0:
                 opt_pct = round(((close_opt - float(entry_opt)) / float(entry_opt)) * 100, 1)
 
+        # Capture signal sources that contributed to this alert
+        _signals = []
+        if a.get("tape_rule"):      _signals.append(f"tape:{a['tape_rule']}")
+        if a.get("conviction_bm"):  _signals.append("conviction:bm_auto")
+        elif a.get("conviction"):   _signals.append("conviction:cross_filter")
+        if a.get("cluster"):        _signals.append("cluster")
+        if a.get("sector_cluster"): _signals.append("sector")
+
         result = {
             "date":         today_str,
             "ticker":       ticker,
@@ -165,6 +173,7 @@ def track_outcomes(analyses: list):
             "close_option": close_opt,
             "option_pct":   opt_pct,
             "is_win":       is_win,
+            "signal_sources": _signals,
         }
 
         outcomes["history"].append(result)

@@ -329,6 +329,41 @@ def check_ifttt_watchdog():
         print(f"[WATCHDOG] No webhook in {mins_since}min — alert sent")
 
 # ── Scheduler ─────────────────────────────────────────────────────────
+
+def send_entry_reminder(ticker: str, direction: str, signal_type: str,
+                        entry_stock: float, bot: str, chat: str):
+    """
+    Fire 10 minutes after a tape/conviction alert. Checks if setup still valid.
+    """
+    try:
+        from fetcher import fetch_price
+        curr = fetch_price(ticker) or 0
+        if entry_stock and curr:
+            move_pct = (curr - entry_stock) / entry_stock * 100
+            moved    = f"{'+' if move_pct >= 0 else ''}{move_pct:.1f}%"
+        else:
+            moved = "?"
+
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt
+        now_str = _dt.now(ZoneInfo("America/New_York")).strftime("%-I:%M %p")
+        direction_s = "call" if "call" in direction.lower() else "put"
+        lines = [
+            f"⏰ ENTRY REMINDER: ${ticker} ({signal_type})",
+            f"━━━ 10min check — {now_str} ━━━",
+            f"",
+            f"Stock now: ${curr:.2f} ({moved} since alert)",
+            f"",
+            f"✅ Entry valid if: above VWAP, no broad market reversal",
+            f"❌ Skip if: stock reversed, VIX spike, sector rotation",
+            f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
+        ]
+        from sms import send_telegram
+        send_telegram("\n".join(lines), bot, chat)
+        print(f"[REMINDER] Sent entry check for {ticker}")
+    except Exception as e:
+        print(f"[REMINDER] Error: {e}")
+
 @app.on_event("startup")
 async def startup():
     try:

@@ -13,8 +13,10 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
-_seen_symbols: set = set()  # module-level for dedup across calls
-_seen_tickers: set = set()
+_seen_symbols:    set  = set()   # module-level for dedup across calls
+_seen_tickers:    set  = set()
+_double_confirm:  dict = {}      # ticker_dir → {tape_ts, conviction_ts}
+_ALERT_COOLDOWN:  dict = {}      # ticker_dir → last_alert_ts (feature 6)
 
 def parse_occ_symbol(sym: str) -> dict | None:
     """
@@ -502,6 +504,12 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                     _iv_note_tp = _ivr.get("note","")
             except: pass
 
+            # ── Alert cooldown check ───────────────────────────────
+            _cooldown_mins = int(os.environ.get("ALERT_COOLDOWN_MINUTES","10"))
+            _cool_key      = f"{_tkr_tp}_{_otype_tp}"
+            _cool_last     = _ALERT_COOLDOWN.get(_cool_key, 0)
+            _cool_ok       = (time.time() - _cool_last) >= _cooldown_mins * 60
+
             # Skip 0DTE contracts — same-day expiry is a different game
             if _dte_tp == 0:
                 print(f"[TAPE] Skipping 0DTE: {_tkr_tp} {_strk_tp} {_exp_tp}")
@@ -541,6 +549,16 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 _ipo_risk_tp = _ipr_tp(_tkr_tp, [], _ipo_days_tp)
             except: pass
 
+            # Float and short interest
+            _float_tp = None
+            _short_tp = None
+            try:
+                from fetcher import fetch_float_and_short as _ffs_tp
+                _ffs     = _ffs_tp(_tkr_tp)
+                _float_tp = _ffs.get("float_shares")
+                _short_tp = _ffs.get("short_interest")
+            except: pass
+
             # Recent news (last 48h) — Finnhub + Google News RSS merged
             _news_tp = []
             try:
@@ -566,6 +584,8 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 "iv_rank":      _iv_rank_tp,
                 "iv_note":      _iv_note_tp,
                 "news":         _news_tp,
+                "float_shares": _float_tp,
+                "short_interest": _short_tp,
                 "stn_risk":     _stn_risk_tp.get("risk") if _stn_risk_tp else None,
                 "stn_note":     _stn_risk_tp.get("note") if _stn_risk_tp else None,
                 "ipo_note":     _ipo_risk_tp.get("note") if _ipo_risk_tp else None,
@@ -581,17 +601,39 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 return
 
             # Exact-match repeat buyer detection (same strike+expiry)
-            _tape_result = process_tape(_parsed_tape)
+            _tape_result = process_tape(_parsed_tape, alert_name)
             if _tape_result:
-                if _tape_bot and _tape_chat:
+                if not _cool_ok:
+                    print(f"[COOLDOWN] {_tkr_tp} {_otype_tp} — tape alert suppressed "
+                          f"(last alert {int(time.time()-_cool_last)//60}min ago)")
+                elif _tape_bot and _tape_chat:
                     from sms import send_telegram as _st_tape
                     _tape_msg = build_tape_alert(_tape_result, alert_name)
                     _st_tape(_tape_msg, _tape_bot, _tape_chat)
                     if _all_chat_tape:
                         _st_tape(_tape_msg, _tape_bot, _all_chat_tape)
+                    _ALERT_COOLDOWN[_cool_key] = time.time()
+                    _tw_dir = "call" if "call" in str(_tape_result.get("option_type","call")).lower() else "put"
+                    _tw_dk  = f"{_tape_result['ticker']}_{_tw_dir}"
+                    _double_confirm.setdefault(_tw_dk, {})["tape_ts"] = time.time()
                     print(f"[TAPE] ✅ Alert sent: "
-                          f"{_tape_result['ticker']} "
-                          f"#{_tape_result['occurrence']} fill")
+                          f"{_tape_result['ticker']} rule={_tape_result.get('rule','?')}"
+                          f" | {_tape_result.get('rule','?')} fired")
+                    # Entry reminder
+                    try:
+                        from main import scheduler, send_entry_reminder
+                        from datetime import datetime as _dtr, timedelta as _tdr
+                        _rem_mins = int(os.environ.get("ENTRY_REMINDER_MINUTES","10"))
+                        _rem_time = _dtr.now() + _tdr(minutes=_rem_mins)
+                        _rem_px   = _tape_result.get("stock_px",0) or _tape_result.get("big_money",[{}])[0].get("stock_px",0) if _tape_result.get("big_money") else 0
+                        scheduler.add_job(
+                            lambda t=_tape_result["ticker"],d=_tw_dir,px=_rem_px,
+                                   b=_tape_bot,c=_tape_chat: send_entry_reminder(
+                                       t,d,f"Tape {_tape_result.get('rule','')}",px,b,c),
+                            "date", run_date=_rem_time,
+                            id=f"rem_{_tape_result['ticker']}_{int(_dtr.now().timestamp())}",
+                            max_instances=1)
+                    except Exception as _re: pass
 
             # Broad ticker-level cluster detection (different strikes/expiries,
             # same direction, accumulating within a rolling window)
@@ -665,8 +707,51 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                             _st_cfc(_cfc_msg, _cfc_bot, _all_chat_cfc)
                         print(f"[CONVICTION] ✅ Alert sent: "
                               f"{_cfc_result['ticker']} {_cfc_result['sentiment']}")
+
+                        # Track for double-confirmation escalation
+                        _dc_key = f"{_cfc_result['ticker']}_{_cfc_result['direction']}"
+                        _double_confirm.setdefault(_dc_key, {})["conviction_ts"] = __import__('time').time()
     except Exception as _cfc_e:
         print(f"[CONVICTION] Error: {_cfc_e}")
+
+    # ── Double confirmation escalation ─────────────────────────────────
+    # Fires when BOTH tape watcher AND cross-filter conviction fire on
+    # same ticker+direction within DOUBLE_CONFIRM_WINDOW_HOURS
+    try:
+        _dc_window = float(os.environ.get("DOUBLE_CONFIRM_WINDOW_HOURS","6.5")) * 3600
+        _now_dc    = __import__('time').time()
+        for _dc_k, _dc_v in list(_double_confirm.items()):
+            _tape_t = _dc_v.get("tape_ts", 0)
+            _conv_t = _dc_v.get("conviction_ts", 0)
+            _last_esc = _dc_v.get("escalated_ts", 0)
+            if (_tape_t and _conv_t
+                    and abs(_tape_t - _conv_t) <= _dc_window
+                    and _last_esc < min(_tape_t, _conv_t)):
+                _double_confirm[_dc_k]["escalated_ts"] = _now_dc
+                _dc_ticker = _dc_k.rsplit("_",1)[0]
+                _dc_dir    = _dc_k.rsplit("_",1)[1]
+                _dc_emoji  = "📈" if _dc_dir == "call" else "📉"
+                _dc_lines = [
+                    f"🔥🔥 DOUBLE CONFIRMATION: ${_dc_ticker}",
+                    f"━━━ {_dc_emoji} TAPE + CONVICTION BOTH ACTIVE ━━━",
+                    "",
+                    "Both the tape watcher (big money footprint) AND",
+                    "cross-filter conviction (BM + retail threshold) fired",
+                    f"on ${_dc_ticker} {_dc_dir}s within the same session.",
+                    "",
+                    "💡 Highest-conviction setup — two independent systems agree",
+                    f"📈 https://www.tradingview.com/chart/?symbol={_dc_ticker}",
+                ]
+                _dc_msg = "\n".join(_dc_lines)
+                _dc_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                _dc_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                            os.environ.get("TELEGRAM_CHAT_ID",""))
+                if _dc_bot and _dc_chat:
+                    from sms import send_telegram as _sms_dc
+                    _sms_dc(_dc_msg, _dc_bot, _dc_chat)
+                    print(f"[ESCALATION] 🔥🔥 Double confirmation: {_dc_ticker} {_dc_dir}")
+    except Exception as _dce:
+        print(f"[ESCALATION] Error: {_dce}")
 
     # ── Straddle / Strangle detector ──────────────
     # Fires when both calls AND puts appear on same ticker within the window

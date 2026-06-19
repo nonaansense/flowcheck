@@ -371,6 +371,18 @@ def build_conviction_alert(result: dict) -> str:
         f"Stock: ${stock_px:.2f}" if stock_px else "",
     ]
 
+    # Float/short interest context
+    _conv_float = result.get("float_shares")
+    _conv_short = result.get("short_interest")
+    if _conv_float or _conv_short:
+        _cfc_ctx = []
+        if _conv_float:
+            _cfc_ctx.append(f"Float: {_conv_float/1_000_000:.1f}M shares")
+        if _conv_short and isinstance(_conv_short,(int,float)) and _conv_short > 0:
+            _cfc_ctx.append(f"Short int: {_conv_short:.1f}%")
+        if _cfc_ctx:
+            lines.append(f"📊 {' | '.join(_cfc_ctx)}")
+
     if earn_str:
         lines.append(f"📅 Earnings: {earn_str}")
     if stn_note:

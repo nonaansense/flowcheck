@@ -39,6 +39,22 @@ def send_weekly_report():
     trade_wr   = round(sum(1 for r in trade_h if r["is_win"])/len(trade_h)*100,1) if trade_h else 0
     watch_wr   = round(sum(1 for r in watch_h if r["is_win"])/len(watch_h)*100,1) if watch_h else 0
 
+    # Signal source hit rates
+    def _sig_wr(sig):
+        grp = [r for r in week_hist if any(sig in s for s in r.get("signal_sources",[]))]
+        if not grp: return None, 0
+        return round(sum(1 for r in grp if r["is_win"])/len(grp)*100,1), len(grp)
+
+    tape_wr,   tape_n   = _sig_wr("tape")
+    conv_wr,   conv_n   = _sig_wr("conviction")
+    clust_wr,  clust_n  = _sig_wr("cluster")
+
+    # Signal source performance section
+    sig_lines = []
+    for label, wr, n in [("🎬 Tape",tape_wr,tape_n),("🔥 Conviction",conv_wr,conv_n),("🌊 Cluster",clust_wr,clust_n)]:
+        if n > 0:
+            sig_lines.append(f"  {label}: {wr}% win rate ({n} alerts)")
+
     # Best and worst
     sorted_by_stock = sorted(week_hist, key=lambda x: x["stock_pct"], reverse=True)
     best  = sorted_by_stock[:3]

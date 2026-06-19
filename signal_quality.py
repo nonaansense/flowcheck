@@ -431,13 +431,21 @@ def check_recent_ipo_risk(ticker: str, price_history: list = None,
 
     if ipo_days_ago is not None:
         if ipo_days_ago <= threshold_days:
+            # Calculate standard lockup expiry (180 calendar days after IPO)
+            lockup_days_remaining = max(0, 180 - ipo_days_ago)
+            if lockup_days_remaining > 0:
+                lockup_note = (f" Lockup expires in ~{lockup_days_remaining}d "
+                               f"— float expansion risk.")
+            else:
+                lockup_note = " Lockup may have expired — check for insider selling."
             return {
-                "is_recent_ipo": True,
-                "days_since_ipo": ipo_days_ago,
-                "trading_days": trading_days,
+                "is_recent_ipo":         True,
+                "days_since_ipo":        ipo_days_ago,
+                "trading_days":          trading_days,
+                "lockup_days_remaining": lockup_days_remaining,
                 "note": (f"🆕 IPO'd {ipo_days_ago}d ago — thin float, no "
-                         f"earnings history yet. Watch for lockup/insider "
-                         f"unlock dates; technical/flow signals less reliable."),
+                         f"earnings history yet.{lockup_note}"
+                         f" Technical/flow signals less reliable."),
             }
         return {
             "is_recent_ipo": False,
@@ -450,12 +458,13 @@ def check_recent_ipo_risk(ticker: str, price_history: list = None,
     # (~20 trading days/month, so 40 days ≈ 2 months of history)
     if 0 < trading_days < 40:
         return {
-            "is_recent_ipo": True,
-            "days_since_ipo": None,
-            "trading_days": trading_days,
-            "note": (f"🆕 Only {trading_days}d of price history — likely a "
-                      f"recent IPO. Technical/flow signals less reliable "
-                      f"until more history builds."),
+            "is_recent_ipo":         True,
+            "days_since_ipo":        None,
+            "trading_days":          trading_days,
+            "lockup_days_remaining": None,
+            "note": (f"🆕 Only {trading_days}d of price history — likely recent IPO. "
+                     f"Standard lockup is 180d from listing. "
+                     f"Technical/flow signals less reliable until more history builds."),
         }
 
     return {

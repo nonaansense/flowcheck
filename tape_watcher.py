@@ -1,33 +1,45 @@
 """
-tape_watcher.py — Multi-day repeat buyer / tape watching detector.
+tape_watcher.py — Big-money-first tape watching detector.
 
-Monitors Bullflow "Retail_Order_Flow" alert stream.
-When the same ticker + strike + expiry appears 2+ times with trade price
-same or higher → fires immediately to TRADE channel.
+Monitors both Bullflow filters and only fires when big money is present.
 
-Persists to Supabase so multi-day accumulation is detected across
-redeployments and overnight gaps.
+TWO rules — both require big money footprint:
+
+  Rule A — Intraday conviction:
+    1+ fill from Big_Money_Order_Flow
+    + 1+ fill from Retail_Order_Flow
+    Same ticker + direction, within the same trading day.
+    Strike/expiry mix-and-match OK — signal is at ticker+direction level.
+
+  Rule B — Multi-day big money accumulation:
+    2+ fills from Big_Money_Order_Flow on the EXACT SAME strike+expiry
+    Across different calendar days (same-day repeats don't count).
+
+Pure retail flow (no big money) is IGNORED — no alert fired.
+
+State persisted to Supabase:
+  - Big money fills retained TAPE_BM_DAYS (default 7 calendar = 5 trading days)
+  - Retail fills retained for current trading day only
 """
 import os
 import time
-import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
-# ── Storage keys ──────────────────────────────────────────────────────
-TAPE_STORAGE_KEY  = "tape_history"
-TAPE_WINDOW_DAYS  = int(os.environ.get("TAPE_WINDOW_DAYS", "5"))
-TAPE_WINDOW_HOURS = float(os.environ.get("TAPE_WINDOW_HOURS", "8"))  # kept for compat
+TAPE_STORAGE_KEY = "tape_history_v2"   # v2 = new structure (ticker+direction keys)
+TAPE_BM_DAYS     = int(os.environ.get("TAPE_BM_MULTIDAY_DAYS", "7"))
 
-# ── In-memory tape store — loaded from Supabase on first access ───────
-_TAPE: dict = {}
-_loaded = False
+BIG_MONEY_FILTER = os.environ.get("CONVICTION_BIG_MONEY_FILTER", "Big_Money_Order_Flow")
+RETAIL_FILTER    = os.environ.get("CONVICTION_RETAIL_FILTER",    "Retail_Order_Flow")
+
+_TAPE:   dict = {}
+_loaded: bool = False
 
 
+# ── Persistence ────────────────────────────────────────────────────────
 def _load_tape():
-    """Load tape history from Supabase into memory."""
     global _TAPE, _loaded
     if _loaded:
         return
@@ -37,16 +49,12 @@ def _load_tape():
         if raw and isinstance(raw, dict):
             _TAPE = raw
             print(f"[TAPE] Loaded {len(_TAPE)} entries from Supabase")
-        elif raw and isinstance(raw, str):
-            _TAPE = json.loads(raw)
-            print(f"[TAPE] Loaded {len(_TAPE)} entries from Supabase")
     except Exception as e:
-        print(f"[TAPE] Load error: {e} — starting fresh")
+        print(f"[TAPE] Load error: {e}")
     _loaded = True
 
 
 def _save_tape():
-    """Persist tape history to Supabase."""
     try:
         from storage import db_set
         db_set(TAPE_STORAGE_KEY, _TAPE)
@@ -54,10 +62,17 @@ def _save_tape():
         print(f"[TAPE] Save error: {e}")
 
 
-def _tape_key(ticker: str, strike: str, expiry: str) -> str:
-    return f"{ticker.upper()}_{strike}_{expiry}"
+# ── Keys ───────────────────────────────────────────────────────────────
+def _ticker_dir_key(ticker: str, option_type: str) -> str:
+    d = "call" if "call" in str(option_type).lower() else "put"
+    return f"{ticker.upper()}_{d}"
 
 
+def _contract_key(strike: str, expiry: str) -> str:
+    return f"{strike}_{expiry}"
+
+
+# ── Formatting helpers ─────────────────────────────────────────────────
 def _format_time(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=ET).strftime("%-I:%M %p")
 
@@ -67,360 +82,439 @@ def _format_date(ts: float) -> str:
 
 
 def _pct_change(first: float, latest: float) -> str:
-    if not first or first == 0:
+    if not first:
         return ""
     pct = (latest - first) / first * 100
     if pct > 0.05:    return f" ↑{pct:.1f}%"
     elif pct < -0.05: return f" ↓{abs(pct):.1f}%"
-    else:             return " (same price)"
+    return " (same price)"
 
 
 def _ordinal(n: int) -> str:
     n = int(n)
-    if 11 <= (n % 100) <= 13: return f"{n}th"
+    if 11 <= (n % 100) <= 13:
+        return f"{n}th"
     return f"{n}{['th','st','nd','rd','th'][min(n % 10, 4)]}"
 
 
+def _fmt_prem(p: float) -> str:
+    return f"${p/1_000_000:.1f}M" if p >= 1_000_000 else f"${p/1_000:.0f}K"
+
+
+# ── Pruning ────────────────────────────────────────────────────────────
 def _prune_stale():
-    """Remove expired and too-old entries from the tape store."""
-    now    = time.time()
-    cutoff = now - TAPE_WINDOW_DAYS * 86400
-    today  = datetime.now(ET).date()
-    to_del = []
-    for key, entry in _TAPE.items():
-        # Remove if beyond window
-        if entry.get("first_ts", 0) < cutoff:
-            to_del.append(key)
-            continue
-        # Remove if option has expired
-        expiry = entry.get("expiry", "")
-        if expiry:
-            try:
-                parts = expiry.split("/")
-                if len(parts) == 3:
-                    m, d, y = parts
-                    y = "20" + y if len(y) == 2 else y
-                    exp_date = datetime.strptime(f"{y}-{m}-{d}", "%Y-%m-%d").date()
-                    if exp_date < today:
-                        to_del.append(key)
-            except:
-                pass
-    for k in to_del:
-        del _TAPE[k]
-
-
-def process_tape(alert: dict) -> dict | None:
     """
-    Process incoming Bullflow alert through tape watcher.
-    Persists state to Supabase for multi-day detection.
-    Returns alert dict if repeat buyer detected, None otherwise.
+    Big money: prune fills older than TAPE_BM_DAYS (7 calendar days).
+    Retail:    prune fills from previous trading days (keep today only).
+    """
+    now       = time.time()
+    bm_cutoff = now - TAPE_BM_DAYS * 86400
+    today_str = datetime.now(ET).strftime("%b %-d")
+
+    for key in list(_TAPE.keys()):
+        entry = _TAPE[key]
+        if not isinstance(entry, dict) or "big_money" not in entry:
+            del _TAPE[key]  # stale structure from old tape_watcher — remove
+            continue
+
+        entry["big_money"] = [f for f in entry["big_money"]
+                               if f.get("ts", 0) >= bm_cutoff]
+        entry["retail"]    = [f for f in entry["retail"]
+                               if f.get("date") == today_str]
+
+        # Clean up bm_contracts tracking for expired contracts
+        active_contracts = {_contract_key(f["strike"], f["expiry"])
+                            for f in entry["big_money"]}
+        entry["alerted_bm_contracts"] = {
+            k: v for k, v in entry.get("alerted_bm_contracts", {}).items()
+            if k in active_contracts
+        }
+
+        if not entry["big_money"] and not entry["retail"]:
+            del _TAPE[key]
+
+
+# ── Core detector ──────────────────────────────────────────────────────
+def process_tape(alert: dict, filter_name: str = "") -> dict | None:
+    """
+    Process a single fill. Returns alert dict when a rule fires, else None.
+
+    Rule A: 1+ BM + 1+ retail, same ticker+direction, same trading day.
+    Rule B: 2+ BM on exact same strike+expiry, different calendar days.
+    Pure retail → always returns None.
     """
     _load_tape()
     _prune_stale()
 
-    ticker    = str(alert.get("ticker", "") or "").upper()
-    strike    = str(alert.get("strike", "") or "")
-    expiry    = str(alert.get("expiry", "") or "")
-    trade_px  = float(alert.get("trade_price") or alert.get("option_price") or
-                      alert.get("averageFillPrice") or 0)
-    premium   = float(alert.get("premium") or alert.get("alertPremium") or 0)
-    fill_type = str(alert.get("fill_type", "") or "")
-    is_sweep  = bool(alert.get("is_sweep") or False)
-    stock_px  = float(alert.get("stock_price") or 0)
-    otm_pct   = float(alert.get("otm_pct") or 0)
-    dte       = int(alert.get("dte") or 0)
-    now       = time.time()
+    ticker     = str(alert.get("ticker", "") or "").upper()
+    strike     = str(alert.get("strike", "") or "")
+    expiry     = str(alert.get("expiry", "") or "")
+    option_type = str(alert.get("option_type", "call") or "call")
+    trade_px   = float(alert.get("option_price") or alert.get("trade_price") or 0)
+    premium    = float(alert.get("premium") or 0)
+    fill_type  = str(alert.get("fill_type", "") or "")
+    is_sweep   = bool(alert.get("is_sweep") or False)
+    stock_px   = float(alert.get("stock_price") or 0)
+    otm_pct    = float(alert.get("otm_pct") or 0)
+    dte        = int(alert.get("dte") or 0)
+    now        = time.time()
+    today_str  = datetime.now(ET).strftime("%b %-d")
+    time_str   = datetime.now(ET).strftime("%-I:%M %p")
 
     if not ticker or not strike or not expiry:
         return None
 
-    key = _tape_key(ticker, strike, expiry)
-    today_str = datetime.now(ET).strftime("%b %-d")
+    is_big_money = (filter_name == BIG_MONEY_FILTER)
+    is_retail    = (filter_name == RETAIL_FILTER)
 
-    # ── First occurrence — store and persist ──────────────────────────
+    if not is_big_money and not is_retail:
+        print(f"[TAPE] Unknown filter '{filter_name}' — skipping")
+        return None
+
+    # Pure retail with no big money in state yet — record but never fire
+    key = _ticker_dir_key(ticker, option_type)
     if key not in _TAPE:
         _TAPE[key] = {
-            "ticker":      ticker,
-            "strike":      strike,
-            "expiry":      expiry,
-            "first_ts":    now,
-            "first_price": trade_px,
-            "flows": [{
-                "price":    trade_px,
-                "premium":  premium,
-                "fill":     fill_type,
-                "sweep":    is_sweep,
-                "stock_px": stock_px,
-                "otm_pct":  otm_pct,
-                "ts":       now,
-                "date":     today_str,
-            }],
-            "alert_count":    0,
-            "last_alerted_ts": 0,
+            "ticker": ticker, "direction": option_type,
+            "big_money": [], "retail": [],
+            "alerted_rule_a_date": None,
+            "alerted_bm_contracts": {},
         }
-        _save_tape()
-        print(f"[TAPE] 📋 First flow: {ticker} {strike} {expiry} @ ${trade_px:.2f} "
-              f"(persisted to Supabase)")
-        return None
 
-    entry       = _TAPE[key]
-    first_price = entry["first_price"]
-
-    # ── Price dropped >2% from first — record but don't alert ─────────
-    if trade_px < first_price * 0.98:
-        print(f"[TAPE] ⬇️  Price drop — {ticker} {strike} {expiry}: "
-              f"${first_price:.2f} → ${trade_px:.2f} — not confirming")
-        entry["flows"].append({
-            "price": trade_px, "premium": premium, "fill": fill_type,
-            "sweep": is_sweep, "stock_px": stock_px, "otm_pct": otm_pct,
-            "ts": now, "date": today_str,
-        })
-        _save_tape()
-        return None
-
-    # ── Repeat buyer confirmed ─────────────────────────────────────────
-    entry["flows"].append({
-        "price": trade_px, "premium": premium, "fill": fill_type,
-        "sweep": is_sweep, "stock_px": stock_px, "otm_pct": otm_pct,
-        "ts": now, "date": today_str,
-    })
-    entry["alert_count"] += 1
-    entry["last_alerted_ts"] = now
-    _save_tape()
-
-    occurrence = len(entry["flows"])
-    # Count unique trading days
-    unique_days = len(set(f.get("date", "") for f in entry["flows"]))
-    multi_day   = unique_days > 1
-
-    print(f"[TAPE] 🔥 Repeat buyer #{occurrence} over {unique_days}d: "
-          f"{ticker} {strike} {expiry} ${first_price:.2f} → ${trade_px:.2f}")
-
-    return {
-        "ticker":        ticker,
-        "strike":        strike,
-        "expiry":        expiry,
-        "option_type":   alert.get("option_type", "call"),
-        "flows":         list(entry["flows"]),
-        "first_price":   first_price,
-        "latest_price":  trade_px,
-        "occurrence":    occurrence,
-        "unique_days":   unique_days,
-        "multi_day":     multi_day,
-        "total_premium": sum(f["premium"] for f in entry["flows"]),
-        "stock_px":      (stock_px or
-                          next((f["stock_px"] for f in reversed(entry["flows"])
-                               if f.get("stock_px")), 0)),
-        "otm_pct":       otm_pct,
-        "dte":           dte,
-        "earnings_str":  alert.get("earnings_str"),
-        "iv_pct":        alert.get("iv_pct"),
-        "iv_rank":       alert.get("iv_rank"),
-        "iv_note":       alert.get("iv_note"),
-        "news":          alert.get("news", []),
-        "stn_risk":      alert.get("stn_risk"),
-        "stn_note":      alert.get("stn_note"),
-        "ipo_note":      alert.get("ipo_note"),
+    entry = _TAPE[key]
+    fill = {
+        "strike": strike, "expiry": expiry,
+        "price": trade_px, "premium": premium,
+        "fill": fill_type, "sweep": is_sweep,
+        "stock_px": stock_px, "otm_pct": otm_pct,
+        "dte": dte, "ts": now,
+        "date": today_str, "time": time_str,
+        "source": "big_money" if is_big_money else "retail",
     }
 
+    if is_big_money:
+        entry["big_money"].append(fill)
+        print(f"[TAPE] 💰 Big money: {ticker} {option_type} "
+              f"{strike} {expiry} {_fmt_prem(premium)}")
+    else:
+        entry["retail"].append(fill)
+        print(f"[TAPE] 📊 Retail: {ticker} {option_type} "
+              f"{strike} {expiry} {_fmt_prem(premium)}")
 
+    _save_tape()
+
+    # ── Rule A: intraday conviction (1+ BM + 1+ retail today) ─────────
+    today_bm  = [f for f in entry["big_money"] if f["date"] == today_str]
+    today_ret = [f for f in entry["retail"]    if f["date"] == today_str]
+
+    if len(today_bm) >= 1 and len(today_ret) >= 1:
+        last_date   = entry.get("alerted_rule_a_date")
+        new_bm      = is_big_money and (last_date == today_str)
+        not_alerted = (last_date != today_str)
+
+        if not_alerted or new_bm:
+            entry["alerted_rule_a_date"] = today_str
+            _save_tape()
+
+            total_bm  = sum(f["premium"] for f in today_bm)
+            total_ret = sum(f["premium"] for f in today_ret)
+            total_all = total_bm + total_ret
+            best_stock = (stock_px or
+                          next((f["stock_px"] for f in reversed(today_bm + today_ret)
+                                if f.get("stock_px")), 0))
+
+            print(f"[TAPE] 🔥 Rule A: {ticker} {option_type} — "
+                  f"{len(today_bm)} BM + {len(today_ret)} retail | "
+                  f"{_fmt_prem(total_all)}")
+
+            return {
+                "rule":         "A",
+                "ticker":       ticker,
+                "option_type":  option_type,
+                "strike":       strike,
+                "expiry":       expiry,
+                "big_money":    today_bm,
+                "retail":       today_ret,
+                "total_bm":     total_bm,
+                "total_ret":    total_ret,
+                "total_all":    total_all,
+                "stock_px":     best_stock,
+                "dte":          dte,
+                "new_bm":       new_bm,
+                "earnings_str": alert.get("earnings_str"),
+                "iv_pct":       alert.get("iv_pct"),
+                "iv_rank":      alert.get("iv_rank"),
+                "stn_note":     alert.get("stn_note"),
+                "ipo_note":     alert.get("ipo_note"),
+                "news":           alert.get("news", []),
+                "float_shares":   alert.get("float_shares"),
+                "short_interest": alert.get("short_interest"),
+            }
+
+    # ── Rule B: multi-day BM accumulation (same contract, diff days) ──
+    if is_big_money:
+        ckey         = _contract_key(strike, expiry)
+        contract_bm  = [f for f in entry["big_money"]
+                        if f["strike"] == strike and f["expiry"] == expiry]
+        unique_dates = sorted(set(f["date"] for f in contract_bm))
+
+        if len(unique_dates) >= 2:
+            last_count = entry["alerted_bm_contracts"].get(ckey, 0)
+            if len(contract_bm) > last_count:
+                entry["alerted_bm_contracts"][ckey] = len(contract_bm)
+                _save_tape()
+
+                total_bm  = sum(f["premium"] for f in contract_bm)
+                best_stock = (stock_px or
+                              next((f["stock_px"] for f in reversed(contract_bm)
+                                    if f.get("stock_px")), 0))
+
+                print(f"[TAPE] 🗓️  Rule B: {ticker} {strike} {expiry} — "
+                      f"{len(contract_bm)}x BM over {len(unique_dates)}d | "
+                      f"{_fmt_prem(total_bm)}")
+
+                return {
+                    "rule":         "B",
+                    "ticker":       ticker,
+                    "option_type":  option_type,
+                    "strike":       strike,
+                    "expiry":       expiry,
+                    "contract_bm":  contract_bm,
+                    "unique_days":  len(unique_dates),
+                    "day_labels":   unique_dates,
+                    "total_bm":     total_bm,
+                    "stock_px":     best_stock,
+                    "dte":          dte,
+                    "earnings_str": alert.get("earnings_str"),
+                    "iv_pct":       alert.get("iv_pct"),
+                    "iv_rank":      alert.get("iv_rank"),
+                    "stn_note":     alert.get("stn_note"),
+                    "ipo_note":     alert.get("ipo_note"),
+                    "news":           alert.get("news", []),
+                "float_shares":   alert.get("float_shares"),
+                "short_interest": alert.get("short_interest"),
+                }
+
+    # Still building — log current state
+    today_bm_c  = len(today_bm)
+    today_ret_c = len(today_ret)
+    print(f"[TAPE] {ticker} {option_type}: "
+          f"{today_bm_c} BM + {today_ret_c} retail today — "
+          f"{'need BM' if today_bm_c == 0 else 'need retail'}")
+    return None
+
+
+# ── Alert builder ──────────────────────────────────────────────────────
 def build_tape_alert(result: dict, alert_name: str) -> str:
-    """Build the Telegram alert message for a confirmed repeat buyer."""
+    """Build Telegram alert for a confirmed tape signal (Rule A or B)."""
+    rule        = result.get("rule", "A")
     ticker      = result["ticker"]
-    strike      = result["strike"]
-    expiry      = result["expiry"]
-    flows       = result["flows"]
-    occ         = result["occurrence"]
-    stock_px    = result["stock_px"]
-    otm_pct     = result["otm_pct"]
-    dte         = result["dte"]
-    total       = result["total_premium"]
-    first_px    = result["first_price"]
-    last_px     = result["latest_price"]
-    unique_days = result.get("unique_days", 1)
-    multi_day   = result.get("multi_day", False)
+    option_type = result.get("option_type", "call")
+    otype       = "C" if "call" in option_type.lower() else "P"
+    direction   = "📈" if "call" in option_type.lower() else "📉"
+    dte         = result.get("dte", 0)
     earn_str    = result.get("earnings_str")
     iv_pct      = result.get("iv_pct")
     iv_rank     = result.get("iv_rank")
-    news        = result.get("news", [])
     stn_note    = result.get("stn_note")
     ipo_note    = result.get("ipo_note")
+    news        = result.get("news", [])
     base_url    = os.environ.get("BASE_URL",
                   "https://web-production-19e44.up.railway.app").rstrip("/")
 
-    opt_type  = result.get("option_type", "call")
-    otype     = "C" if "call" in opt_type.lower() else "P"
-    tot_str   = (f"${total/1_000_000:.1f}M" if total >= 1_000_000
-                 else f"${total/1_000:.0f}K")
-    total_chg = _pct_change(first_px, last_px)
-    occ_label = _ordinal(occ)
-
-    # Multi-day badge
-    day_badge = f" \U0001f5d3\ufe0f {unique_days}-DAY ACCUMULATION" if multi_day else ""
-
-    # Flow history lines
-    flow_lines = []
-    for i, f in enumerate(flows, 1):
-        prem_str  = (f"${f['premium']/1_000_000:.1f}M" if f['premium'] >= 1_000_000
-                     else f"${f['premium']/1_000:.0f}K")
-        sweep_str = " \u26a1" if f.get("sweep") else ""
-        fill_str  = f" {f['fill']}" if f.get("fill") else ""
-        chg_str   = _pct_change(first_px, f["price"]) if i > 1 else ""
-        time_str  = _format_time(f["ts"])
-        date_str  = f" ({f.get('date','?')})" if multi_day else ""
-        flow_lines.append(
-            f"  {i}. ${f['price']:.2f}{chg_str} | "
-            f"{prem_str}{fill_str}{sweep_str} | {time_str}{date_str}"
-        )
-
-    # Context line — use latest non-zero stock price from any fill
-    if not stock_px:
-        stock_px = next(
-            (f["stock_px"] for f in reversed(flows) if f.get("stock_px")), 0
-        )
-    ctx_parts = []
-    if stock_px:  ctx_parts.append(f"${stock_px:.2f}")
-    if otm_pct:   ctx_parts.append(f"OTM {otm_pct:.1f}%")
-    if dte:       ctx_parts.append(f"{dte}d DTE")
-    ctx_line = " | ".join(ctx_parts) if ctx_parts else "\u2014"
-
-    # Earnings line
-    earn_line = f"\U0001f4c5 Earnings: {earn_str}" if earn_str else "\U0001f4c5 Earnings: unknown"
-
-    # IV line
-    iv_line = None
-    if iv_pct and iv_rank is not None:
-        iv_bar  = "\u2588" * int(iv_rank / 10) + "\u2591" * (10 - int(iv_rank / 10))
-        iv_line = f"\U0001f4ca IV: {iv_pct:.1f}% | Rank {_ordinal(iv_rank)} [{iv_bar}]"
-    elif iv_pct:
-        iv_line = f"\U0001f4ca IV: {iv_pct:.1f}% (rank building)"
-
-    # Analysis link — resolve from watchlist
+    # Analysis link
     analysis_link = f"{base_url}/watchlist"
     try:
-        from storage import get_watchlist as _gwl_ta
-        _wl = _gwl_ta()
-        if isinstance(_wl, dict):
-            _entry = _wl.get(ticker.upper(), {})
-            _aid   = str(_entry.get("analysis_id", "") or "")
-            if _aid and _aid != "0":
-                analysis_link = f"{base_url}/analysis/{_aid}"
+        from technical import get_watchlist
+        wl    = get_watchlist()
+        entry = wl.get(ticker.upper(), {}) if isinstance(wl, dict) else {}
+        aid   = str(entry.get("analysis_id", "") or "")
+        if aid and aid != "0":
+            analysis_link = f"{base_url}/analysis/{aid}"
     except:
         pass
 
-    lines = [
-        f"\U0001f3ac {alert_name}{day_badge}",
-        f"\u2501\u2501\u2501 TAPE CONFIRMATION ({occ_label} fill) \u2501\u2501\u2501",
-        f"\u2705 ${ticker} {strike}{otype} {expiry} \u2014 repeat buyer detected{total_chg}",
-        f"",
-        f"\U0001f4ca ALL FILLS ({len(flows)} total | {tot_str} deployed):",
-    ] + flow_lines + [
-        f"",
-        f"Stock: {ctx_line}",
-        earn_line,
-    ]
-    if iv_line:
-        lines.append(iv_line)
+    def _fill_line(f, label):
+        sweep   = " ⚡" if f.get("sweep") else ""
+        date_s  = f" ({f['date']})" if rule == "B" else ""
+        return (f"  [{label}] {f['strike']}{otype} {f['expiry']} | "
+                f"${f['price']:.2f} | {_fmt_prem(f['premium'])}{sweep} | "
+                f"{f['time']}{date_s}")
+
+    if rule == "A":
+        # Intraday: 1+ BM + 1+ retail same day
+        bm_fills  = result["big_money"]
+        ret_fills = result["retail"]
+        total_bm  = result["total_bm"]
+        total_ret = result["total_ret"]
+        total_all = result["total_all"]
+        stock_px  = result.get("stock_px", 0)
+        new_bm    = result.get("new_bm", False)
+        bm_pct    = int(total_bm / total_all * 10) if total_all else 10
+        skew_bar  = "█" * bm_pct + "░" * (10 - bm_pct)
+        header    = "🔥 NEW BIG MONEY" if new_bm else "🎬 TAPE CONVICTION"
+        lines = [
+            f"{header} — {alert_name}",
+            f"━━━ {direction} INTRADAY: ${ticker} {bm_fills[0]['strike']}{otype} ━━━",
+            f"",
+            f"💰 BIG MONEY ({len(bm_fills)} fill{'s' if len(bm_fills)>1 else ''}"
+            f" | {_fmt_prem(total_bm)}):",
+        ] + [_fill_line(f, "BIG $") for f in bm_fills] + [
+            f"",
+            f"📊 RETAIL CONFIRM ({len(ret_fills)} fill{'s' if len(ret_fills)>1 else ''}"
+            f" | {_fmt_prem(total_ret)}):",
+        ] + [_fill_line(f, "RETAIL") for f in ret_fills] + [
+            f"",
+            f"💵 Total: {_fmt_prem(total_all)} | "
+            f"Skew: {int(total_bm/total_all*100) if total_all else 100}% BM [{skew_bar}]",
+        ]
+        if stock_px:
+            lines.append(f"Stock: ${stock_px:.2f}" +
+                         (f" | {dte}d DTE" if dte else ""))
+
+    elif rule == "B":
+        # Multi-day: same contract, big money across days
+        bm_fills    = result["contract_bm"]
+        total_bm    = result["total_bm"]
+        stock_px    = result.get("stock_px", 0)
+        unique_days = result["unique_days"]
+        day_labels  = result.get("day_labels", [])
+        lines = [
+            f"🗓️  TAPE ACCUMULATION — {alert_name}",
+            f"━━━ {direction} {unique_days}-DAY BIG MONEY: ${ticker} "
+            f"{bm_fills[0]['strike']}{otype} {bm_fills[0]['expiry']} ━━━",
+            f"",
+            f"💰 BIG MONEY ({len(bm_fills)} fills | {_fmt_prem(total_bm)}"
+            f" | {unique_days} sessions):",
+        ] + [_fill_line(f, "BIG $") for f in bm_fills] + [f""]
+        if stock_px:
+            lines.append(f"Stock: ${stock_px:.2f}" +
+                         (f" | {dte}d DTE" if dte else ""))
+        lines.append(f"📅 Sessions: {', '.join(day_labels)}")
+
+    # Common context
+    if earn_str:
+        lines.append(f"📅 Earnings: {earn_str}")
+
+    if iv_pct and iv_rank is not None:
+        iv_bar  = "█" * int(iv_rank / 10) + "░" * (10 - int(iv_rank / 10))
+        lines.append(f"📊 IV: {iv_pct:.1f}% | Rank {_ordinal(int(iv_rank))} [{iv_bar}]")
+    elif iv_pct:
+        lines.append(f"📊 IV: {iv_pct:.1f}% (rank building)")
+
     if stn_note:
         lines.append(stn_note)
     if ipo_note:
         lines.append(ipo_note)
-    # News headlines
-    if news:
-        lines.append("")
-        lines.append("\U0001f4f0 Recent news:")
-        for _art in news[:3]:
-            _hl = (_art.get("headline","") or "")[:70]
-            _src = _art.get("source","") or ""
-            _url = _art.get("url","") or ""
-            _age_h = int((time.time() - _art.get("datetime",0)) / 3600)
-            _age_str = f"{_age_h}h ago" if _age_h < 24 else f"{_age_h//24}d ago"
-            lines.append(f"  • {_hl} ({_src}, {_age_str})")
-            if _url:
-                lines.append(f"    {_url}")
 
+    if news:
+        lines += ["", "📰 Recent news:"]
+        for art in news[:3]:
+            hl    = (art.get("headline", "") or "")[:70]
+            src   = art.get("source", "") or ""
+            url   = art.get("url", "") or ""
+            age_h = int((time.time() - art.get("datetime", 0)) / 3600)
+            age_s = f"{age_h}h ago" if age_h < 24 else f"{age_h//24}d ago"
+            lines.append(f"  • {hl} ({src}, {age_s})")
+            if url:
+                lines.append(f"    {url}")
+
+    # Float/short interest context
+    _float_sh  = result.get("float_shares")
+    _short_int = result.get("short_interest")
+    if _float_sh or _short_int:
+        _ctx_parts = []
+        if _float_sh:
+            _f_m = _float_sh / 1_000_000
+            _ctx_parts.append(f"Float: {_f_m:.1f}M shares")
+        if _short_int and isinstance(_short_int, (int, float)) and _short_int > 0:
+            _ctx_parts.append(f"Short int: {_short_int:.1f}%")
+        if _ctx_parts:
+            lines.append(f"📊 {' | '.join(_ctx_parts)}")
+
+    rule_note = ("💡 Big money + retail same day = intraday conviction"
+                 if rule == "A" else
+                 "💡 Same contract bought multiple sessions = institutional accumulation")
     lines += [
         f"",
-        f"\U0001f4a1 Same strike/expiry bought {occ_label} time \u2014 accumulating position",
-        f"\U0001f4c8 https://www.tradingview.com/chart/?symbol={ticker}",
-        f"\U0001f4cb Full analysis \u2192 {analysis_link}",
+        rule_note,
+        f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
+        f"📋 Full analysis → {analysis_link}",
     ]
 
     return "\n".join(lines)
 
 
+# ── EOD summary ────────────────────────────────────────────────────────
 def send_tape_eod_summary():
-    """
-    4:00 PM ET — send a summary of all tape watching alerts that fired today.
-    Sends to TRADE channel.
-    """
+    """4:00 PM ET — summarise all tape signals that fired today."""
     _load_tape()
 
-    ET_tz    = ZoneInfo("America/New_York")
+    ET_tz     = ZoneInfo("America/New_York")
     today_str = datetime.now(ET_tz).strftime("%b %-d")
-    now      = time.time()
-
-    # Collect entries that had any fills today
-    today_alerts = []
-    for key, entry in _TAPE.items():
-        today_flows = [f for f in entry.get("flows", [])
-                       if f.get("date","") == today_str]
-        if not today_flows or entry.get("alert_count", 0) == 0:
-            continue
-
-        flows     = entry["flows"]
-        all_today = len(today_flows)
-        total_d   = len(set(f.get("date","") for f in flows))
-        prem_tot  = sum(f["premium"] for f in flows)
-        first_px  = entry.get("first_price", 0)
-        last_px   = today_flows[-1]["price"]
-        chg       = _pct_change(first_px, last_px).strip()
-        multi     = f" 🗓️ {total_d}d" if total_d > 1 else ""
-
-        prem_str  = (f"${prem_tot/1_000_000:.1f}M" if prem_tot >= 1_000_000
-                     else f"${prem_tot/1_000:.0f}K")
-
-        opt_type  = "C" if "call" in entry.get("option_type","call").lower() else "P"
-        ticker    = entry["ticker"]
-        strike    = entry["strike"]
-        expiry    = entry["expiry"]
-        fills     = len(flows)
-
-        today_alerts.append({
-            "ticker": ticker,
-            "line":   (f"  ${ticker} {strike}{opt_type} {expiry} "
-                       f"— {fills} fills | {prem_str} | ${first_px:.2f}→${last_px:.2f} {chg}{multi}"),
-            "prem":   prem_tot,
-        })
-
-    # Sort by total premium descending
-    today_alerts.sort(key=lambda x: x["prem"], reverse=True)
-
-    bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
-    chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
-            os.environ.get("TELEGRAM_CHAT_ID",""))
+    bot       = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat      = (os.environ.get("TELEGRAM_TRADE_CHAT_ID", "") or
+                 os.environ.get("TELEGRAM_CHAT_ID", ""))
 
     if not bot or not chat:
-        print("[TAPE-EOD] No bot/chat configured")
         return
 
-    if not today_alerts:
-        msg = (f"🎬 Tape Watching EOD — {today_str}\n"
-               f"No repeat buyer alerts fired today.")
+    rule_a = []
+    rule_b = []
+
+    for key, entry in _TAPE.items():
+        if not isinstance(entry, dict) or "big_money" not in entry:
+            continue
+        ticker = entry.get("ticker", key.split("_")[0])
+        direct = "call" if "_call" in key else "put"
+        otype  = "C" if direct == "call" else "P"
+
+        # Rule A fired today
+        if entry.get("alerted_rule_a_date") == today_str:
+            today_bm  = [f for f in entry["big_money"] if f["date"] == today_str]
+            today_ret = [f for f in entry["retail"]    if f["date"] == today_str]
+            total     = sum(f["premium"] for f in today_bm + today_ret)
+            rule_a.append({
+                "line": (f"  🎬 ${ticker} — {len(today_bm)} BM + {len(today_ret)} retail "
+                         f"| {_fmt_prem(total)}"),
+                "total": total,
+            })
+
+        # Rule B — any multi-day BM contracts
+        for ckey, alerted_count in entry.get("alerted_bm_contracts", {}).items():
+            if alerted_count >= 2:
+                strike, expiry = ckey.split("_", 1)
+                contract_bm = [f for f in entry["big_money"]
+                               if f["strike"] == strike and f["expiry"] == expiry]
+                unique_d = len(set(f["date"] for f in contract_bm))
+                total    = sum(f["premium"] for f in contract_bm)
+                rule_b.append({
+                    "line": (f"  🗓️  ${ticker} {strike}{otype} {expiry} — "
+                             f"{len(contract_bm)} BM fills over {unique_d}d "
+                             f"| {_fmt_prem(total)}"),
+                    "total": total,
+                })
+
+    rule_a.sort(key=lambda x: x["total"], reverse=True)
+    rule_b.sort(key=lambda x: x["total"], reverse=True)
+
+    if not rule_a and not rule_b:
+        msg = f"🎬 Tape EOD — {today_str}\nNo big-money tape signals today."
     else:
-        lines = [
-            f"🎬 Tape Watching EOD — {today_str}",
-            f"━━━ {len(today_alerts)} ticker(s) with repeat flow ━━━",
-            "",
-        ]
-        for a in today_alerts:
-            lines.append(a["line"])
-        lines += ["", f"💡 Multi-day entries marked 🗓️ Nd"]
+        lines = [f"🎬 Tape Watching EOD — {today_str}", ""]
+        if rule_a:
+            lines.append(f"📊 INTRADAY CONVICTION ({len(rule_a)}):")
+            lines += [a["line"] for a in rule_a]
+        if rule_b:
+            if rule_a:
+                lines.append("")
+            lines.append(f"🗓️  MULTI-DAY ACCUMULATION ({len(rule_b)}):")
+            lines += [b["line"] for b in rule_b]
         msg = "\n".join(lines)
 
     try:
         from sms import send_telegram
         send_telegram(msg, bot, chat)
-        print(f"[TAPE-EOD] Sent summary — {len(today_alerts)} tickers")
+        print(f"[TAPE-EOD] Sent — {len(rule_a)} intraday + {len(rule_b)} multi-day")
     except Exception as e:
         print(f"[TAPE-EOD] Send error: {e}")
