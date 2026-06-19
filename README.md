@@ -1,30 +1,177 @@
-# FlowCheck v18 — Automated Options Flow Intelligence
+# FlowCheck v18 — Options Flow Intelligence
 
-Railway-hosted system that monitors @FL0WG0D tweets and Bullflow.io SSE stream, scores options flow with Claude Haiku, and delivers structured trade alerts to Telegram.
+Railway-hosted system that monitors Bullflow.io SSE stream, scores options flow, and delivers structured trade alerts to Telegram.
 
 **Live URL:** https://web-production-19e44.up.railway.app  
-**Stack:** FastAPI · Supabase · Railway · Claude Haiku · Finnhub · Tiingo · Tradier · Massive/Polygon · Bullflow.io
+**Stack:** FastAPI · Supabase · Railway · Claude Haiku · Finnhub · Tiingo · Tradier · Polygon · Bullflow.io
 
 ---
 
 ## Architecture
 
 ```
-@FL0WG0D tweets → IFTTT → /webhook → Vision parser → Scorer → Telegram 🐦
 Bullflow SSE stream → background thread → Prefilter → Scorer → Telegram 🅱
+@FL0WG0D tweets   → IFTTT → /webhook → Vision parser → Scorer → Telegram 🐦
 Robinhood screenshots → Telegram bot → Trade journal
-EOD pricer (Tradier) → 4:30PM daily → position price/peak updates
-Pre-market summary → 8:00AM ET weekdays → carryover OI check → Telegram
-Earnings calendar → 8:30AM ET weekdays → pre-loaded cache
-Weekly P&L report → Friday 4:45PM ET → Telegram
-Analyses archive → 12:01AM daily → Supabase weekly key
+
+7:30 AM ET  (Mon-Fri) → Pre-market gap alerts (watchlist positions)
+8:00 AM ET  (Mon-Fri) → Pre-market summary + carryover OI check
+8:30 AM ET  (Mon-Fri) → Earnings calendar pre-load (14 days)
+Market hours (5 min)  → Technical scanner — breakout detection
+Market hours (15 min) → Exit signal monitor
+4:00 PM ET  (Mon-Fri) → Tape watcher EOD summary
+4:00 PM ET  (Mon-Fri) → Outcome tracking
+4:15 PM ET  (Mon-Fri) → EOD OI verification via Tradier
+4:30 PM ET  (Mon-Fri) → EOD price + peak updates via Tradier
+4:45 PM ET  (Friday)  → Weekly P&L + signal hit rate report
+12:01 AM ET (daily)   → Analyses cleanup + archive to Supabase
 ```
+
+---
+
+## Bullflow Alert Pipeline
+
+Two named Bullflow filters drive all conviction logic:
+
+| Filter name | Purpose |
+|-------------|---------|
+| `Big_Money_Order_Flow` | Institutional / large premium fills |
+| `Retail_Order_Flow` | Retail follow-through fills ($25K–$500K) |
+
+Every fill from either filter is routed through three independent detection layers before the main FlowCheck scorer sees it.
+
+---
+
+## Detection Layers
+
+### 1. Tape Watcher
+
+Fires only when **big money has a footprint**. Order of arrival does not matter — retail fills accumulate throughout the day and count when big money arrives later (and vice versa). All same-ticker+direction fills count regardless of strike or expiry.
+
+**Rule A — Intraday conviction:**
+- 1+ fill from `Big_Money_Order_Flow`
+- 1+ fill from `Retail_Order_Flow` (same ticker + direction, same trading day)
+- Strike/expiry mix-and-match OK
+- Re-fires when a new big money fill arrives after initial alert
+
+**Rule B — Multi-day BM accumulation:**
+- 2+ fills from `Big_Money_Order_Flow` on the **exact same** strike + expiry
+- Across different calendar days (7-day window, 5 trading days)
+- Fires without retail — repeat accumulation at the same contract is standalone conviction
+
+Pure retail flow (no big money) is always silently ignored.
+
+### 2. Cross-Filter Conviction
+
+Tracks rolling state per ticker + direction. Fires when thresholds are met.
+
+**Normal conviction:**
+- `CONVICTION_BIG_MONEY_MIN` (default 1) fills from `Big_Money_Order_Flow`
+- `CONVICTION_RETAIL_MIN` (default 2) fills from `Retail_Order_Flow`
+- Retail fills count regardless of strike/expiry (mix-and-match)
+- Retail window: 6.5 hours (one full trading session)
+- Big money window: 7 calendar days (5 trading days)
+
+**BM auto-conviction (no retail needed):**
+- 2+ fills from `Big_Money_Order_Flow` on same strike + expiry across different days
+- Fires immediately with 🗓️ N-DAY ACCUMULATION badge
+- Re-fires on each additional same-contract BM fill
+
+### 3. Ticker Cluster
+
+Fires when multiple distinct contracts on the same ticker accumulate within a rolling window — broad strike/expiry sweeping rather than a single focused bet.
+
+---
+
+## Double Confirmation Escalation
+
+When **both** the tape watcher AND cross-filter conviction fire on the same ticker + direction within the same session, a `🔥🔥 DOUBLE CONFIRMATION` escalation alert fires. Two independent systems agreeing is the highest-conviction signal.
+
+---
+
+## Alert Cooldown
+
+Same ticker + direction will not fire more than once per `ALERT_COOLDOWN_MINUTES` (default 10 min). Logged as `[COOLDOWN]` in Railway logs.
+
+---
+
+## Entry Reminder
+
+`ENTRY_REMINDER_MINUTES` (default 10) after a tape or conviction alert fires, a follow-up message shows the current stock price and move since the alert.
+
+---
+
+## Straddle / Strangle Detection
+
+When both calls and puts on the same ticker appear within `STRADDLE_WINDOW_HOURS` (default 2h) with balanced premium (within `STRADDLE_SKEW_MAX` = 40%), fires a ⚖️ STRADDLE or STRANGLE alert. Does not count as directional conviction.
+
+---
+
+## Sector Clustering
+
+When `SECTOR_CLUSTER_MIN` (default 4) distinct tickers from the same sector get flow in the same direction within `SECTOR_WINDOW_HOURS` (default 8h), fires a 🌐 SECTOR CLUSTER alert. Sector fetched from Finnhub company profile.
+
+---
+
+## Dark Pool
+
+Infrastructure ready for a `Dark_Pool_Order_Flow` Bullflow filter. When configured, prints ≥ $500K fire a 🌑 DARK POOL PRINT alert. Set `DARK_POOL_FILTER_NAME` env var to match your Bullflow filter name.
 
 ---
 
 ## Alert Format
 
-### TRADE (full detail)
+### Tape Watcher — Rule A (intraday)
+```
+🎬 TAPE CONVICTION (retail tracked → BM confirmed) — Big_Money_Order_Flow
+━━━ 📈 INTRADAY: $NVDA 220C ━━━
+
+💰 BIG MONEY (1 fill | $1.1M):
+  [BIG $] 220C 07/17/26 | $4.80 | $1.1M ⚡ | 2:43 PM
+
+📊 RETAIL CONFIRM (2 fills | $132K):
+  [RETAIL] 225C 08/21/26 | $3.20 | $85K | 11:12 AM
+  [RETAIL] 215C 07/17/26 | $2.90 | $47K | 1:58 PM
+
+💵 Total: $1.2M | Skew: 89% BM [████████░░]
+Stock: $212.45 | 30d DTE
+📊 Float: 24.4B shares | Short int: 0.9%
+📅 Earnings: Aug 20, 2026 AMC
+💡 Big money + retail same day = intraday conviction
+```
+
+### Tape Watcher — Rule B (multi-day)
+```
+🗓️  TAPE ACCUMULATION — Big_Money_Order_Flow
+━━━ 📈 2-DAY BIG MONEY: $NVDA 220C 07/17/26 ━━━
+
+💰 BIG MONEY (2 fills | $2.0M | 2 sessions):
+  [BIG $] 220C 07/17/26 | $4.80 | $1.1M ⚡ | 2:43 PM (Jun 18)
+  [BIG $] 220C 07/17/26 | $4.65 | $900K ⚡ | 10:15 AM (Jun 19)
+
+📅 Sessions: Jun 18, Jun 19
+💡 Same contract bought multiple sessions = institutional accumulation
+```
+
+### Cross-Filter Conviction
+```
+🔥 CROSS-FILTER CONVICTION
+━━━ 📈 BULLISH CONVICTION: $NVDA ━━━
+
+💰 BIG MONEY (1 fill | $1.1M):
+  [BIG $] 220C 07/17/26 | $4.80 | $1.1M ⚡ | 2:43 PM
+
+📊 RETAIL FOLLOW (2 fills | $132K):
+  [RETAIL] 225C 08/21/26 | $3.20 | $85K | 11:12 AM
+  [RETAIL] 215C 07/17/26 | $2.90 | $47K | 1:58 PM
+
+💵 Total deployed: $1.2M
+⚖️  Flow skew: 89% big money [████████░░]
+📊 Float: 24.4B shares | Short int: 0.9%
+💡 Big money entered → retail confirmed (calls across any strike/expiry) = conviction
+```
+
+### Main FlowCheck alert (TRADE)
 ```
 ━━━ SIGNAL ━━━
 ✅ NVDA 190C 06/20/26 [21d] 🟢$214 🅱
@@ -34,413 +181,213 @@ Analyses archive → 12:01AM daily → Supabase weekly key
 💰 $1.1M — whale activity
 🚨 FULL_ASK — maximum aggression
 🚨 Vol/OI 8.2x — massive new position
-  ⚡ Sweep · OTM 3.2% · 21d DTE
-✅ Short interest: 1.2% | 0.8d to cover — low — clean setup
+  ⚡ Sweep · OTM 3.2% · 21d DTE · Float: 24.4B | Short: 0.9%
+  ⚠️ Stock up 2.1% vs ADM 1.4% (1.5x) — approaching extended territory
 
 ━━━ CONTEXT ━━━
-🏢 NVIDIA Corporation
-   Designs GPUs and system-on-chip units for gaming and AI
-   Technology
-📅 Earnings: Aug 27, 2026
+🏢 NVIDIA Corporation — Technology
+📅 Earnings: Aug 27, 2026 AMC
+📰 NVIDIA AI chip demand surges (Reuters, 3h ago)
 
 ━━━ THESIS ━━━
 → Pre-earnings accumulation with strong Vol/OI conviction
 → ATR suggests 14% move possible in 21 days
 ❌ Expiry 7d BEFORE earnings — misses catalyst
-📈 $3.2M total flow over 2 days — accumulation
-🔁 NVDA 190C seen 2x — repeat buyer
 
 ━━━ ENTRY ━━━
 💰 Flow filled @ $6.25 | Limit: $6.44
 💰 Size: 2 contracts @ $6.25 = $1,250 (1.2%)
-🛑 Stop: $203.80 (Fixed 5% stop)
-🎯 Target: +100% | -60% option loss
-  Sell 50% at +51%, hold to +100%
+🛑 Stop: $203.80 | 🎯 Target: +100%
 📊 Support: $188.50 → $185.20
-  Thesis broken below $188.50
 
-━━━ RISK ━━━
-⚠️ News in last 24h — flow may be news-driven
-📰 <a href="...">NVIDIA AI chip demand surges</a>
-
-🐦 https://x.com/i/status/...
-🔗 https://web-production-19e44.up.railway.app/analysis/42
-```
-
-### WATCH/SKIP (compact)
-```
-👀 PLTR 130C 07/18/26 [47d] 🟢$156.54
-5.5/7→ 5.5/7 WATCH · $500K · FULL ASK · 6.0x Vol/OI
-→ Informed accumulation but pre-earnings expiry weakens thesis
-💰 Flow @ $6.25 | Limit: $6.44
-🛑 $148.71
-🎯 +110% · 2 contracts @ $6.25
-VIX 15.3 Calm · SPY +0.1%
-❌ Expiry 16d BEFORE earnings
-📋 Full analysis → /analysis/47
+⏰ Opening noise window (9:30–10:00 ET) — flow reliability lower
 ```
 
 ---
 
-## Scoring System (7-point)
+## Scoring (6-point conviction)
 
-Claude Haiku evaluates each flow on 7 criteria:
+Claude Haiku evaluates each flow signal on 6 criteria:
 
-| Points | Verdict | Telegram |
-|--------|---------|---------| 
-| 6-7 | ✅ TRADE | Full alert sent |
-| 4-5 | 👀 WATCH | Compact alert + analysis link |
-| 0-3 | ❌ SKIP | Nothing sent (Bullflow) / compact (FlowGod) |
+| Score | Verdict | Action |
+|-------|---------|--------|
+| 5–6 | ELITE / HIGH | Full TRADE alert |
+| 4 | MODERATE | Full TRADE alert |
+| 2–3 | LOW | WATCH — stored, not sent |
+| 0–1 | SKIP | Dropped |
 
-**Score boosts:**
-- PUT_SELL_BID ≥$500K + ≥5x Vol/OI → force 6.0 minimum
-- Sector rotation (3rd flow in sector) → +1.0 | (5th+) → +1.5
-- FlowGod confirms prior Bullflow alert → +0.5 (Bullflow was early)
-
-**WATCH → TRADE upgrade:**  
-When a prior WATCH alert gets confirmed to TRADE by a second source or higher score, a follow-up Telegram notification fires automatically (skipped for test trades).
-
-**Cross-source confirmation:**
-- Bullflow first → FlowGod later = `🅱 Bullflow caught this early — FlowGod now confirms` + **+0.5 boost**
-- FlowGod first → Bullflow later = `🐦 FlowGod already on this — Bullflow late` (no boost)
+Time-of-day weighting note appended when flow arrives during opening noise window (9:30–10:00 ET), pre-market, or late-day (3:30 PM+).
 
 ---
 
-## Dual Flow Sources
+## Outcome Tracking & Weekly Report
 
-### 🐦 FlowGod (IFTTT → webhook)
-- @FL0WG0D tweets → IFTTT → `POST /webhook`
-- 30-minute dedup window (prevents same ticker firing twice)
-- Vision parser: t.co expansion → fxtwitter → vxtwitter fallback
-- Extracts ticker, strike, expiry, fill type from screenshot
-- Incomplete trades (missing strike/expiry) are dropped before scoring
-
-### 🅱 Bullflow (SSE stream)
-- Real-time SSE stream from bullflow.io
-- Custom alert: `premiumMin: $500K + Stocks only + DTE 2–120`
-- ITM filter: max 10% ITM applied in `prefilter.py` (Bullflow API doesn't support it)
-- Ticker-level 2h dedup (prevents same ticker spamming)
-- **TRADE only** sent to Telegram (WATCH stored silently)
-- OTM% filter: max 20% OTM
+Every trade result logs `signal_sources` (which of tape/conviction/cluster/sector fired). The Friday weekly report includes signal hit rates broken down by source — empirical data on which combinations perform best.
 
 ---
 
-## Bullflow Filters
+## ADM Context
 
-| Filter | Value | Where applied |
-|--------|-------|---------------|
-| Premium | ≥ $500K | Bullflow API |
-| DTE min | 2 days | Bullflow API |
-| DTE max | 120 days | Bullflow API |
-| OTM | ≤ 20% | Bullflow API + prefilter.py |
-| ITM | ≤ 10% (`FILTER_MAX_ITM`) | prefilter.py only |
-| Stocks only | true | Bullflow API |
-| Ticker dedup | 2h window | bullflow_stream.py |
-| Sector/Industry | Biotech, Pharma, REIT, Cannabis blocked | prefilter.py |
-
-Recreate Bullflow custom alert: `GET /sync-bullflow-filters`
+Average Daily Move calculated over the last 20 trading days. If today's stock move exceeds 1.5x ADM, an extended-move warning appears in the alert. Entry risk is higher when the easy money has already been made.
 
 ---
 
-## Journal System
+## Retail Flow Toggle
 
-Web journal at `/journal-view` · P&L summary at `/journal-summary`
-
-### Entry formats
-
-**Single leg:**
 ```
-/entry TICKER STRIKE C/P EXPIRY CONTRACTS PRICE [@account] [DATE] [TIME]
-/entry NVDA 190 C 06/20/26 2 6.25 @rh_trad
+RETAIL_FLOW_ENABLED = true   (default)
 ```
 
-**Spread:**
-```
-/entry TICKER LONG/SHORT C/P EXPIRY CONTRACTS NET_PRICE spread:TYPE [@account]
-/entry MU 1100/1200 C 01/16/27 5 12.50 spread:debit_call @rh_trad
-/entry AAPL 185/180 P 06/20/26 3 2.50 spread:credit_put @rh_ira
-```
-Spread types: `debit_call` `debit_put` `credit_call` `credit_put`
-
-**Exit:**
-```
-/exit TICKER PRICE [CONTRACTS] [DATE] [TIME]
-/exit NVDA 12.50           — close all
-/exit NVDA 12.50 1         — close 1 contract
-```
-
-### Robinhood screenshot detection
-
-| Screen shows | Position effect | Field | Detected as |
-|-------------|----------------|-------|-------------|
-| Buy | Open | Est debit | BTO → entry |
-| Sell | Open | Est credit | STO → entry (put sell) |
-| Sell | Close | — | STC → exit |
-| Buy | Close | Total cost + Realized profit | BTC → exit |
-
-**P&L calculation:**
-- BTO → STC: `(exit - entry) × contracts × 100`
-- STO → BTC: `(entry - exit) × contracts × 100`
-- Spread: `(current_net - entry_net) × contracts × 100` (both legs via Tradier)
-
-### Spread P&L in /eval
-Both legs fetched in real-time via Tradier options chain. Set `legs=spread` in journal-view to tag existing positions as spreads.
+Set to `false` to stop processing `Retail_Order_Flow` fills entirely. Big money (Rule B accumulation) still fires. Toggle mid-session with `/retail on` / `/retail off` in Telegram without redeploying.
 
 ---
 
-## Short Interest
+## IPO Risk
 
-Fetched from Massive `/stocks/v1/short-interest` — bi-weekly FINRA data.
-
-| Short % | Display | Context |
-|---------|---------|---------| 
-| ≥ 25% | 🔥 | Extreme — squeeze candidate |
-| ≥ 15% | ⚠️ | Elevated — squeeze potential |
-| ≥ 8% | 📊 | Moderate |
-| < 8% | ✅ | Low — clean setup |
-
----
-
-## Technical Scanner
-
-Scans all watchlist tickers every 5 minutes (market hours) for M5/M10/M15/M30/H1 breakout signals. Uses **Tradier `timesales` endpoint** for intraday candles (120 req/min limit, 0.6s delay between tickers). Weekends and holidays auto-skipped.
-
----
-
-## Exit Targets by DTE
-
-| DTE | Stop | Target |
-|-----|------|--------|
-| ≤ 3d | Exit flat by 2PM | — |
-| ≤ 7d | Break entry-day low | — |
-| 8–21d | -50% option | +100% |
-| 22–45d | -60% option | +100% |
-| > 45d | -70% option | +110% |
-
-**PUT_SELL targets:** Capture 50-80% premium decay. Exit at 20-50% decay or near strike.
-
----
-
-## Earnings Highlighting
-
-When flow comes in for a stock with earnings within 7 days, a banner appears at the **top of the SIGNAL section**:
-
-| Days to earnings | Display |
-|-----------------|---------|
-| 0 (today) | `🚨🚨 EARNINGS TODAY AMC 🚨🚨` |
-| 1 (tomorrow) | `⚠️ EARNINGS TOMORROW BMO` |
-| 2-7 days | `📅 EARNINGS IN 3d AMC` |
-| 8+ days | `📅 Earnings: Aug 25, 2026` (in THESIS only) |
-
-AMC = After Market Close · BMO = Before Market Open (from Finnhub earnings calendar)
-
----
-
-## Scheduled Jobs
-
-| Time | Job |
-|------|-----|
-| 8:00 AM ET (Mon-Fri) | Pre-market summary + yesterday carryover OI check |
-| 8:30 AM ET (Mon-Fri) | Earnings calendar pre-load (14 days) |
-| 9:00 AM ET (daily) | Railway balance check |
-| Every 5 min (market hours) | Technical scanner — breakout detection |
-| Every 15 min (market hours) | Exit signal monitor |
-| 4:00 PM ET (Mon-Fri) | Outcome tracking |
-| 4:15 PM ET (Mon-Fri) | EOD OI verification via Tradier |
-| 4:30 PM ET (Mon-Fri) | EOD price + peak updates via Tradier |
-| 4:45 PM ET (Friday) | Weekly P&L report |
-| 12:01 AM ET (daily) | Analyses cleanup + archive to Supabase |
-
----
-
-## Telegram Commands
-
-### Quick keyboard
-Send `/kb` or `/start` to show the persistent button keyboard. Send `/stop` to hide it.
-
-| Button | Command | Notes |
-|--------|---------|-------|
-| 📊 /eval | `/eval` | Fires immediately |
-| 📓 /journal | `/journal` | Fires immediately |
-| 🔢 /count | `/count` | Fires immediately |
-| 📈 /flow ... | `/flow TICKER` | Prompts for ticker |
-| 💹 /price ... | `/price TICKER` | Prompts for ticker |
-| 😐 /sent ... | `/sent TICKER` | Prompts for ticker |
-| 🔬 /test | `/test` | Fires immediately |
-| ⚙️ /status | `/status` | Fires immediately |
-| ❓ /help | `/help` | Fires immediately |
-
-### All commands
-
-**System**
-| Command | Description |
-|---------|-------------|
-| `/test` | Full connectivity check — all APIs and services |
-| `/status` | Stream status, open positions count, today's alerts |
-| `/kb` | Show command keyboard |
-| `/stop` | Hide keyboard |
-| `/help` | Command list |
-| `/journal_help` | Full journal command reference |
-
-**Flow & Research**
-| Command | Description |
-|---------|-------------|
-| `/flow TICKER` | Today's captured flows for a ticker |
-| `/flow TICKER MM-DD` | Flows for ticker on a past date |
-| `/flow MM-DD` | All flows on a past date |
-| `/sent TICKER` | Sentiment — price, SMAs, RSI, news, flow, insiders |
-| `/price TICKER` | Real-time stock price |
-| `/find TICKER` | Find open position by ticker |
-| `/sectors` | Sector rotation summary |
-| `/history` | Today's alert history link |
-
-**Positions**
-| Command | Description |
-|---------|-------------|
-| `/positions` | All open positions with P&L |
-| `/eval` | AI review of all positions (HOLD/TRIM/CLOSE) |
-| `/eval 21-40` | Positions 21-40 (paginate) |
-| `/eval @rh_ira` | Evaluate specific account |
-| `/eval NVDA` | Evaluate specific ticker |
-| `/count` | Open position count by account |
-| `/portfolio` | Portfolio summary by account |
-| `/stats` | Win rate and P&L statistics |
-
-**Journal**
-| Command | Description |
-|---------|-------------|
-| `/journal` or `/jv` | Open web journal |
-| `/entry TICKER STRIKE C/P EXPIRY CONTRACTS PRICE` | Log single-leg entry |
-| `/entry TICKER LONG/SHORT C/P EXPIRY CONTRACTS PRICE spread:TYPE` | Log spread entry |
-| `/exit TICKER PRICE [CONTRACTS]` | Log exit |
-| `/close TICKER` | Mark position as closed |
-| `/tag TICKER #tag` | Add tag to position |
-| `/debrief TICKER` | AI post-trade debrief |
-
-**Analysis**
-| Command | Description |
-|---------|-------------|
-| `/oi TICKER STRIKE C/P EXPIRY` | Open interest check |
-| `/oi all` | OI check for all yesterday's alerts |
-| `/watchlist` | Active technical watchlist |
-| `/backtest URL TIME` | Replay FlowGod tweet through pipeline |
+Recent IPOs (within `RECENT_IPO_THRESHOLD_DAYS`) are flagged in alerts with thin-float warning plus lockup expiry countdown (standard 180-day lockup from IPO date).
 
 ---
 
 ## Railway Variables
 
 ```
-# Flow sources
-BULLFLOW_API_KEY          = bull_01c7e...
-DUAL_FLOW_MODE            = true
-FLOW_SOURCE               = flowgod
+# Bullflow
+BULLFLOW_API_KEY             = bull_01c7e...
+DUAL_FLOW_MODE               = true
 
-# Filters
-FILTER_MIN_PREMIUM        = 500000
-FILTER_MIN_DTE            = 2
-FILTER_MAX_DTE            = 120
-FILTER_MAX_OTM            = 20.0
-FILTER_MAX_ITM            = 10.0       # Applied in prefilter.py (Bullflow API doesn't support)
-FILTER_EXCLUDE_ETF_HEDGES = true
-FILTER_EXCLUDE_SECTORS    = Biotechnology,Pharmaceutical,Drug Manufacturers,REIT,Real Estate,Cannabis
-FILTER_MAX_ITM_CALL       = 5    # Calls: prefer ATM/OTM only
-FILTER_MAX_ITM_PUT        = 30   # Puts: deep ITM allowed (real conviction)
-BULLFLOW_MIN_SCORE        = 6.0
+# Bullflow named filters
+CONVICTION_BIG_MONEY_FILTER  = Big_Money_Order_Flow
+CONVICTION_RETAIL_FILTER     = Retail_Order_Flow
+RETAIL_FLOW_ENABLED          = true
+
+# Conviction thresholds
+CONVICTION_BIG_MONEY_MIN     = 1        # BM fills required for normal conviction
+CONVICTION_RETAIL_MIN        = 2        # retail fills required for normal conviction
+CONVICTION_WINDOW_HOURS      = 6.5      # retail fill window (one trading session)
+CONVICTION_BM_MULTIDAY_DAYS  = 7        # BM fill window (7 calendar = 5 trading days)
+CONVICTION_RETAIL_MIN_PREMIUM = 25000   # retail lower bound
+CONVICTION_RETAIL_MAX_PREMIUM = 500000  # retail upper bound
+
+# Tape watcher
+TAPE_BM_MULTIDAY_DAYS        = 7        # same as CONVICTION_BM_MULTIDAY_DAYS
+
+# Alert behaviour
+ALERT_COOLDOWN_MINUTES       = 10       # suppress repeat same-ticker alerts
+ENTRY_REMINDER_MINUTES       = 10       # follow-up check after alert fires
+DOUBLE_CONFIRM_WINDOW_HOURS  = 6.5      # tape + conviction escalation window
+
+# Straddle/strangle
+STRADDLE_WINDOW_HOURS        = 2
+STRADDLE_SKEW_MAX            = 0.4
+
+# Sector clustering
+SECTOR_CLUSTER_MIN           = 4
+SECTOR_WINDOW_HOURS          = 8
+
+# Dark pool (optional — create filter on Bullflow dashboard)
+DARK_POOL_FILTER_NAME        = Dark_Pool_Order_Flow
+
+# Main filters
+FILTER_MIN_PREMIUM           = 500000
+FILTER_MIN_DTE               = 1        # 0DTE filtered everywhere
+FILTER_MAX_DTE               = 120
+FILTER_MAX_OTM               = 20.0
+FILTER_MAX_ITM               = 10.0
+FILTER_EXCLUDE_SECTORS       = Biotechnology,Pharmaceutical,REIT,Cannabis
 
 # APIs
-MASSIVE_API_KEY           = (primary Massive/Polygon key)
-MASSIVE_API_KEY_2         = (secondary key — doubles rate limit)
-TRADIER_TOKEN             = (options chain, candles, EOD pricing)
-ANTHROPIC_API_KEY         = ...
-TELEGRAM_BOT_TOKEN        = ...
-TELEGRAM_CHAT_ID          = ...
-
-# Storage
-SUPABASE_URL              = ...
-SUPABASE_KEY              = ...
+ANTHROPIC_API_KEY            = ...
+TELEGRAM_BOT_TOKEN           = ...
+TELEGRAM_CHAT_ID             = ...
+TELEGRAM_TRADE_CHAT_ID       = ...      # conviction/tape alerts
+TELEGRAM_ALL_CHAT_ID         = ...      # all-alerts channel
+SUPABASE_URL                 = ...
+SUPABASE_KEY                 = ...
+FINNHUB_API_KEY              = ...
+TRADIER_TOKEN                = ...
+POLYGON_API_KEY              = ...
+TIINGO_API_KEY               = ...
 
 # Account
-ACCOUNT_SIZE              = 100000
-BASE_URL                  = https://web-production-19e44.up.railway.app
-
-# Channels
-TELEGRAM_ALL_CHAT_ID      = (all-alerts channel — commentary/FYI tweets from FlowGod)
-
-# Railway balance (update after each top-up)
-RAILWAY_BALANCE           = 4.37
-RAILWAY_DAILY_COST        = 0.37
+ACCOUNT_SIZE                 = 100000
+BASE_URL                     = https://web-production-19e44.up.railway.app
+RAILWAY_BALANCE              = 4.37     # update after each top-up
+RAILWAY_DAILY_COST           = 0.37
 ```
+
+---
+
+## Persistence (Supabase keys)
+
+| Key | Content | Window |
+|-----|---------|--------|
+| `tape_history_v2` | Tape watcher state (ticker+direction buckets) | 7d BM / daily retail |
+| `conviction_state` | Cross-filter conviction state | 7d BM / 6.5h retail |
+| `analyses_today` | Today's scored alerts | Daily |
+| `analyses_week_YYYY-MM` | Monthly archive | Permanent |
+| `flow_history` | 30-day flow capture log | 30 days |
+| `journal` | All trade entries | Permanent |
+| `outcomes` | Trade outcome tracking with signal_sources | Permanent |
+| `watchlist` | Technical scanner tickers | Permanent |
+| `straddle_history` | Straddle detector state | 2h window |
+| `sector_cluster_history` | Sector cluster state | 8h window |
+
+---
+
+## Telegram Commands
+
+See `/help` in the bot or the Scheduled Jobs and Commands sections below.
+
+### Scheduled Jobs
+
+| Time (ET) | Job |
+|-----------|-----|
+| 7:30 AM Mon–Fri | Pre-market gap alerts (watchlist positions) |
+| 8:00 AM Mon–Fri | Pre-market summary + carryover OI check |
+| 8:30 AM Mon–Fri | Earnings calendar pre-load (14 days) |
+| Every 5 min (market hours) | Technical scanner — breakout detection |
+| Every 15 min (market hours) | Exit signal monitor |
+| 4:00 PM Mon–Fri | Tape watcher EOD summary |
+| 4:00 PM Mon–Fri | Outcome tracking |
+| 4:15 PM Mon–Fri | EOD OI verification |
+| 4:30 PM Mon–Fri | EOD price + peak updates |
+| 4:45 PM Friday | Weekly P&L + signal hit rate report |
+| 12:01 AM daily | Analyses cleanup + archive |
 
 ---
 
 ## Utility Endpoints
 
 | Endpoint | Purpose |
-|----------|---------| 
+|----------|---------|
 | `GET /health` | Status check |
 | `POST /test-alert` | Test flow alert (JSON body) |
-| `GET /sync-bullflow-filters` | Recreate Bullflow custom alert with current filters |
+| `GET /sync-bullflow-filters` | Recreate Bullflow custom alert |
 | `GET /test-bullflow` | Verify Bullflow connection |
 | `GET /journal-view` | Web journal UI |
-| `GET /journal-summary` | P&L summary stats (JSON) |
 | `GET /analysis/{id}` | Full analysis web page |
 | `GET /history` | Recent alert history |
-| `GET /backtest-bullflow?date=YYYY-MM-DD&speed=60` | Replay Bullflow historical flow |
-
-**Test alert body:**
-```json
-{
-  "ticker": "NVDA",
-  "opt_type": "call",
-  "strike": "190",
-  "expiry": "06/20/26",
-  "premium": 1100000,
-  "fill_type": "FULL_ASK",
-  "vol_oi": 8.2,
-  "oi": 500,
-  "avg_fill_price": 6.25,
-  "source": "bullflow"
-}
-```
 
 ---
 
 ## Data Sources
 
-| Source | Used for | Tier |
-|--------|----------|------|
-| Finnhub | Price, earnings, company profile | Free |
-| Tiingo | SPY/XLK daily history | Free |
-| Yahoo Finance | VIX | Free (no key) |
-| Tradier | Options chain, intraday candles, EOD pricing | Free developer |
-| Massive/Polygon (key 1) | Short interest, ATR, greeks | Paid |
-| Massive/Polygon (key 2) | Round-robin rate doubling | Paid |
-| Bullflow.io | Real-time SSE options flow | Paid |
-| Anthropic Haiku | Scoring, vision parsing, company descriptions, /eval | Pay-per-use |
-
----
-
-## Persistence
-
-All data persists across Railway redeploys via Supabase:
-
-| Key | Content | TTL |
-|-----|---------|-----|
-| `analyses_today` | Today's scored alerts | Daily |
-| `analyses_yesterday` | Yesterday's alerts (for carryover OI check) | 1 day |
-| `analyses_week_YYYY-MM` | Monthly archive | Permanent |
-| `flow_history` | 30-day flow capture log | 30 days |
-| `journal` | All trade entries | Permanent |
-| `accounts` | Account config | Permanent |
-| `outcomes` | Trade outcome tracking | Permanent |
-| `watchlist` | Technical scanner tickers | Permanent |
+| Source | Used for |
+|--------|----------|
+| Bullflow.io | Real-time SSE options flow |
+| Finnhub | Price, earnings, company profile, sector, IPO dates |
+| Tiingo | SPY/XLK daily history |
+| Yahoo Finance | VIX |
+| Tradier | Options chain, intraday candles, EOD pricing |
+| Polygon | Short interest, ATR, greeks |
+| Anthropic Haiku | Scoring, vision parsing, /eval, descriptions |
 
 ---
 
 ## Known Limitations
 
-- Duplicate Bullflow stream during Railway rolling deploy (~15s overlap, self-resolving via PID lock)
+- 0DTE contracts filtered at every layer — tape, conviction, and main scorer
 - Short interest: bi-weekly FINRA cadence (not real-time)
-- Railway balance check is manual — update `RAILWAY_BALANCE` after each top-up
-- Tradier candles: 120 req/min limit (0.6s delay between tickers handles this)
-- ITM filter (`FILTER_MAX_ITM`) only applied in FlowCheck — Bullflow API does not support it natively
+- Sector data from Finnhub profile (cached per session, not persisted)
+- Railway rolling deploy causes ~15s SSE overlap (self-resolving via PID lock)
+- `FILTER_MAX_ITM` applied in FlowCheck only — Bullflow API does not support it

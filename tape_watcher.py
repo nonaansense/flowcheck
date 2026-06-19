@@ -5,11 +5,14 @@ Monitors both Bullflow filters and only fires when big money is present.
 
 TWO rules — both require big money footprint:
 
-  Rule A — Intraday conviction:
+  Rule A — Intraday conviction (ORDER DOES NOT MATTER):
     1+ fill from Big_Money_Order_Flow
     + 1+ fill from Retail_Order_Flow
     Same ticker + direction, within the same trading day.
     Strike/expiry mix-and-match OK — signal is at ticker+direction level.
+    Retail fills are tracked throughout the day; when big money arrives,
+    existing retail fills count (and vice versa). Either fill can arrive
+    first — the check runs after every fill from either filter.
 
   Rule B — Multi-day big money accumulation:
     2+ fills from Big_Money_Order_Flow on the EXACT SAME strike+expiry
@@ -295,16 +298,24 @@ def process_tape(alert: dict, filter_name: str = "") -> dict | None:
                     "stn_note":     alert.get("stn_note"),
                     "ipo_note":     alert.get("ipo_note"),
                     "news":           alert.get("news", []),
-                "float_shares":   alert.get("float_shares"),
-                "short_interest": alert.get("short_interest"),
+                    "float_shares":   alert.get("float_shares"),
+                    "short_interest": alert.get("short_interest"),
                 }
 
-    # Still building — log current state
+    # Still building — log order-aware status
     today_bm_c  = len(today_bm)
     today_ret_c = len(today_ret)
-    print(f"[TAPE] {ticker} {option_type}: "
-          f"{today_bm_c} BM + {today_ret_c} retail today — "
-          f"{'need BM' if today_bm_c == 0 else 'need retail'}")
+    if today_bm_c == 0 and today_ret_c > 0:
+        # Retail accumulating — waiting for BM to trigger Rule A
+        print(f"[TAPE] {ticker} {option_type}: "
+              f"{today_ret_c} retail tracked today — waiting for big money")
+    elif today_bm_c > 0 and today_ret_c == 0:
+        # BM in — waiting for any retail to confirm
+        print(f"[TAPE] {ticker} {option_type}: "
+              f"{today_bm_c} BM tracked today — waiting for retail confirm")
+    else:
+        print(f"[TAPE] {ticker} {option_type}: "
+              f"{today_bm_c} BM + {today_ret_c} retail today — building")
     return None
 
 
@@ -346,7 +357,7 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
                 f"{f['time']}{date_s}")
 
     if rule == "A":
-        # Intraday: 1+ BM + 1+ retail same day
+        # Intraday: 1+ BM + 1+ retail same day (order-independent)
         bm_fills  = result["big_money"]
         ret_fills = result["retail"]
         total_bm  = result["total_bm"]
@@ -356,7 +367,13 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
         new_bm    = result.get("new_bm", False)
         bm_pct    = int(total_bm / total_all * 10) if total_all else 10
         skew_bar  = "█" * bm_pct + "░" * (10 - bm_pct)
-        header    = "🔥 NEW BIG MONEY" if new_bm else "🎬 TAPE CONVICTION"
+        if new_bm:
+            header = "🔥 NEW BIG MONEY"
+        elif (ret_fills and bm_fills and
+              min(f.get('ts',0) for f in ret_fills) < min(f.get('ts',0) for f in bm_fills)):
+            header = "🎬 TAPE CONVICTION (retail tracked → BM confirmed)"
+        else:
+            header = "🎬 TAPE CONVICTION (BM tracked → retail confirmed)"
         lines = [
             f"{header} — {alert_name}",
             f"━━━ {direction} INTRADAY: ${ticker} {bm_fills[0]['strike']}{otype} ━━━",
