@@ -984,7 +984,7 @@ def handle_command(text: str, from_chat_id: str):
                 reply = "\n".join(lines_t)
         except Exception as e:
             reply = f"❌ Tape error: {e}"
-        await send_reply(reply)
+        send_reply(reply, from_chat_id)
 
     elif cmd in ("conviction", "conv", "bigmoney"):
         try:
@@ -1008,8 +1008,22 @@ def handle_command(text: str, from_chat_id: str):
                 reply = "\n".join(lines_c)
         except Exception as e:
             reply = f"❌ Conviction error: {e}"
-        await send_reply(reply)
+        send_reply(reply, from_chat_id)
 
+
+    elif cmd in ("retail", "retailflow"):
+        # Toggle or check retail flow processing
+        import os
+        current = os.environ.get("RETAIL_FLOW_ENABLED","true").lower() not in ("false","0","no","off")
+        if args and args[0].lower() in ("on","enable","true","1"):
+            os.environ["RETAIL_FLOW_ENABLED"] = "true"
+            send_reply("✅ Retail flow ENABLED — Retail_Order_Flow fills now count toward conviction", from_chat_id)
+        elif args and args[0].lower() in ("off","disable","false","0"):
+            os.environ["RETAIL_FLOW_ENABLED"] = "false"
+            send_reply("⏸️ Retail flow DISABLED — only Big_Money_Order_Flow processed", from_chat_id)
+        else:
+            status = "✅ ENABLED" if current else "⏸️ DISABLED"
+            send_reply(f"Retail flow: {status}\nUse /retail on or /retail off to toggle", from_chat_id)
 
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)

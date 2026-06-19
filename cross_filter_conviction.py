@@ -138,8 +138,9 @@ def process_conviction(alert: dict, alert_name: str) -> dict | None:
     direction = "call" if "call" in opt_type.lower() else "put"
 
     # Classify fill source
+    _retail_en   = os.environ.get("RETAIL_FLOW_ENABLED","true").lower() not in ("false","0","no","off")
     is_big_money = (alert_name == BIG_MONEY_FILTER)
-    is_retail    = (alert_name == RETAIL_FILTER and
+    is_retail    = (_retail_en and alert_name == RETAIL_FILTER and
                     RETAIL_MIN_PREMIUM <= premium < RETAIL_MAX_PREMIUM)
 
     if not is_big_money and not is_retail:
@@ -220,9 +221,11 @@ def process_conviction(alert: dict, alert_name: str) -> dict | None:
                     "bm_unique_days": unique_days,
                     "bm_multiday":  is_multiday,
                     "earnings_str": alert.get("earnings_str"),
-                    "stn_note":     alert.get("stn_note"),
-                    "ipo_note":     alert.get("ipo_note"),
-                    "news":         alert.get("news", []),
+                    "stn_note":       alert.get("stn_note"),
+                    "ipo_note":       alert.get("ipo_note"),
+                    "news":           alert.get("news", []),
+                    "float_shares":   alert.get("float_shares"),
+                    "short_interest": alert.get("short_interest"),
                 }
 
     qualifies = bm_count >= BIG_MONEY_MIN and ret_count >= RETAIL_MIN
@@ -280,6 +283,8 @@ def process_conviction(alert: dict, alert_name: str) -> dict | None:
         "stn_note":   alert.get("stn_note"),
         "ipo_note":   alert.get("ipo_note"),
         "news":       alert.get("news", []),
+        "float_shares":   alert.get("float_shares"),
+        "short_interest": alert.get("short_interest"),
     }
 
 

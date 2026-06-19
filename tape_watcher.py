@@ -164,11 +164,15 @@ def process_tape(alert: dict, filter_name: str = "") -> dict | None:
     if not ticker or not strike or not expiry:
         return None
 
+    _retail_enabled = os.environ.get("RETAIL_FLOW_ENABLED","true").lower() not in ("false","0","no","off")
     is_big_money = (filter_name == BIG_MONEY_FILTER)
-    is_retail    = (filter_name == RETAIL_FILTER)
+    is_retail    = (filter_name == RETAIL_FILTER) and _retail_enabled
 
     if not is_big_money and not is_retail:
-        print(f"[TAPE] Unknown filter '{filter_name}' — skipping")
+        if filter_name == RETAIL_FILTER and not _retail_enabled:
+            print(f"[TAPE] Retail flow disabled — skipping {alert.get('ticker','?')}")
+        elif filter_name not in (BIG_MONEY_FILTER, RETAIL_FILTER):
+            print(f"[TAPE] Unknown filter '{filter_name}' — skipping")
         return None
 
     # Pure retail with no big money in state yet — record but never fire
