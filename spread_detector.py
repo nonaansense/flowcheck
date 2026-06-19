@@ -99,3 +99,158 @@ def check_spread_likelihood(
         "reasons":       reasons,
         "note":          note,
     }
+
+
+# ── Straddle / Strangle detector ──────────────────────────────────────────
+# Tracks same-ticker call+put flows within a rolling window. When both sides
+# hit with similar premium and matching/nearby expiry, flags as a possible
+# volatility bet rather than a directional conviction signal.
+
+import os, time
+from zoneinfo import ZoneInfo
+from datetime import datetime
+
+ET = ZoneInfo("America/New_York")
+STRADDLE_STORAGE_KEY   = "straddle_history"
+STRADDLE_WINDOW_HOURS  = float(os.environ.get("STRADDLE_WINDOW_HOURS", "2"))
+STRADDLE_SKEW_MAX      = float(os.environ.get("STRADDLE_SKEW_MAX", "0.4"))  # max premium ratio imbalance
+
+_STRADDLE: dict = {}
+_st_loaded = False
+
+
+def _load_straddle():
+    global _STRADDLE, _st_loaded
+    if _st_loaded:
+        return
+    try:
+        from storage import db_get
+        raw = db_get(STRADDLE_STORAGE_KEY)
+        if raw and isinstance(raw, dict):
+            _STRADDLE = raw
+    except: pass
+    _st_loaded = True
+
+
+def _save_straddle():
+    try:
+        from storage import db_set
+        db_set(STRADDLE_STORAGE_KEY, _STRADDLE)
+    except: pass
+
+
+def _prune_straddle():
+    cutoff = time.time() - STRADDLE_WINDOW_HOURS * 3600
+    for k in list(_STRADDLE.keys()):
+        _STRADDLE[k]["calls"] = [f for f in _STRADDLE[k]["calls"] if f["ts"] >= cutoff]
+        _STRADDLE[k]["puts"]  = [f for f in _STRADDLE[k]["puts"]  if f["ts"] >= cutoff]
+        if not _STRADDLE[k]["calls"] and not _STRADDLE[k]["puts"]:
+            del _STRADDLE[k]
+
+
+def process_straddle(alert: dict, alert_name: str) -> dict | None:
+    """
+    Track call and put flows per ticker. Returns a straddle-detection result
+    when both sides show up with similar premium on matching/nearby expiry.
+    Only fires once per ticker per window.
+    """
+    _load_straddle()
+    _prune_straddle()
+
+    ticker    = str(alert.get("ticker","") or "").upper()
+    option_type = str(alert.get("option_type","call") or "call").lower()
+    expiry    = str(alert.get("expiry","") or "")
+    premium   = float(alert.get("premium",0) or 0)
+    now       = time.time()
+    time_str  = datetime.now(ET).strftime("%-I:%M %p")
+
+    if not ticker or premium < 25000:
+        return None
+
+    if ticker not in _STRADDLE:
+        _STRADDLE[ticker] = {"calls":[], "puts":[], "alerted_ts": 0}
+
+    entry = _STRADDLE[ticker]
+    fill = {"expiry": expiry, "premium": premium, "time": time_str, "ts": now, "alert": alert_name}
+
+    if "call" in option_type:
+        entry["calls"].append(fill)
+    else:
+        entry["puts"].append(fill)
+    _save_straddle()
+
+    calls = entry["calls"]
+    puts  = entry["puts"]
+    if not calls or not puts:
+        return None
+
+    # Already alerted this window
+    if entry.get("alerted_ts",0) > now - STRADDLE_WINDOW_HOURS * 3600:
+        return None
+
+    total_calls = sum(f["premium"] for f in calls)
+    total_puts  = sum(f["premium"] for f in puts)
+    total       = total_calls + total_puts
+    if total == 0: return None
+
+    skew = abs(total_calls - total_puts) / total
+    # Only flag if relatively balanced (both sides within STRADDLE_SKEW_MAX of each other)
+    if skew > STRADDLE_SKEW_MAX:
+        return None
+
+    # Check for matching expiry between any call and put
+    call_expiries = {f["expiry"] for f in calls}
+    put_expiries  = {f["expiry"] for f in puts}
+    same_expiry   = bool(call_expiries & put_expiries)
+
+    entry["alerted_ts"] = now
+    _save_straddle()
+
+    call_pct = total_calls / total * 100
+    put_pct  = total_puts  / total * 100
+
+    print(f"[STRADDLE] ⚖️  Possible straddle/strangle: {ticker} "
+          f"${total/1000:.0f}K | calls {call_pct:.0f}% / puts {put_pct:.0f}%")
+
+    return {
+        "ticker":      ticker,
+        "total_calls": total_calls,
+        "total_puts":  total_puts,
+        "total":       total,
+        "call_pct":    call_pct,
+        "put_pct":     put_pct,
+        "same_expiry": same_expiry,
+        "call_fills":  list(calls),
+        "put_fills":   list(puts),
+    }
+
+
+def build_straddle_alert(result: dict) -> str:
+    """Alert message for a detected straddle/strangle pattern."""
+    ticker = result["ticker"]
+    total  = result["total"]
+    cp     = result["call_pct"]
+    pp     = result["put_pct"]
+    same   = result["same_expiry"]
+    tot_s  = f"${total/1_000_000:.1f}M" if total >= 1_000_000 else f"${total/1_000:.0f}K"
+
+    call_lines = [f"  📈 {f['time']} | ${f['premium']/1_000:.0f}K {f['expiry']} [{f['alert']}]"
+                  for f in result["call_fills"]]
+    put_lines  = [f"  📉 {f['time']} | ${f['premium']/1_000:.0f}K {f['expiry']} [{f['alert']}]"
+                  for f in result["put_fills"]]
+
+    kind = "STRADDLE" if same else "STRANGLE"
+    lines = [
+        f"⚖️  POSSIBLE {kind}: ${ticker}",
+        f"━━━ Both calls AND puts buying — volatility bet? ━━━",
+        f"",
+        f"Total deployed: {tot_s} | Calls {cp:.0f}% / Puts {pp:.0f}%",
+        f"",
+        f"Calls:",
+    ] + call_lines + ["", "Puts:"] + put_lines + [
+        f"",
+        f"💡 {'Same expiry = classic straddle — bet on a big move, not direction' if same else 'Different expiries = strangle — event volatility play'}",
+        f"⚠️  Do NOT treat as directional conviction — this is a volatility bet",
+        f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
+    ]
+    return "\n".join(lines)

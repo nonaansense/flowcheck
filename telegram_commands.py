@@ -962,6 +962,55 @@ def handle_command(text: str, from_chat_id: str):
             except Exception as _ste:
                 send_reply(f"Error: {_ste}", from_chat_id)
 
+    elif cmd in ("tape", "tapewatch"):
+        try:
+            from tape_watcher import _TAPE, _load_tape, _prune_stale
+            _load_tape(); _prune_stale()
+            if not _TAPE:
+                reply = "📋 Tape watcher: no active entries"
+            else:
+                lines_t = ["📋 Tape Watcher — Active Entries:",""]
+                for key, entry in sorted(_TAPE.items(),
+                        key=lambda x: sum(f["premium"] for f in x[1]["flows"]), reverse=True):
+                    flows   = entry["flows"]
+                    fills   = len(flows)
+                    total   = sum(f["premium"] for f in flows)
+                    days    = len(set(f.get("date","") for f in flows))
+                    alerted = "🔔" if entry.get("alert_count",0) > 0 else "⏳"
+                    tot_s   = f"${total/1_000_000:.1f}M" if total>=1_000_000 else f"${total/1_000:.0f}K"
+                    day_s   = f" ({days}d)" if days > 1 else ""
+                    lines_t.append(f"  {alerted} {entry['ticker']} {entry['strike']} "
+                                   f"{entry['expiry']} — {fills} fills | {tot_s}{day_s}")
+                reply = "\n".join(lines_t)
+        except Exception as e:
+            reply = f"❌ Tape error: {e}"
+        await send_reply(reply)
+
+    elif cmd in ("conviction", "conv", "bigmoney"):
+        try:
+            from cross_filter_conviction import _STATE, _load, _prune
+            _load(); _prune()
+            if not _STATE:
+                reply = "📋 Cross-filter conviction: no active entries"
+            else:
+                from cross_filter_conviction import BIG_MONEY_MIN, RETAIL_MIN
+                lines_c = ["🔥 Cross-Filter Conviction — Active:",""]
+                for key, entry in sorted(_STATE.items(),
+                        key=lambda x: len(x[1]["big_money"]), reverse=True):
+                    bm  = len(entry["big_money"])
+                    ret = len(entry["retail"])
+                    alerted = "✅" if entry.get("last_alerted_ts",0) > 0 else "⏳"
+                    bm_s    = f"${sum(f['premium'] for f in entry['big_money'])/1_000:.0f}K"
+                    ret_s   = f"${sum(f['premium'] for f in entry['retail'])/1_000:.0f}K"
+                    status  = "FIRED" if entry.get("last_alerted_ts",0)>0 else f"{bm}/{BIG_MONEY_MIN} BM + {ret}/{RETAIL_MIN} retail"
+                    lines_c.append(f"  {alerted} {entry['ticker']} {entry['direction'].upper()} "
+                                   f"— {status} | {bm_s} BM + {ret_s} retail")
+                reply = "\n".join(lines_c)
+        except Exception as e:
+            reply = f"❌ Conviction error: {e}"
+        await send_reply(reply)
+
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)

@@ -11,9 +11,6 @@ from sms import send_sms
 
 OUTCOMES_FILE = "/tmp/flowcheck_outcomes.json"
 
-def poly_key():
-    return os.environ.get("POLYGON_API_KEY")
-
 OUTCOMES_KEY = "outcomes"
 
 def load_outcomes() -> dict:
@@ -39,7 +36,7 @@ def save_outcomes(data: dict):
 
 def get_closing_stock_price(ticker: str) -> float | None:
     """Get closing stock price from Polygon."""
-    key = poly_key()
+    key = os.environ.get("POLYGON_API_KEY","")
     if not key:
         from fetcher import fetch_price
         return fetch_price(ticker)
@@ -62,7 +59,7 @@ def get_closing_stock_price(ticker: str) -> float | None:
 def get_closing_option_price(ticker: str, strike: str,
                               opt_type: str, expiry_raw: str) -> float | None:
     """Get closing option price from Polygon."""
-    key = poly_key()
+    key = os.environ.get("POLYGON_API_KEY","")
     if not key or not expiry_raw or not strike:
         return None
     try:

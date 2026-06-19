@@ -8,12 +8,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from sms import send_sms
 
-def poly_key():
-    return os.environ.get("POLYGON_API_KEY")
-
 def get_premarket_price(ticker: str) -> float | None:
     """Get current pre-market price from Polygon."""
-    key = poly_key()
+    key = os.environ.get("POLYGON_API_KEY","")
     if not key:
         return None
     try:
@@ -50,7 +47,7 @@ def get_premarket_price(ticker: str) -> float | None:
 
 def get_prev_close(ticker: str) -> float | None:
     """Get previous closing price from Polygon."""
-    key = poly_key()
+    key = os.environ.get("POLYGON_API_KEY","")
     if not key:
         return None
     try:

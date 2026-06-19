@@ -502,6 +502,16 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                     _iv_note_tp = _ivr.get("note","")
             except: pass
 
+            # Skip 0DTE contracts — same-day expiry is a different game
+            if _dte_tp == 0:
+                print(f"[TAPE] Skipping 0DTE: {_tkr_tp} {_strk_tp} {_exp_tp}")
+                # Fall through to normal FlowCheck scoring but skip tape/cluster/conviction
+            else:
+                pass  # DTE ok — continue processing below
+
+            # Skip 0DTE for tape/cluster/conviction (still fall through to FlowCheck)
+            _dte_ok = (_dte_tp >= 1)
+
             # Sell-the-news risk
             _stn_risk_tp = None
             try:
@@ -565,6 +575,10 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             _tape_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","")
                           or os.environ.get("TELEGRAM_CHAT_ID",""))
             _all_chat_tape = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+
+            # Skip tape/cluster/conviction for 0DTE contracts
+            if not _dte_ok:
+                return
 
             # Exact-match repeat buyer detection (same strike+expiry)
             _tape_result = process_tape(_parsed_tape)
@@ -653,6 +667,98 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                               f"{_cfc_result['ticker']} {_cfc_result['sentiment']}")
     except Exception as _cfc_e:
         print(f"[CONVICTION] Error: {_cfc_e}")
+
+    # ── Straddle / Strangle detector ──────────────
+    # Fires when both calls AND puts appear on same ticker within the window
+    try:
+        from spread_detector import process_straddle, build_straddle_alert
+        _straddle_names = [
+            os.environ.get("CONVICTION_BIG_MONEY_FILTER", "Big_Money_Order_Flow"),
+            os.environ.get("CONVICTION_RETAIL_FILTER", "Retail_Order_Flow"),
+        ]
+        if alert_name in _straddle_names:
+            _st_parsed = {}
+            try:
+                _st_parsed = _parsed_tape
+            except NameError:
+                _st_parsed = {
+                    "ticker":      alert_data.get("symbol","")[:5] or "",
+                    "option_type": "call",
+                    "expiry":      "",
+                    "premium":     float(alert_data.get("alertPremium",0) or 0),
+                }
+            _st_result = process_straddle(_st_parsed, alert_name)
+            if _st_result:
+                _st_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                _st_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                            os.environ.get("TELEGRAM_CHAT_ID",""))
+                if _st_bot and _st_chat:
+                    from sms import send_telegram as _sms_st
+                    _sms_st(build_straddle_alert(_st_result), _st_bot, _st_chat)
+                    print(f"[STRADDLE] ✅ Alert sent: {_st_result['ticker']}")
+    except Exception as _ste:
+        print(f"[STRADDLE] Error: {_ste}")
+
+    # ── Dark pool routing ────────────────────────
+    # Handles alerts from a "Dark_Pool_Order_Flow" Bullflow filter if configured.
+    # Dark pool prints on the underlying often precede options flow by hours.
+    # Create this filter manually on Bullflow dashboard (dark pool block trades).
+    _dark_pool_name = os.environ.get("DARK_POOL_FILTER_NAME","Dark_Pool_Order_Flow")
+    if alert_name == _dark_pool_name:
+        try:
+            _dp_ticker  = alert_data.get("symbol","") or ""
+            _dp_premium = float(alert_data.get("alertPremium",0) or 0)
+            _dp_px      = float(alert_data.get("spotPrice") or alert_data.get("price",0) or 0)
+            _dp_bot     = os.environ.get("TELEGRAM_BOT_TOKEN","")
+            _dp_chat    = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                           os.environ.get("TELEGRAM_CHAT_ID",""))
+            if _dp_ticker and _dp_bot and _dp_chat and _dp_premium >= 500000:
+                _dp_prem_s = (f"${_dp_premium/1_000_000:.1f}M"
+                              if _dp_premium >= 1_000_000
+                              else f"${_dp_premium/1_000:.0f}K")
+                _dp_time   = __import__('datetime').datetime.now(
+                    __import__('zoneinfo').ZoneInfo("America/New_York")
+                ).strftime("%-I:%M %p")
+                _dp_lines = [
+                    f"🌑 DARK POOL PRINT: ${_dp_ticker}",
+                    "━━━ Large block trade off-exchange ━━━",
+                    "",
+                    f"Size: {_dp_prem_s} | Stock: ${_dp_px:.2f} | {_dp_time}",
+                    "",
+                    "💡 Dark pool prints often precede options flow by hours"
+                    " — watch for follow-on call/put activity",
+                    f"📈 https://www.tradingview.com/chart/?symbol={_dp_ticker}",
+                ]
+                _dp_msg = "\n".join(_dp_lines)
+                from sms import send_telegram as _sms_dp
+                _sms_dp(_dp_msg, _dp_bot, _dp_chat)
+                print(f"[DARKPOOL] ✅ Alert sent: {_dp_ticker} {_dp_prem_s}")
+        except Exception as _dpe:
+            print(f"[DARKPOOL] Error: {_dpe}")
+
+    # ── Sector clustering ─────────────────────────
+    try:
+        from sector_cluster import process_sector, build_sector_alert
+        _all_filter_names = [
+            os.environ.get("CONVICTION_BIG_MONEY_FILTER","Big_Money_Order_Flow"),
+            os.environ.get("CONVICTION_RETAIL_FILTER","Retail_Order_Flow"),
+        ]
+        if alert_name in _all_filter_names:
+            _sc_parsed = {}
+            try: _sc_parsed = _parsed_tape
+            except NameError:
+                _sc_parsed = {"ticker":"","option_type":"call","premium":0.0}
+            _sc_result = process_sector(_sc_parsed)
+            if _sc_result:
+                _sc_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                _sc_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                            os.environ.get("TELEGRAM_CHAT_ID",""))
+                if _sc_bot and _sc_chat:
+                    from sms import send_telegram as _sms_sc
+                    _sms_sc(build_sector_alert(_sc_result), _sc_bot, _sc_chat)
+                    print(f"[SECTOR] ✅ Alert sent: {_sc_result['sector']}")
+    except Exception as _sce:
+        print(f"[SECTOR] Error: {_sce}")
 
     # ── Repeater channel routing ──────────────────
     # "Urgent Repeater" and "Repeat Buyer" with DTE ≤ 14
@@ -800,6 +906,13 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     min_prem = float(os.environ.get("FILTER_MIN_PREMIUM","500000"))
     if premium < min_prem:
         print(f"[BULLFLOW] Premium ${premium:,.0f} < ${min_prem:,.0f} skip")
+        return
+
+    # Minimum 1 day to expiration — 0DTE is a different trading strategy
+    _main_dte = int(trade.get("dte", 1) if trade else 1)
+    _min_dte  = int(os.environ.get("FILTER_MIN_DTE", "1"))
+    if _main_dte < _min_dte:
+        print(f"[BULLFLOW] DTE {_main_dte} < {_min_dte} skip (0DTE filtered)")
         return
     
     # ── Prefilter: ITM, sector, DTE, OTM ──────────

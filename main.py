@@ -424,8 +424,10 @@ async def startup():
 
         scheduler.add_job(lambda: track_outcomes(analyses),
                           "cron", day_of_week="mon-fri", hour=16, minute=0, id="outcome_track")
-        scheduler.add_job(lambda: send_premarket_gap_alerts(get_watchlist()) if is_market_open() else None,
-                          "cron", day_of_week="mon-fri", hour=9, minute=0, id="premarket_gap")
+        # Gap alert at 7:30 AM — true pre-market, before regular summary
+        scheduler.add_job(lambda: send_premarket_gap_alerts(get_watchlist()),
+                          "cron", day_of_week="mon-fri", hour=7, minute=30,
+                          id="premarket_gap", max_instances=1)
         scheduler.add_job(poll_commands,
                           "interval", seconds=10, id="telegram_commands",
                           max_instances=1, coalesce=True)
@@ -1632,6 +1634,17 @@ def build_sms(trade: dict, data: dict, result: dict,
                 lines.append(_stn_risk["note"])
         except Exception as _stne:
             print(f"[STN] Sell-the-news check error: {_stne}")
+
+        # ADM context — is today's stock move already extended vs average daily range?
+        try:
+            from technical import calc_adm_context
+            _open_px_adm = data.get("open_price") or data.get("open")
+            _adm_ctx = calc_adm_context(_ph_str, stock_price, _open_px_adm)
+            if _adm_ctx.get("note"):
+                lines.append("")
+                lines.append(_adm_ctx["note"])
+        except Exception as _adme:
+            print(f"[ADM] Context error: {_adme}")
 
         # Recent IPO risk check — thin float, no earnings history, signals less reliable
         try:

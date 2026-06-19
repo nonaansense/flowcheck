@@ -106,20 +106,39 @@ def score_conviction(data: dict, trade: dict, result: dict,
     elif total >= 2: label = "LOW"
     else:            label = "SKIP"
 
+    # Time-of-day weighting — opening noise window (9:30-10:00 ET)
+    tod_note = None
+    try:
+        from fetcher import check_time_of_day
+        tod = check_time_of_day()
+        _h  = tod.get("hour_et", 12)
+        _m  = tod.get("minute_et", 0)
+        if _h == 9 and 30 <= _m <= 59:
+            tod_note = "⏰ Opening noise window (9:30-10:00 ET) — flow reliability lower"
+        elif _h == 9 and _m < 30:
+            tod_note = "⏰ Pre-market flow — treat with caution"
+        elif _h == 15 and _m >= 30:
+            tod_note = "⏰ Late-day flow (3:30 PM+) — may be hedging or closing"
+    except:
+        pass
+
     return {"total": total, "out_of": 6, "label": label,
-            "scores": scores, "notes": notes}
+            "scores": scores, "notes": notes, "tod_note": tod_note}
 
 
 def format_conviction(conv: dict) -> str:
     t, o, lbl = conv["total"], conv["out_of"], conv["label"]
     sc, nt = conv["scores"], conv["notes"]
-    emoji = {"ELITE":"🔥","HIGH":"💎","MODERATE":"✅","LOW":"⚠️","SKIP":"❌"}
-    lines = [f"📊 CONVICTION: {t}/{o} {emoji.get(lbl,'')} {lbl}"]
-    keys  = [("flow","Flow score"),("gex","GEX entry"),
-             ("technical","Technical"),("macro","Macro"),
-             ("repeat","Repeat flow"),("xsource","Cross-source")]
+    tod    = conv.get("tod_note")
+    emoji  = {"ELITE":"🔥","HIGH":"💎","MODERATE":"✅","LOW":"⚠️","SKIP":"❌"}
+    lines  = [f"📊 CONVICTION: {t}/{o} {emoji.get(lbl,'')} {lbl}"]
+    keys   = [("flow","Flow score"),("gex","GEX entry"),
+              ("technical","Technical"),("macro","Macro"),
+              ("repeat","Repeat flow"),("xsource","Cross-source")]
     for k, label in keys:
         lines.append(f"  {'✅' if sc.get(k) else '❌'} {label}: {nt.get(k,'')}")
+    if tod:
+        lines.append(f"  {tod}")
     return "\n".join(lines)
 
 

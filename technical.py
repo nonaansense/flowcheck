@@ -41,6 +41,58 @@ WATCHLIST_FILE = "/tmp/flowcheck_watchlist.json"
 MIN_DTE_TO_MONITOR = 3   # Stop monitoring if fewer than 3 days to expiry
 MAX_MONITOR_DAYS   = 10  # Max days to keep a ticker on watchlist
 
+
+def calc_adm_context(price_history: list, current_price: float,
+                     open_price: float = None, days: int = 20) -> dict:
+    """
+    Calculate Average Daily Move (ADM) and compare today's move against it.
+    Returns a context dict with is_extended flag and note string.
+
+    ADM = average of abs(daily % changes) over the last N days.
+    If today's stock move already exceeds 1.5x ADM, entry is riskier —
+    the easy money has already been made.
+    """
+    if not price_history or len(price_history) < 5:
+        return {"adm": None, "today_move_pct": None, "is_extended": False, "note": None}
+
+    closes = [float(p) for p in price_history[-days:] if p]
+    if len(closes) < 2:
+        return {"adm": None, "today_move_pct": None, "is_extended": False, "note": None}
+
+    daily_moves = [abs(closes[i] - closes[i-1]) / closes[i-1] * 100
+                   for i in range(1, len(closes))]
+    adm = sum(daily_moves) / len(daily_moves)
+
+    # Today's move (if open_price available) vs previous close
+    prev_close = closes[-1]
+    if open_price and open_price > 0 and current_price > 0:
+        today_pct = abs(current_price - open_price) / open_price * 100
+    elif current_price > 0 and prev_close > 0:
+        today_pct = abs(current_price - prev_close) / prev_close * 100
+    else:
+        return {"adm": round(adm,2), "today_move_pct": None, "is_extended": False, "note": None}
+
+    ratio = today_pct / adm if adm > 0 else 0
+    is_extended = ratio >= 1.5
+
+    if is_extended:
+        note = (f"⚠️ Stock up {today_pct:.1f}% vs ADM {adm:.1f}% "
+                f"({ratio:.1f}x) — extended move, entry risk elevated")
+    elif ratio >= 1.0:
+        note = (f"📋 Stock move {today_pct:.1f}% = 1x ADM {adm:.1f}% "
+                f"— approaching extended territory")
+    else:
+        note = None
+
+    return {
+        "adm":            round(adm, 2),
+        "today_move_pct": round(today_pct, 2),
+        "ratio":          round(ratio, 2),
+        "is_extended":    is_extended,
+        "note":           note,
+    }
+
+
 def add_to_watchlist(ticker, trade, result, data=None, send_sms_fn=None):
     """
     Stocks < $40: send immediate entry alert — pullbacks too fast.
