@@ -119,6 +119,37 @@ Infrastructure ready for a `Dark_Pool_Order_Flow` Bullflow filter. When configur
 
 ---
 
+## Alert Enrichment (tape + conviction alerts)
+
+Every tape watcher and cross-filter conviction alert includes:
+
+| Field | Source | Example |
+|-------|--------|---------|
+| **GEX context** | Bullflow SPY GEX, 15-min cache | `📐 🟢 SPY positive GEX → $595 wall = gravity target` |
+| **Flow count** (flow count / history) | Supabase flow_history, 30d | `📅 3rd big money alert in 30d ($2.8M total) — recurring name` |
+| **Stop / target** | ATR-based (1.5× ATR, 1.5% fallback) | `🛑 Stop: $209.20 | 🎯 Target: +100%` |
+| **IV Rank flag** | Finnhub IV rank | Low (<30th) = informed buying • High (>70th) = possible hedge |
+| **Intraday velocity** | Fill timestamps | `⚡ 3 fills in 12min — urgent accumulation` |
+
+---
+
+## Expiry Clustering
+
+When `EXPIRY_CLUSTER_MIN` (default 4) distinct tickers buy the **same expiry date** in the same direction within a session, fires a `🗓️ EXPIRY CLUSTER` alert. Signals event-driven positioning (FOMC, earnings cluster, macro event) rather than individual conviction. Only counts `Big_Money_Order_Flow` fills. Calls and puts tracked separately.
+
+```
+EXPIRY_CLUSTER_MIN      = 4     # tickers to trigger
+EXPIRY_CLUSTER_WINDOW_H = 6.5   # rolling window (hours)
+```
+
+---
+
+## P&L Attribution by signal combination (attribution)
+
+The Friday weekly report shows win rates by signal combination — `conviction+tape: 75% (6/8)` vs `conviction: 44% (4/9)` — derived from the `signal_sources` field logged per trade outcome. Top 6 combinations ranked by frequency. Builds automatically from live data over time.
+
+---
+
 ## Alert Format
 
 ### Tape Watcher — Rule A (intraday)

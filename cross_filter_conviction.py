@@ -388,6 +388,43 @@ def build_conviction_alert(result: dict) -> str:
         if _cfc_ctx:
             lines.append(f"📊 {' | '.join(_cfc_ctx)}")
 
+    # SPY GEX context
+    try:
+        from gex_monitor import get_spy_gex_line
+        _gex_line = get_spy_gex_line()
+        if _gex_line:
+            lines.append(f"📐 {_gex_line}")
+    except: pass
+    # Historical flow count
+    try:
+        from gex_monitor import get_ticker_flow_count
+        _cfc_fc = get_ticker_flow_count(ticker)
+        if _cfc_fc.get("note"):
+            lines.append(_cfc_fc["note"])
+    except: pass
+    # IV rank context
+    _cfc_iv_rank = result.get("iv_rank")
+    if _cfc_iv_rank is not None:
+        try:
+            _cfc_ivr = int(_cfc_iv_rank)
+            if _cfc_ivr < 30:
+                lines.append(f"🔵 IV Rank {_cfc_ivr}th — low IV, possible informed buying")
+            elif _cfc_ivr > 70:
+                lines.append(f"🔴 IV Rank {_cfc_ivr}th — high IV, possible hedge or event play")
+        except: pass
+    # Stop / target
+    _cfc_stock = result.get("stock_px", 0)
+    _cfc_dte   = result.get("dte", 0)
+    if _cfc_stock and _cfc_dte:
+        try:
+            from tape_watcher import calc_stop_target
+            _cfc_bm_px = (result.get("big_money",[{}])[-1].get("price",0)
+                          if result.get("big_money") else 0)
+            _cfc_st = calc_stop_target(_cfc_stock, _cfc_bm_px, _cfc_dte, ticker)
+            if _cfc_st and _cfc_st.get("note"):
+                lines.append(_cfc_st["note"])
+        except: pass
+
     if earn_str:
         lines.append(f"📅 Earnings: {earn_str}")
     if stn_note:

@@ -1,3 +1,41 @@
+
+def calc_stop_target(stock_px: float, option_price: float,
+                     dte: int, ticker: str = "") -> dict | None:
+    """
+    Calculate ATR-based stop and option target for tape/conviction alerts.
+    Uses fetch_atr() from fetcher.py. Returns None on error.
+    """
+    if not stock_px or not dte:
+        return None
+    try:
+        from fetcher import fetch_atr
+        atr_data = (fetch_atr(ticker) if ticker else {}) or {}
+        atr      = float(atr_data.get("atr_14", 0) or
+                         atr_data.get("atr",   0) or 0)
+        if not atr:
+            # Fallback: estimate 1.5% daily move
+            atr = stock_px * 0.015
+        stop_px     = round(stock_px - 1.5 * atr, 2)
+        stop_pct    = round((stock_px - stop_px) / stock_px * 100, 1)
+        # Target multiplier by DTE
+        if dte <= 7:    tgt_mult, tgt_pct = 0.5, 50
+        elif dte <= 21: tgt_mult, tgt_pct = 1.0, 100
+        elif dte <= 45: tgt_mult, tgt_pct = 1.0, 100
+        else:           tgt_mult, tgt_pct = 1.1, 110
+        tgt_option  = round(option_price * (1 + tgt_mult), 2) if option_price else None
+        return {
+            "stop_stock":  stop_px,
+            "stop_pct":    stop_pct,
+            "target_pct":  tgt_pct,
+            "target_opt":  tgt_option,
+            "atr":         round(atr, 2),
+            "note":        (f"🛑 Stop: ${stop_px:.2f} (-{stop_pct:.1f}% | 1.5× ATR ${atr:.2f})"
+                           + (f" | 🎯 Target: +{tgt_pct}%" if tgt_pct else "")),
+        }
+    except Exception as e:
+        print(f"[STOP_TARGET] Error: {e}")
+        return None
+
 """
 tape_watcher.py — Big-money-first tape watching detector.
 
@@ -137,6 +175,28 @@ def _prune_stale():
             del _TAPE[key]
 
 
+def _calc_velocity(fills: list) -> dict | None:
+    """Compute how fast fills are arriving. Returns fills/hour + descriptive note."""
+    if not fills or len(fills) < 2:
+        return None
+    ts_sorted = sorted(f.get("ts",0) for f in fills if f.get("ts"))
+    if len(ts_sorted) < 2:
+        return None
+    span_mins = (ts_sorted[-1] - ts_sorted[0]) / 60
+    if span_mins < 1:
+        span_mins = 1
+    fills_per_hour = len(fills) / (span_mins / 60)
+    n = len(fills)
+    if span_mins <= 15:
+        note = f"⚡ {n} fills in {span_mins:.0f}min — urgent accumulation"
+    elif span_mins <= 60:
+        note = f"📈 {n} fills over {span_mins:.0f}min — active accumulation"
+    else:
+        note = f"📋 {n} fills over {span_mins/60:.1f}h — steady accumulation"
+    return {"fills": n, "span_mins": round(span_mins,1),
+            "fills_per_hour": round(fills_per_hour,1), "note": note}
+
+
 # ── Core detector ──────────────────────────────────────────────────────
 def process_tape(alert: dict, filter_name: str = "") -> dict | None:
     """
@@ -256,6 +316,11 @@ def process_tape(alert: dict, filter_name: str = "") -> dict | None:
                 "news":           alert.get("news", []),
                 "float_shares":   alert.get("float_shares"),
                 "short_interest": alert.get("short_interest"),
+                # Velocity: how fast fills are arriving this session
+                "velocity":       _calc_velocity(today_bm + today_ret),
+                "stop_target":    calc_stop_target(best_stock,
+                    (bm_fills[0].get("price",0) if (bm_fills := today_bm) else 0),
+                    dte, ticker),
             }
 
     # ── Rule B: multi-day BM accumulation (same contract, diff days) ──
@@ -300,6 +365,9 @@ def process_tape(alert: dict, filter_name: str = "") -> dict | None:
                     "news":           alert.get("news", []),
                     "float_shares":   alert.get("float_shares"),
                     "short_interest": alert.get("short_interest"),
+                "stop_target":    calc_stop_target(best_stock,
+                    (contract_bm[-1].get("price",0) if contract_bm else 0),
+                    dte, ticker),
                 }
 
     # Still building — log order-aware status
@@ -443,6 +511,25 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     # Float/short interest context
     _float_sh  = result.get("float_shares")
     _short_int = result.get("short_interest")
+    # IV squeeze/hedge detection
+    _iv_pct    = result.get("iv_pct")
+    _iv_rank   = result.get("iv_rank")
+    if _iv_rank is not None:
+        try:
+            _iv_rank_i = int(_iv_rank)
+            if _iv_rank_i < 30:
+                lines.append(f"🔵 IV Rank {_iv_rank_i}th percentile — low IV, possible informed buying")
+            elif _iv_rank_i > 70:
+                lines.append(f"🔴 IV Rank {_iv_rank_i}th percentile — high IV, possible hedge or event play")
+        except: pass
+    # Intraday velocity
+    _vel = result.get("velocity")
+    if _vel:
+        lines.append(_vel["note"])
+    # Stop / target
+    _st = result.get("stop_target")
+    if _st and _st.get("note"):
+        lines.append(_st["note"])
     if _float_sh or _short_int:
         _ctx_parts = []
         if _float_sh:
@@ -452,6 +539,21 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
             _ctx_parts.append(f"Short int: {_short_int:.1f}%")
         if _ctx_parts:
             lines.append(f"📊 {' | '.join(_ctx_parts)}")
+
+    # Historical flow count
+    try:
+        from gex_monitor import get_ticker_flow_count
+        _fc = get_ticker_flow_count(ticker)
+        if _fc.get("note"):
+            lines.append(_fc["note"])
+    except: pass
+    # SPY GEX context
+    try:
+        from gex_monitor import get_spy_gex_line
+        _gex_line = get_spy_gex_line()
+        if _gex_line:
+            lines.append(f"📐 {_gex_line}")
+    except: pass
 
     rule_note = ("💡 Big money + retail same day = intraday conviction"
                  if rule == "A" else

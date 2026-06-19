@@ -39,7 +39,7 @@ def send_weekly_report():
     trade_wr   = round(sum(1 for r in trade_h if r["is_win"])/len(trade_h)*100,1) if trade_h else 0
     watch_wr   = round(sum(1 for r in watch_h if r["is_win"])/len(watch_h)*100,1) if watch_h else 0
 
-    # Signal source hit rates
+    # Signal source hit rates (individual)
     def _sig_wr(sig):
         grp = [r for r in week_hist if any(sig in s for s in r.get("signal_sources",[]))]
         if not grp: return None, 0
@@ -49,11 +49,34 @@ def send_weekly_report():
     conv_wr,   conv_n   = _sig_wr("conviction")
     clust_wr,  clust_n  = _sig_wr("cluster")
 
+    # P&L attribution by signal combination
+    from collections import Counter
+    _combo_wins  = Counter()
+    _combo_total = Counter()
+    for r in week_hist:
+        sources = r.get("signal_sources", [])
+        if not sources:
+            continue
+        # Normalise combo key: sort sources, join
+        combo = "+".join(sorted(set(s.split(":")[0] for s in sources)))
+        _combo_total[combo] += 1
+        if r.get("is_win"):
+            _combo_wins[combo] += 1
+
+    _attribution_lines = []
+    for combo, n in _combo_total.most_common(6):
+        wins = _combo_wins[combo]
+        wr   = round(wins/n*100, 1)
+        _attribution_lines.append(f"  {combo}: {wr}% ({wins}/{n})")
+
     # Signal source performance section
     sig_lines = []
     for label, wr, n in [("🎬 Tape",tape_wr,tape_n),("🔥 Conviction",conv_wr,conv_n),("🌊 Cluster",clust_wr,clust_n)]:
         if n > 0:
             sig_lines.append(f"  {label}: {wr}% win rate ({n} alerts)")
+    if _attribution_lines:
+        sig_lines.append("  ─── By combination ───")
+        sig_lines.extend(_attribution_lines)
 
     # Best and worst
     sorted_by_stock = sorted(week_hist, key=lambda x: x["stock_pct"], reverse=True)

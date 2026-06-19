@@ -235,3 +235,89 @@ def run_gex_monitor(watchlist: dict, send_fn=None):
 
     if alerts_sent:
         print(f"[GEX_MON] Sent {alerts_sent} entry zone alerts")
+
+
+def get_ticker_flow_count(ticker: str, days: int = 30) -> dict:
+    """
+    Count how many times a ticker appeared in flow_history over the last N days.
+    Returns dict with count, bm_count, and a display note.
+    Uses the existing flow_history Supabase key.
+    """
+    try:
+        from flow_intelligence import load_flow_history
+        history = load_flow_history()
+        ticker  = ticker.upper()
+        from datetime import datetime, timedelta
+        cutoff  = (datetime.now() - timedelta(days=days)).isoformat()
+        matches = [f for f in history
+                   if f.get("ticker","").upper() == ticker
+                   and f.get("timestamp","") >= cutoff]
+        if not matches:
+            return {"count": 0, "note": None}
+        # Distinct alert dates
+        dates = sorted(set(f.get("date","") for f in matches if f.get("date")))
+        cnt   = len(dates)
+        prem  = sum(float(f.get("premium",0) or 0) for f in matches)
+        prem_s = f"${prem/1_000_000:.1f}M" if prem>=1_000_000 else f"${prem/1_000:.0f}K"
+        if cnt == 1:
+            note = None   # first time — no "Nth alert" context yet
+        elif cnt <= 3:
+            note = f"📅 {cnt}nd big money alert in {days}d ({prem_s} total)"
+        else:
+            note = f"📅 {cnt}th big money alert in {days}d ({prem_s} total) — recurring name"
+        return {"count": cnt, "dates": dates, "total_premium": prem, "note": note}
+    except Exception as e:
+        print(f"[FLOW_COUNT] Error: {e}")
+        return {"count": 0, "note": None}
+
+
+# ── GEX context for alert embedding ───────────────────────────────────────
+_spy_gex_cache: dict = {}
+_SPY_GEX_TTL   = 900  # 15 minutes
+
+
+def get_spy_gex_line() -> str | None:
+    """
+    Return a one-line SPY GEX context note for embedding in tape/conviction alerts.
+    Uses a 15-minute module-level cache to avoid hammering the Bullflow API.
+    Returns None on any error — never blocks an alert.
+    """
+    global _spy_gex_cache
+    import time as _t
+    now = _t.time()
+    if _spy_gex_cache.get("ts", 0) > now - _SPY_GEX_TTL:
+        return _spy_gex_cache.get("line")
+    try:
+        from fetcher import fetch_gex
+        gex = fetch_gex("SPY")
+        if not gex:
+            _spy_gex_cache.update({"ts": now, "line": None})
+            return None
+        regime     = gex.get("regime","")
+        spot       = gex.get("spot_price",0)
+        call_wall  = gex.get("call_wall")
+        put_wall   = gex.get("put_wall")
+        gamma_flip = gex.get("gamma_flip")
+
+        reg_emoji  = "🟢" if regime == "positive" else "🔴"
+        regime_s   = "positive GEX" if regime == "positive" else "negative GEX"
+
+        parts = [f"{reg_emoji} SPY {regime_s} (${spot:.0f})"]
+        if regime == "positive":
+            if call_wall:
+                parts.append(f"→ ${call_wall:.0f} wall = gravity target")
+            if put_wall and gamma_flip:
+                parts.append(f"reversal zone below ${gamma_flip:.0f}")
+        else:
+            if gamma_flip:
+                parts.append(f"→ flip above ${gamma_flip:.0f}")
+            if put_wall:
+                parts.append(f"support near ${put_wall:.0f}")
+
+        line = " | ".join(parts)
+        _spy_gex_cache.update({"ts": now, "line": line})
+        return line
+    except Exception as e:
+        print(f"[GEX_CTX] Error: {e}")
+        _spy_gex_cache.update({"ts": now, "line": None})
+        return None

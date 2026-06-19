@@ -845,6 +845,26 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     except Exception as _sce:
         print(f"[SECTOR] Error: {_sce}")
 
+    # ── Expiry clustering ─────────────────────────
+    # Fires when 4+ tickers buy same expiry date = event-driven bet
+    try:
+        from expiry_cluster import process_expiry, build_expiry_alert
+        _ec_parsed = {}
+        try: _ec_parsed = _parsed_tape
+        except NameError:
+            _ec_parsed = {"ticker":"","option_type":"call","expiry":"","strike":"","premium":0.0}
+        _ec_result = process_expiry(_ec_parsed, alert_name)
+        if _ec_result:
+            _ec_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+            _ec_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                        os.environ.get("TELEGRAM_CHAT_ID",""))
+            if _ec_bot and _ec_chat:
+                from sms import send_telegram as _sms_ec
+                _sms_ec(build_expiry_alert(_ec_result), _ec_bot, _ec_chat)
+                print(f"[EXPIRY] ✅ Alert sent: {_ec_result['expiry']}")
+    except Exception as _ece:
+        print(f"[EXPIRY] Error: {_ece}")
+
     # ── Repeater channel routing ──────────────────
     # "Urgent Repeater" and "Repeat Buyer" with DTE ≤ 14
     _is_repeater = any(w in alert_name for w in
