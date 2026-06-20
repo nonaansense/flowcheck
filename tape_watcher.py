@@ -406,7 +406,7 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
                   "https://web-production-19e44.up.railway.app").rstrip("/")
 
     # Analysis link
-    analysis_link = f"{base_url}/watchlist"
+    analysis_link = f"{base_url}/history"
     try:
         from technical import get_watchlist
         wl    = get_watchlist()
@@ -518,9 +518,9 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
         try:
             _iv_rank_i = int(_iv_rank)
             if _iv_rank_i < 30:
-                lines.append(f"🔵 IV Rank {_iv_rank_i}th percentile — low IV, possible informed buying")
+                lines.append(f"🔵 IV Rank {_ordinal(_iv_rank_i)} percentile — low IV, possible informed buying")
             elif _iv_rank_i > 70:
-                lines.append(f"🔴 IV Rank {_iv_rank_i}th percentile — high IV, possible hedge or event play")
+                lines.append(f"🔴 IV Rank {_ordinal(_iv_rank_i)} percentile — high IV, possible hedge or event play")
         except: pass
     # Intraday velocity
     _vel = result.get("velocity")
@@ -533,8 +533,10 @@ def build_tape_alert(result: dict, alert_name: str) -> str:
     if _float_sh or _short_int:
         _ctx_parts = []
         if _float_sh:
+            _f_b = _float_sh / 1_000_000_000
             _f_m = _float_sh / 1_000_000
-            _ctx_parts.append(f"Float: {_f_m:.1f}M shares")
+            _float_s = f"{_f_b:.2f}B shares" if _f_b >= 1 else f"{_f_m:.1f}M shares"
+            _ctx_parts.append(f"Float: {_float_s}")
         if _short_int and isinstance(_short_int, (int, float)) and _short_int > 0:
             _ctx_parts.append(f"Short int: {_short_int:.1f}%")
         if _ctx_parts:

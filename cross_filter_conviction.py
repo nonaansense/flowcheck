@@ -343,7 +343,7 @@ def build_conviction_alert(result: dict) -> str:
     skew_bar   = "█" * bm_blocks + "░" * ret_blocks
 
     # Analysis link
-    analysis_link = f"{base_url}/watchlist"
+    analysis_link = f"{base_url}/history"
     try:
         from technical import get_watchlist
         wl    = get_watchlist()
@@ -382,7 +382,10 @@ def build_conviction_alert(result: dict) -> str:
     if _conv_float or _conv_short:
         _cfc_ctx = []
         if _conv_float:
-            _cfc_ctx.append(f"Float: {_conv_float/1_000_000:.1f}M shares")
+            _cfc_f_b = _conv_float / 1_000_000_000
+            _cfc_f_m = _conv_float / 1_000_000
+            _cfc_f_s = f"{_cfc_f_b:.2f}B shares" if _cfc_f_b >= 1 else f"{_cfc_f_m:.1f}M shares"
+            _cfc_ctx.append(f"Float: {_cfc_f_s}")
         if _conv_short and isinstance(_conv_short,(int,float)) and _conv_short > 0:
             _cfc_ctx.append(f"Short int: {_conv_short:.1f}%")
         if _cfc_ctx:
@@ -408,9 +411,9 @@ def build_conviction_alert(result: dict) -> str:
         try:
             _cfc_ivr = int(_cfc_iv_rank)
             if _cfc_ivr < 30:
-                lines.append(f"🔵 IV Rank {_cfc_ivr}th — low IV, possible informed buying")
+                lines.append(f"🔵 IV Rank {_ordinal(_cfc_ivr)} percentile — low IV, possible informed buying")
             elif _cfc_ivr > 70:
-                lines.append(f"🔴 IV Rank {_cfc_ivr}th — high IV, possible hedge or event play")
+                lines.append(f"🔴 IV Rank {_ordinal(_cfc_ivr)} percentile — high IV, possible hedge or event play")
         except: pass
     # Stop / target
     _cfc_stock = result.get("stock_px", 0)
