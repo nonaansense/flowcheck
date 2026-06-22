@@ -1012,24 +1012,24 @@ def handle_command(text: str, from_chat_id: str):
 
 
     elif cmd in ("retail", "retailflow"):
-        # Toggle or check retail flow processing
+        # Toggle retail flow ALERTS (fills always counted toward conviction)
         import os
         current = os.environ.get("RETAIL_FLOW_ENABLED","true").lower() not in ("false","0","no","off")
         if args and args[0].lower() in ("on","enable","true","1"):
             os.environ["RETAIL_FLOW_ENABLED"] = "true"
-            send_reply("✅ Retail flow ENABLED — Retail_Order_Flow fills now count toward conviction", from_chat_id)
+            send_reply("✅ Retail alerts ON — cluster alerts from retail-only flow will fire", from_chat_id)
         elif args and args[0].lower() in ("off","disable","false","0"):
             os.environ["RETAIL_FLOW_ENABLED"] = "false"
-            send_reply("⏸️ Retail flow DISABLED — only Big_Money_Order_Flow processed", from_chat_id)
+            send_reply("⏸️ Retail alerts OFF — retail still counts toward conviction + tape, cluster alerts suppressed", from_chat_id)
         else:
-            status = "✅ ENABLED" if current else "⏸️ DISABLED"
-            send_reply(f"Retail flow: {status}\nUse /retail on or /retail off to toggle", from_chat_id)
+            status = "✅ ON" if current else "⏸️ OFF"
+            send_reply(f"Retail alerts: {status}\nNote: retail fills always count toward conviction + tape regardless.\nThis only controls standalone cluster alerts.\nUse /retail on or /retail off to toggle.", from_chat_id)
 
-    elif cmd in ("alerts", "alert_status"):
+    elif cmd in ("alerts", "alert_status") and not args:
         from alert_toggles import status_message
         send_reply(status_message(), from_chat_id)
 
-    elif cmd == "alert" and args:
+    elif cmd in ("alert", "alerts") and args:
         from alert_toggles import set_toggle, set_all, ALL_TYPES, LABELS, status_message, _toggles, _load
         sub = args[0].lower()
         typ = args[1].lower() if len(args) > 1 else ""

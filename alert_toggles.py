@@ -33,7 +33,7 @@ LABELS = {
     "conviction":  "🔥 Cross-filter conviction",
     "bm_auto":     "🗓️  BM auto-conviction (multi-day same contract)",
     "double":      "🔥🔥 Double confirmation escalation",
-    "cluster":     "🌊 Ticker cluster (multi-contract sweep)",
+    "cluster":     "🌊 Ticker cluster (multi-contract sweep — can fire on retail only)",
     "straddle":    "⚖️  Straddle / strangle detection",
     "darkpool":    "🌑 Dark pool prints",
     "sector":      "🌐 Sector clustering",

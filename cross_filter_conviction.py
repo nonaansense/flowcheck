@@ -138,9 +138,10 @@ def process_conviction(alert: dict, alert_name: str) -> dict | None:
     direction = "call" if "call" in opt_type.lower() else "put"
 
     # Classify fill source
-    _retail_en   = os.environ.get("RETAIL_FLOW_ENABLED","true").lower() not in ("false","0","no","off")
+    # RETAIL_FLOW_ENABLED only gates Telegram alert sends — retail fills
+    # are ALWAYS counted toward conviction thresholds.
     is_big_money = (alert_name == BIG_MONEY_FILTER)
-    is_retail    = (_retail_en and alert_name == RETAIL_FILTER and
+    is_retail    = (alert_name == RETAIL_FILTER and
                     RETAIL_MIN_PREMIUM <= premium < RETAIL_MAX_PREMIUM)
 
     if not is_big_money and not is_retail:

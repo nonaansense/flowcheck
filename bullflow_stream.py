@@ -604,24 +604,27 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             # Exact-match repeat buyer detection (same strike+expiry)
             _tape_result = process_tape(_parsed_tape, alert_name)
             if _tape_result:
+                # Always track for double-confirmation regardless of alert toggle
+                _tw_dir = "call" if "call" in str(_tape_result.get("option_type","call")).lower() else "put"
+                _tw_dk  = f"{_tape_result['ticker']}_{_tw_dir}"
+                _double_confirm.setdefault(_tw_dk, {})["tape_ts"] = time.time()
+                # Always update cooldown so dedup works even when alerts are off
+                _ALERT_COOLDOWN[_cool_key] = time.time()
+
+                # Send Telegram — gated on cooldown and alert toggle
                 if not _cool_ok:
                     print(f"[COOLDOWN] {_tkr_tp} {_otype_tp} — tape alert suppressed "
                           f"(last alert {int(time.time()-_cool_last)//60}min ago)")
                 elif not _alert_on("tape"):
-                    print(f"[TOGGLES] tape alerts disabled — skipping")
+                    print(f"[TOGGLES] tape alerts disabled — Telegram suppressed, state updated")
                 elif _tape_bot and _tape_chat:
                     from sms import send_telegram as _st_tape
                     _tape_msg = build_tape_alert(_tape_result, alert_name)
                     _st_tape(_tape_msg, _tape_bot, _tape_chat)
                     if _all_chat_tape:
                         _st_tape(_tape_msg, _tape_bot, _all_chat_tape)
-                    _ALERT_COOLDOWN[_cool_key] = time.time()
-                    _tw_dir = "call" if "call" in str(_tape_result.get("option_type","call")).lower() else "put"
-                    _tw_dk  = f"{_tape_result['ticker']}_{_tw_dir}"
-                    _double_confirm.setdefault(_tw_dk, {})["tape_ts"] = time.time()
                     print(f"[TAPE] ✅ Alert sent: "
-                          f"{_tape_result['ticker']} rule={_tape_result.get('rule','?')}"
-                          f" | {_tape_result.get('rule','?')} fired")
+                          f"{_tape_result['ticker']} rule={_tape_result.get('rule','?')}")
                     # Entry reminder
                     try:
                         from main import scheduler, send_entry_reminder
@@ -700,26 +703,26 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             if _cfc_parsed.get("ticker"):
                 _cfc_result = process_conviction(_cfc_parsed, alert_name)
                 if _cfc_result:
+                    # Always track for double-confirmation regardless of toggle
+                    _dc_key = f"{_cfc_result['ticker']}_{_cfc_result['direction']}"
+                    _double_confirm.setdefault(_dc_key, {})["conviction_ts"] = __import__('time').time()
+
+                    # Send Telegram — gated on toggle only
                     _cfc_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
                     _cfc_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
                                  os.environ.get("TELEGRAM_CHAT_ID",""))
-                    if _cfc_bot and _cfc_chat:
+                    _cfc_type = "bm_auto" if _cfc_result.get("bm_auto") else "conviction"
+                    if not _alert_on(_cfc_type):
+                        print(f"[TOGGLES] {_cfc_type} disabled — Telegram suppressed, state updated")
+                    elif _cfc_bot and _cfc_chat:
                         from sms import send_telegram as _st_cfc
-                        _cfc_type = "bm_auto" if _cfc_result.get("bm_auto") else "conviction"
-                        if not _alert_on(_cfc_type):
-                            print(f"[TOGGLES] {_cfc_type} disabled")
-                        else:
-                            _cfc_msg = build_conviction_alert(_cfc_result)
-                            _st_cfc(_cfc_msg, _cfc_bot, _cfc_chat)
-                            _all_chat_cfc = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
-                            if _all_chat_cfc:
-                                _st_cfc(_cfc_msg, _cfc_bot, _all_chat_cfc)
+                        _cfc_msg = build_conviction_alert(_cfc_result)
+                        _st_cfc(_cfc_msg, _cfc_bot, _cfc_chat)
+                        _all_chat_cfc = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+                        if _all_chat_cfc:
+                            _st_cfc(_cfc_msg, _cfc_bot, _all_chat_cfc)
                         print(f"[CONVICTION] ✅ Alert sent: "
                               f"{_cfc_result['ticker']} {_cfc_result['sentiment']}")
-
-                        # Track for double-confirmation escalation
-                        _dc_key = f"{_cfc_result['ticker']}_{_cfc_result['direction']}"
-                        _double_confirm.setdefault(_dc_key, {})["conviction_ts"] = __import__('time').time()
     except Exception as _cfc_e:
         print(f"[CONVICTION] Error: {_cfc_e}")
 
