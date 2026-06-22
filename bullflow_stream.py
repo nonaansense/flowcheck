@@ -10,6 +10,7 @@ import threading
 import requests
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
+from alert_toggles import is_enabled as _alert_on
 
 ET = ZoneInfo("America/New_York")
 
@@ -606,6 +607,8 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 if not _cool_ok:
                     print(f"[COOLDOWN] {_tkr_tp} {_otype_tp} — tape alert suppressed "
                           f"(last alert {int(time.time()-_cool_last)//60}min ago)")
+                elif not _alert_on("tape"):
+                    print(f"[TOGGLES] tape alerts disabled — skipping")
                 elif _tape_bot and _tape_chat:
                     from sms import send_telegram as _st_tape
                     _tape_msg = build_tape_alert(_tape_result, alert_name)
@@ -641,7 +644,9 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 from ticker_cluster import process_cluster, build_cluster_alert
                 _cluster_result = process_cluster(_parsed_tape)
                 if _cluster_result:
-                    if _tape_bot and _tape_chat:
+                    if not _alert_on("cluster"):
+                        print(f"[TOGGLES] cluster alerts disabled")
+                    elif _tape_bot and _tape_chat:
                         from sms import send_telegram as _st_cl
                         _cluster_msg = build_cluster_alert(_cluster_result, alert_name)
                         _st_cl(_cluster_msg, _tape_bot, _tape_chat)
@@ -700,11 +705,15 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                                  os.environ.get("TELEGRAM_CHAT_ID",""))
                     if _cfc_bot and _cfc_chat:
                         from sms import send_telegram as _st_cfc
-                        _cfc_msg = build_conviction_alert(_cfc_result)
-                        _st_cfc(_cfc_msg, _cfc_bot, _cfc_chat)
-                        _all_chat_cfc = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
-                        if _all_chat_cfc:
-                            _st_cfc(_cfc_msg, _cfc_bot, _all_chat_cfc)
+                        _cfc_type = "bm_auto" if _cfc_result.get("bm_auto") else "conviction"
+                        if not _alert_on(_cfc_type):
+                            print(f"[TOGGLES] {_cfc_type} disabled")
+                        else:
+                            _cfc_msg = build_conviction_alert(_cfc_result)
+                            _st_cfc(_cfc_msg, _cfc_bot, _cfc_chat)
+                            _all_chat_cfc = os.environ.get("TELEGRAM_ALL_CHAT_ID","")
+                            if _all_chat_cfc:
+                                _st_cfc(_cfc_msg, _cfc_bot, _all_chat_cfc)
                         print(f"[CONVICTION] ✅ Alert sent: "
                               f"{_cfc_result['ticker']} {_cfc_result['sentiment']}")
 
@@ -746,7 +755,9 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 _dc_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
                 _dc_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
                             os.environ.get("TELEGRAM_CHAT_ID",""))
-                if _dc_bot and _dc_chat:
+                if not _alert_on("double"):
+                    print(f"[TOGGLES] double confirmation disabled — skipping")
+                elif _dc_bot and _dc_chat:
                     from sms import send_telegram as _sms_dc
                     _sms_dc(_dc_msg, _dc_bot, _dc_chat)
                     print(f"[ESCALATION] 🔥🔥 Double confirmation: {_dc_ticker} {_dc_dir}")
@@ -777,7 +788,9 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 _st_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
                 _st_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
                             os.environ.get("TELEGRAM_CHAT_ID",""))
-                if _st_bot and _st_chat:
+                if not _alert_on("straddle"):
+                    print(f"[TOGGLES] straddle alerts disabled — skipping")
+                elif _st_bot and _st_chat:
                     from sms import send_telegram as _sms_st
                     _sms_st(build_straddle_alert(_st_result), _st_bot, _st_chat)
                     print(f"[STRADDLE] ✅ Alert sent: {_st_result['ticker']}")
@@ -815,9 +828,12 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                     f"📈 https://www.tradingview.com/chart/?symbol={_dp_ticker}",
                 ]
                 _dp_msg = "\n".join(_dp_lines)
-                from sms import send_telegram as _sms_dp
-                _sms_dp(_dp_msg, _dp_bot, _dp_chat)
-                print(f"[DARKPOOL] ✅ Alert sent: {_dp_ticker} {_dp_prem_s}")
+                if not _alert_on("darkpool"):
+                    print(f"[TOGGLES] darkpool alerts disabled — skipping")
+                else:
+                    from sms import send_telegram as _sms_dp
+                    _sms_dp(_dp_msg, _dp_bot, _dp_chat)
+                    print(f"[DARKPOOL] ✅ Alert sent: {_dp_ticker} {_dp_prem_s}")
         except Exception as _dpe:
             print(f"[DARKPOOL] Error: {_dpe}")
 
@@ -838,7 +854,9 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
                 _sc_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
                 _sc_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
                             os.environ.get("TELEGRAM_CHAT_ID",""))
-                if _sc_bot and _sc_chat:
+                if not _alert_on("sector"):
+                    print(f"[TOGGLES] sector alerts disabled — skipping")
+                elif _sc_bot and _sc_chat:
                     from sms import send_telegram as _sms_sc
                     _sms_sc(build_sector_alert(_sc_result), _sc_bot, _sc_chat)
                     print(f"[SECTOR] ✅ Alert sent: {_sc_result['sector']}")
@@ -858,7 +876,9 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             _ec_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
             _ec_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
                         os.environ.get("TELEGRAM_CHAT_ID",""))
-            if _ec_bot and _ec_chat:
+            if not _alert_on("expiry"):
+                print(f"[TOGGLES] expiry alerts disabled — skipping")
+            elif _ec_bot and _ec_chat:
                 from sms import send_telegram as _sms_ec
                 _sms_ec(build_expiry_alert(_ec_result), _ec_bot, _ec_chat)
                 print(f"[EXPIRY] ✅ Alert sent: {_ec_result['expiry']}")

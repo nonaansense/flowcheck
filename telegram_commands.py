@@ -1025,6 +1025,41 @@ def handle_command(text: str, from_chat_id: str):
             status = "✅ ENABLED" if current else "⏸️ DISABLED"
             send_reply(f"Retail flow: {status}\nUse /retail on or /retail off to toggle", from_chat_id)
 
+    elif cmd in ("alerts", "alert_status"):
+        from alert_toggles import status_message
+        send_reply(status_message(), from_chat_id)
+
+    elif cmd == "alert" and args:
+        from alert_toggles import set_toggle, set_all, ALL_TYPES, LABELS, status_message, _toggles, _load
+        sub = args[0].lower()
+        typ = args[1].lower() if len(args) > 1 else ""
+
+        if sub in ("on", "off") and typ == "all":
+            set_all(sub == "on")
+            send_reply(f"{'✅ All alerts ON' if sub=='on' else '⏸️ All alerts OFF'}", from_chat_id)
+
+        elif sub in ("on", "off") and typ:
+            if set_toggle(typ, sub == "on"):
+                _load()
+                state = "✅ ON" if _toggles.get(typ) else "⏸️ OFF"
+                label = LABELS.get(typ, typ)
+                send_reply(f"{state}  {label}", from_chat_id)
+            else:
+                send_reply(
+                    f"Unknown alert type: `{typ}`\nValid types: {', '.join(ALL_TYPES)}",
+                    from_chat_id)
+
+        elif sub in ALL_TYPES and not typ:
+            # /alert tape → toggle current state
+            from alert_toggles import is_enabled
+            new_state = not is_enabled(sub)
+            set_toggle(sub, new_state)
+            state = "✅ ON" if new_state else "⏸️ OFF"
+            send_reply(f"{state}  {LABELS.get(sub, sub)}", from_chat_id)
+
+        else:
+            send_reply(status_message(), from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2346,6 +2381,14 @@ def handle_help(reply_chat_id: str):
         "/journal_help — full journal command reference",
         "",
         "━━ SYSTEM ━━",
+        "/alerts — show all trade channel alert types + on/off status",
+        "/alert off tape — disable tape watcher alerts",
+        "/alert on tape  — enable tape watcher alerts",
+        "/alert off all  — quiet mode (disable all alerts)",
+        "/alert on all   — re-enable all alerts",
+        "  Types: trade tape conviction bm_auto double cluster",
+        "         straddle darkpool sector expiry reminder priceaction eod",
+        "/retail — retail flow status  |  /retail on/off — toggle",
         "/test — connectivity check (all APIs + services)",
         "/scan — technical watchlist status",
         "/backtest URL TIME — replay historical tweet",

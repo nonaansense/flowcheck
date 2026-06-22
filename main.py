@@ -17,6 +17,7 @@ from premarket_summary import (send_premarket_summary, send_eod_summary,
     verify_eod_positions, send_positions_eod_confirmation)
 from technical import add_to_watchlist, run_technical_scan, get_watchlist
 from outcomes import track_outcomes
+from alert_toggles import is_enabled as _alert_on
 from exit_signals import add_position, check_exit_signals, get_open_positions
 from premarket_gap import send_premarket_gap_alerts
 from telegram_commands import poll_commands
@@ -332,6 +333,9 @@ def check_ifttt_watchdog():
 
 def send_entry_reminder(ticker: str, direction: str, signal_type: str,
                         entry_stock: float, bot: str, chat: str):
+    if not _alert_on("reminder"):
+        print(f"[TOGGLES] reminder alerts disabled — skipping {ticker}")
+        return
     """
     Fire 10 minutes after a tape/conviction alert. Checks if setup still valid.
     """
@@ -377,7 +381,7 @@ async def startup():
 
         # EOD tape watching summary — 4:00 PM
         scheduler.add_job(
-            lambda: __import__('tape_watcher').send_tape_eod_summary(),
+                    lambda: send_tape_eod_summary() if _alert_on("eod") else print("[TOGGLES] eod disabled"),
             "cron", day_of_week="mon-fri", hour=16, minute=0,
             id="tape_eod_summary", max_instances=1)
 
@@ -2188,6 +2192,9 @@ async def process_alert(tweet: str, tweet_url: str, pre_parsed_trade: dict = Non
                         not is_bullflow or           # FlowGod always sends
                         verdict_val == "TRADE" or    # TRADE always sends
                         final_score >= min_score_alert)
+        if not _alert_on("trade") and verdict_val == "TRADE" and not force_send:
+            should_send = False
+            print(f"[TOGGLES] trade alerts disabled — suppressing TRADE for {ticker}")
 
         print(f"[SMS] Routing: verdict='{verdict_val}' score={final_score} source={source} send={should_send}")
         success = False
