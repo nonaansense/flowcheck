@@ -7,6 +7,31 @@ import os, requests, time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+# Sources that produce social/forum noise rather than actual news
+_BLOCKED_SOURCES = {
+    'moomoo', 'stocktwits', 'reddit', 'quora', 'yahoo finance comments',
+    'fool comments', 'motley fool comments', 'seeking alpha comments',
+}
+
+def _resolve_google_url(url: str) -> str:
+    """
+    Google News RSS links are redirect URLs (news.google.com/rss/articles/...).
+    Follow the redirect to get the actual article URL.
+    Returns original URL on any failure — never blocks the alert.
+    """
+    if not url or 'news.google.com' not in url:
+        return url
+    try:
+        r = requests.get(url, timeout=5, allow_redirects=True,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        final = r.url
+        # If Google redirected back to itself, return original
+        if 'news.google.com' in final:
+            return url
+        return final
+    except Exception:
+        return url
+
 def fh_key():
     return os.environ.get("FINNHUB_API_KEY")
 
@@ -232,10 +257,17 @@ def fetch_google_news(ticker: str, hours: int = 24, max_results: int = 5) -> lis
             if not source and " - " in headline:
                 headline, _, source = headline.rpartition(" - ")
 
+            source_clean = source.strip()
+            # Skip social/forum noise sources
+            if source_clean.lower() in _BLOCKED_SOURCES:
+                continue
+            # Resolve Google redirect URL to actual article URL
+            raw_url = link_el.text if link_el is not None else ""
+            resolved_url = _resolve_google_url(raw_url)
             articles.append({
                 "headline": headline.strip(),
-                "source":   source.strip(),
-                "url":      link_el.text if link_el is not None else "",
+                "source":   source_clean,
+                "url":      resolved_url,
                 "datetime": pub_ts,
             })
 

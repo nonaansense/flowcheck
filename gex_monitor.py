@@ -261,10 +261,14 @@ def get_ticker_flow_count(ticker: str, days: int = 30) -> dict:
         prem_s = f"${prem/1_000_000:.1f}M" if prem>=1_000_000 else f"${prem/1_000:.0f}K"
         if cnt == 1:
             note = None   # first time — no "Nth alert" context yet
-        elif cnt <= 3:
-            note = f"📅 {cnt}nd big money alert in {days}d ({prem_s} total)"
         else:
-            note = f"📅 {cnt}th big money alert in {days}d ({prem_s} total) — recurring name"
+            try:
+                from tape_watcher import _ordinal
+                ord_s = _ordinal(cnt)
+            except Exception:
+                ord_s = f"{cnt}th"
+            suffix = " — recurring name" if cnt >= 4 else ""
+            note = f"📅 {ord_s} big money alert in {days}d ({prem_s} total){suffix}"
         return {"count": cnt, "dates": dates, "total_premium": prem, "note": note}
     except Exception as e:
         print(f"[FLOW_COUNT] Error: {e}")

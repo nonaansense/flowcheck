@@ -266,6 +266,17 @@ def process_tape(alert: dict, filter_name: str = "") -> dict | None:
         print(f"[TAPE] 💰 Big money: {ticker} {option_type} "
               f"{strike} {expiry} {_fmt_prem(premium)}")
     else:
+        # Skip retail if it matches a BM fill within 30s on same contract
+        _is_dup_tw = any(
+            abs(f["ts"] - now) <= 30
+            and f.get("strike") == strike
+            and f.get("expiry") == expiry
+            for f in entry["big_money"]
+        )
+        if _is_dup_tw:
+            print(f"[TAPE] ⚠️ Retail {ticker} {strike} {expiry} "
+                  f"within 30s of BM fill — likely same order, skipping")
+            return None
         entry["retail"].append(fill)
         print(f"[TAPE] 📊 Retail: {ticker} {option_type} "
               f"{strike} {expiry} {_fmt_prem(premium)}")

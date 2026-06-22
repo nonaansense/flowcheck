@@ -169,6 +169,19 @@ def process_conviction(alert: dict, alert_name: str) -> dict | None:
         print(f"[CONVICTION] 💰 Big money: {ticker} {direction} "
               f"{strike} {expiry} {_fmt_prem(premium)}")
     else:
+        # Skip retail if it matches a BM fill within 30s on same contract
+        # — same-second fills on identical contracts are likely the same order
+        _dup_window = 30  # seconds
+        _is_dup = any(
+            abs(f["ts"] - now) <= _dup_window
+            and f.get("strike") == strike
+            and f.get("expiry") == expiry
+            for f in entry["big_money"]
+        )
+        if _is_dup:
+            print(f"[CONVICTION] ⚠️ Retail {ticker} {strike} {expiry} "
+                  f"within 30s of BM fill — likely same order, skipping")
+            return None
         entry["retail"].append(fill)
         print(f"[CONVICTION] 📊 Retail: {ticker} {direction} "
               f"{strike} {expiry} {_fmt_prem(premium)}")
