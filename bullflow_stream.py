@@ -888,6 +888,37 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     except Exception as _ece:
         print(f"[EXPIRY] Error: {_ece}")
 
+    # ── SPX block trade repeat detector ──────────
+    try:
+        from spx_block_tracker import process_spx_block, build_spx_alert
+        _spx_parsed = {}
+        try: _spx_parsed = _parsed_tape
+        except NameError:
+            _spx_parsed = {
+                "ticker":      alert_data.get("symbol","")[:5] or "",
+                "strike":      "",
+                "expiry":      "",
+                "option_type": "call",
+                "option_price":0.0,
+                "premium":     float(alert_data.get("alertPremium",0) or 0),
+                "is_sweep":    False,
+                "dte":         0,
+            }
+        _spx_result = process_spx_block(_spx_parsed, alert_name)
+        if _spx_result and _alert_on("spx_block"):
+            _spx_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+            _spx_chat = (os.environ.get("TELEGRAM_SPX_CHAT_ID","") or
+                         os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                         os.environ.get("TELEGRAM_CHAT_ID",""))
+            if _spx_bot and _spx_chat:
+                from sms import send_telegram as _sms_spx
+                _sms_spx(build_spx_alert(_spx_result), _spx_bot, _spx_chat)
+                print(f"[SPX] ✅ Alert sent: {_spx_result['key']}")
+        elif _spx_result:
+            print(f"[TOGGLES] spx_block disabled — Telegram suppressed, state updated")
+    except Exception as _spxe:
+        print(f"[SPX] Error: {_spxe}")
+
     # ── Repeater channel routing ──────────────────
     # "Urgent Repeater" and "Repeat Buyer" with DTE ≤ 14
     _is_repeater = any(w in alert_name for w in
