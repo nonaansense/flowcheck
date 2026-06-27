@@ -81,6 +81,7 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str):
     alerts_fired: list = []
     event_count   = 0
     pair_events   = 0
+    seen_names:   dict = {}   # alertName → count (for debugging)
 
     try:
         resp = requests.get(url, stream=True, timeout=660,
@@ -106,23 +107,31 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str):
                     continue
 
                 event_count += 1
-                alert_name   = data.get("alertName", "")
-                if alert_name != PAIR_FILTER:
+
+                # Unwrap nested structure: {"event":..., "data":{...actual fields...}}
+                inner      = data.get("data", data)
+                alert_name = inner.get("alertName", "")
+                seen_names[alert_name] = seen_names.get(alert_name, 0) + 1
+
+                # Match filter name — try exact then case-insensitive
+                name_match = (alert_name == PAIR_FILTER or
+                              alert_name.lower() == PAIR_FILTER.lower())
+                if not name_match:
                     continue
                 pair_events += 1
 
                 # Parse contract from OCC symbol or raw fields
-                symbol = data.get("symbol", data.get("ticker", ""))
+                symbol = inner.get("symbol", inner.get("ticker", ""))
                 parsed = _parse_occ(symbol) if "O:" in str(symbol) else None
                 if not parsed:
-                    raw_ticker = (data.get("ticker","") or "").upper()[:10]
+                    raw_ticker = (inner.get("ticker","") or "").upper()[:10]
                     if not raw_ticker:
                         continue
                     parsed = {
                         "ticker":      raw_ticker,
-                        "option_type": data.get("optionType","call"),
-                        "strike":      str(data.get("strikePrice","?")),
-                        "expiry":      data.get("expirationDate","?"),
+                        "option_type": inner.get("optionType","call"),
+                        "strike":      str(inner.get("strikePrice","?")),
+                        "expiry":      inner.get("expirationDate","?"),
                         "dte":         0,
                     }
 
@@ -131,19 +140,21 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str):
                 strike      = parsed["strike"]
                 expiry      = parsed["expiry"]
                 dte         = parsed["dte"]
-                price       = float(data.get("alertPrice") or
-                                    data.get("tradePrice") or 0)
-                premium     = float(data.get("alertPremium") or 0)
-                is_sweep    = str(data.get("alertFillType","")).upper() in ("FULL_ASK","AA")
-                stock_px    = float(data.get("stockPrice") or 0)
+                price       = float(inner.get("tradePrice") or
+                                    inner.get("alertPrice") or 0)
+                premium     = float(inner.get("alertPremium") or 0)
+                is_sweep    = str(inner.get("alertFillType","")).upper() in ("FULL_ASK","AA")
+                stock_px    = float(inner.get("stockPrice") or 0)
 
-                # Prefer event's market time for display; use real clock for window math
-                raw_t    = data.get("alertTime") or data.get("tradeTime") or ""
-                time_str = str(raw_t)[:8] if raw_t else datetime.now(ET).strftime("%-I:%M:%S %p")
+                # Use actual market timestamp for accurate rolling window
+                event_ts = float(inner.get("timestamp") or time.time())
+
+                # Human-readable time from estTimestamp e.g. "2026-06-05 09:32:26 EST"
+                est_str  = str(inner.get("estTimestamp",""))
+                time_str = est_str[11:19] if len(est_str) >= 19 else datetime.now(ET).strftime("%-I:%M:%S %p")
 
                 direction = "call" if "call" in option_type.lower() else "put"
                 key       = f"{ticker}_{direction}"
-                now_real  = time.time()
 
                 if key not in bt_state:
                     bt_state[key] = {"fills": [], "last_alerted_count": 0}
@@ -151,12 +162,12 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str):
                 fill = {
                     "strike": strike, "expiry": expiry, "price": price,
                     "premium": premium, "sweep": is_sweep, "dte": dte,
-                    "stock_px": stock_px, "time": time_str, "ts": now_real,
+                    "stock_px": stock_px, "time": time_str, "ts": event_ts,
                 }
                 bt_state[key]["fills"].append(fill)
 
-                # Prune to scaled rolling window
-                cutoff       = now_real - _REAL_WINDOW_SECS
+                # Use actual market timestamps for rolling window — no speed scaling needed
+                cutoff       = event_ts - WINDOW_MINS * 60
                 window_fills = [f for f in bt_state[key]["fills"] if f["ts"] >= cutoff]
                 bt_state[key]["fills"] = window_fills
                 count        = len(window_fills)
@@ -167,12 +178,11 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str):
                     total_prem = sum(f["premium"] for f in window_fills)
                     above      = total_prem >= PREMIUM_HIGHLIGHT
 
-                    # Scale real-time span back to market minutes
+                    # Span in actual market time
                     if len(window_fills) >= 2:
-                        real_span    = now_real - min(f["ts"] for f in window_fills)
-                        market_secs  = real_span * SPEED
-                        span_str     = (f"{market_secs/60:.1f}min"
-                                        if market_secs >= 60 else f"{market_secs:.0f}s")
+                        market_secs = event_ts - min(f["ts"] for f in window_fills)
+                        span_str    = (f"{market_secs/60:.1f}min"
+                                       if market_secs >= 60 else f"{market_secs:.0f}s")
                     else:
                         span_str = "0s"
 
@@ -193,10 +203,15 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str):
 
     # ── Report results ─────────────────────────────────────────────────────
     if not alerts_fired:
+        # Build a useful debug message showing what filter names were seen
+        top_names = sorted(seen_names.items(), key=lambda x: -x[1])[:8]
+        names_str = "\n".join(f"  {n!r}: {c}" for n, c in top_names) if top_names else "  (none)"
         send_telegram(
             f"📊 Pair Flow Backtest: {date}\n"
-            f"No pair flow alerts found.\n"
-            f"({pair_events} {PAIR_FILTER} events, {event_count} total events)",
+            f"No alerts found for filter: {PAIR_FILTER!r}\n"
+            f"({event_count} total events)\n\n"
+            f"Alert names seen in stream:\n{names_str}\n\n"
+            f"If your filter name differs, set PAIR_FLOW_FILTER_NAME in Railway.",
             bot_token, chat_id)
         return
 
