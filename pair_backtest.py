@@ -30,7 +30,7 @@ _REAL_WINDOW_SECS = WINDOW_MINS * 60.0 / SPEED
 
 def _build_url(api_key: str, date: str) -> str:
     return (f"https://api.bullflow.io/v1/streaming/backtesting"
-            f"?key={api_key}={date}&speed={SPEED}")
+            f"?key={api_key}&date={date}&speed={SPEED}")
 
 
 def _parse_occ(symbol: str) -> dict | None:
