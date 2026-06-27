@@ -62,7 +62,7 @@ def _fmt_prem(p: float) -> str:
     return f"${p/1_000_000:.1f}M" if p >= 1_000_000 else f"${p/1_000:.0f}K"
 
 
-def _run_backtest_thread(date: str, bot_token: str, chat_id: str):
+def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool = False):
     """
     Background thread. Streams the full day, applies isolated pair flow
     detection, sends summary + detailed alerts to Telegram when complete.
@@ -232,26 +232,35 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str):
         )
     send_telegram("\n".join(summary), bot_token, chat_id)
 
-    # Detailed alert for every signal above the premium threshold
-    from pair_flow_tracker import build_pair_alert
-    for a in alerts_fired:
-        if a["above"]:
-            result = {
-                "ticker":            a["ticker"],
-                "direction":         a["direction"],
-                "fills":             a["fills"],
-                "count":             a["count"],
-                "total_prem":        a["total_prem"],
-                "above_highlight":   a["above"],
-                "span_str":          a["span"],
-                "window_mins":       WINDOW_MINS,
-                "min_count":         MIN_COUNT,
-                "premium_highlight": PREMIUM_HIGHLIGHT,
-            }
-            send_telegram(build_pair_alert(result), bot_token, chat_id)
+    # Detailed alerts — only if explicitly requested
+    if detail:
+        from pair_flow_tracker import build_pair_alert
+        for a in alerts_fired:
+            if a["above"]:
+                result = {
+                    "ticker":            a["ticker"],
+                    "direction":         a["direction"],
+                    "fills":             a["fills"],
+                    "count":             a["count"],
+                    "total_prem":        a["total_prem"],
+                    "above_highlight":   a["above"],
+                    "span_str":          a["span"],
+                    "window_mins":       WINDOW_MINS,
+                    "min_count":         MIN_COUNT,
+                    "premium_highlight": PREMIUM_HIGHLIGHT,
+                }
+                send_telegram(build_pair_alert(result), bot_token, chat_id)
+    else:
+        above_count = sum(1 for a in alerts_fired if a["above"])
+        if above_count:
+            send_telegram(
+                f"💡 {above_count} alert{'s' if above_count>1 else ''} above "
+                f"{_fmt_prem(PREMIUM_HIGHLIGHT)} threshold. "
+                f"Re-run with /pair_backtest {date} detail for full breakdowns.",
+                bot_token, chat_id)
 
 
-def start_backtest(date: str, bot_token: str, chat_id: str) -> bool:
+def start_backtest(date: str, bot_token: str, chat_id: str, detail: bool = False) -> bool:
     """
     Validate date format and launch backtest in a background thread.
     Returns True if launched, False if date format is invalid.
@@ -260,7 +269,7 @@ def start_backtest(date: str, bot_token: str, chat_id: str) -> bool:
         return False
     t = threading.Thread(
         target=_run_backtest_thread,
-        args=(date, bot_token, chat_id),
+        args=(date, bot_token, chat_id, detail),
         daemon=True,
         name=f"pair_backtest_{date}",
     )
