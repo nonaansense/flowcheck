@@ -25,7 +25,7 @@ STORAGE_KEY   = "alert_toggles"
 ALL_TYPES = [
     "trade", "tape", "conviction", "bm_auto", "double",
     "cluster", "straddle", "darkpool", "sector", "expiry",
-    "reminder", "priceaction", "eod", "spx_block",
+    "reminder", "priceaction", "eod", "spx_block", "pair_flow",
 ]
 LABELS = {
     "trade":       "🅱 Main FlowCheck TRADE alerts",
@@ -42,6 +42,7 @@ LABELS = {
     "priceaction": "⚠️  Price action warnings (5-min reversal)",
     "eod":         "📋 Tape EOD daily summary",
     "spx_block":   "🔄 SPX block trade repeat alerts (SPX plays channel)",
+    "pair_flow":   "🔥 Pair flow rapid accumulation (3+ calls or puts in 5min)",
 }
 
 # Module-level state — loaded once per process, updated on change

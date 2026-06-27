@@ -888,6 +888,39 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     except Exception as _ece:
         print(f"[EXPIRY] Error: {_ece}")
 
+    # ── Pair flow rapid accumulation detector ────
+    try:
+        from pair_flow_tracker import process_pair_flow, build_pair_alert
+        _pf_parsed = {}
+        try: _pf_parsed = _parsed_tape
+        except NameError:
+            _pf_parsed = {
+                "ticker":      alert_data.get("symbol","")[:10] or "",
+                "strike":      "",
+                "expiry":      "",
+                "option_type": "call",
+                "option_price": 0.0,
+                "premium":     float(alert_data.get("alertPremium",0) or 0),
+                "is_sweep":    False,
+                "dte":         0,
+            }
+        _pf_result = process_pair_flow(_pf_parsed, alert_name)
+        if _pf_result:
+            # Always track state — only gate the Telegram send
+            if not _alert_on("pair_flow"):
+                print(f"[TOGGLES] pair_flow disabled — Telegram suppressed, state updated")
+            else:
+                _pf_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                _pf_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                            os.environ.get("TELEGRAM_CHAT_ID",""))
+                if _pf_bot and _pf_chat:
+                    from sms import send_telegram as _sms_pf
+                    _sms_pf(build_pair_alert(_pf_result), _pf_bot, _pf_chat)
+                    print(f"[PAIR] ✅ Alert sent: {_pf_result['ticker']} "
+                          f"{_pf_result['direction']} x{_pf_result['count']}")
+    except Exception as _pfe:
+        print(f"[PAIR] Error: {_pfe}")
+
     # ── SPX block trade repeat detector ──────────
     try:
         from spx_block_tracker import process_spx_block, build_spx_alert

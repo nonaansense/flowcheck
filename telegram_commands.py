@@ -2387,7 +2387,7 @@ def handle_help(reply_chat_id: str):
         "/alert off all  — quiet mode (disable all alerts)",
         "/alert on all   — re-enable all alerts",
         "  Types: trade tape conviction bm_auto double cluster",
-        "         straddle darkpool sector expiry reminder priceaction eod spx_block",
+        "         straddle darkpool sector expiry reminder priceaction eod spx_block pair_flow",
         "/retail — retail flow status  |  /retail on/off — toggle",
         "/test — connectivity check (all APIs + services)",
         "/scan — technical watchlist status",
