@@ -1060,6 +1060,29 @@ def handle_command(text: str, from_chat_id: str):
         else:
             send_reply(status_message(), from_chat_id)
 
+    elif cmd in ("pair_backtest", "pairbt", "backtest_pair"):
+        _bt_date = args[0].strip() if args else ""
+        if not _bt_date:
+            send_reply('Usage: /pair_backtest YYYY-MM-DD  e.g. 2026-05-27\nStreams full day at 60x speed (~6 min). Summary + detailed alerts sent on completion.',
+                       from_chat_id)
+        else:
+            from pair_backtest import start_backtest as _bt_start
+            import os as _btos
+            _bt_bot = _btos.environ.get("TELEGRAM_BOT_TOKEN","")
+            _bt_ok  = _bt_start(_bt_date, _bt_bot, from_chat_id)
+            if _bt_ok:
+                _win  = _btos.environ.get("PAIR_FLOW_WINDOW_MINS","5")
+                _min  = _btos.environ.get("PAIR_FLOW_MIN_COUNT","3")
+                _filt = _btos.environ.get("PAIR_FLOW_FILTER_NAME","Pair_of_3_in_5_mins")
+                _msg  = (f"Pair flow backtest started: {_bt_date}\n"
+                         f"Filter: {_filt}\n"
+                         f"Window: {_win}min | Min flows: {_min}\n"
+                         "Speed: 60x | Results in ~6 minutes.")
+                send_reply(_msg, from_chat_id)
+            else:
+                send_reply(f"Invalid date: {_bt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
+                           from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2392,6 +2415,7 @@ def handle_help(reply_chat_id: str):
         "/test — connectivity check (all APIs + services)",
         "/scan — technical watchlist status",
         "/backtest URL TIME — replay historical tweet",
+        "/pair_backtest YYYY-MM-DD — backtest pair flow for a date (~6 min to run)",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",
