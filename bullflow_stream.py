@@ -915,8 +915,9 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             "strike":       (_pf_occ["strike"]        if _pf_occ else ""),
             "expiry":       (_pf_occ["expiry"]        if _pf_occ else ""),
             "dte":          (_pf_occ["dte"]           if _pf_occ else 0),
-            "option_price": float(alert_data.get("tradePrice") or
-                                  alert_data.get("alertPrice")  or 0),
+            "option_price": float(alert_data.get("averageFillPrice") or
+                                  alert_data.get("tradePrice")       or
+                                  alert_data.get("alertPrice")        or 0),
             "premium":      float(alert_data.get("alertPremium") or 0),
             "is_sweep":     str(alert_data.get("alertFillType","")).upper() in ("FULL_ASK","AA"),
             "stock_price":  float(alert_data.get("stockPrice") or 0),
