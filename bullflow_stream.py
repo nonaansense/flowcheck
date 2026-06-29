@@ -891,19 +891,36 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     # ── Pair flow rapid accumulation detector ────
     try:
         from pair_flow_tracker import process_pair_flow, build_pair_alert
-        _pf_parsed = {}
-        try: _pf_parsed = _parsed_tape
-        except NameError:
-            _pf_parsed = {
-                "ticker":      alert_data.get("symbol","")[:10] or "",
-                "strike":      "",
-                "expiry":      "",
-                "option_type": "call",
-                "option_price": 0.0,
-                "premium":     float(alert_data.get("alertPremium",0) or 0),
-                "is_sweep":    False,
-                "dte":         0,
-            }
+        # Always parse directly from alert_data — never depends on _parsed_tape
+        # since Pair_of_3_in_5_mins is a separate filter from tape/conviction filters
+        _pf_sym  = alert_data.get("symbol","")
+        _pf_occ  = None
+        try:
+            import re as _pf_re
+            _pf_m = _pf_re.search(r'O:([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)', _pf_sym)
+            if _pf_m:
+                _pf_stk  = int(_pf_m.group(6)) / 1000.0
+                _pf_occ  = {
+                    "ticker":      _pf_m.group(1),
+                    "option_type": "call" if _pf_m.group(5) == "C" else "put",
+                    "strike":      str(int(_pf_stk)) if _pf_stk == int(_pf_stk) else f"{_pf_stk:.1f}",
+                    "expiry":      f"{_pf_m.group(3)}/{_pf_m.group(4)}/{_pf_m.group(2)}",
+                    "dte":         0,
+                }
+        except Exception: pass
+
+        _pf_parsed = {
+            "ticker":       (_pf_occ["ticker"]       if _pf_occ else _pf_sym.split(":")[0][:10]),
+            "option_type":  (_pf_occ["option_type"]  if _pf_occ else "call"),
+            "strike":       (_pf_occ["strike"]        if _pf_occ else ""),
+            "expiry":       (_pf_occ["expiry"]        if _pf_occ else ""),
+            "dte":          (_pf_occ["dte"]           if _pf_occ else 0),
+            "option_price": float(alert_data.get("tradePrice") or
+                                  alert_data.get("alertPrice")  or 0),
+            "premium":      float(alert_data.get("alertPremium") or 0),
+            "is_sweep":     str(alert_data.get("alertFillType","")).upper() in ("FULL_ASK","AA"),
+            "stock_price":  float(alert_data.get("stockPrice") or 0),
+        }
         _pf_result = process_pair_flow(_pf_parsed, alert_name)
         if _pf_result:
             # Always track state — only gate the Telegram send
