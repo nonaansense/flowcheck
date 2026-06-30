@@ -71,6 +71,53 @@ def _strike_val(strike: str) -> float:
         return 0.0
 
 
+_HIST_PRICE_CACHE: dict = {}   # f"{ticker}_{date}" → price (float)
+
+
+def _fetch_historical_stock_price(ticker: str, date_str: str) -> float:
+    """
+    Fetch the historical daily close for ticker on date_str (YYYY-MM-DD)
+    via Finnhub. The Bullflow backtest stream does NOT include a stock
+    price field on any fill, so this is required to compute a meaningful
+    premium/price ratio for a historical date — fetcher.fetch_price()
+    only returns TODAY's live price, which would be wrong for backtests.
+
+    Cached per ticker+date within the process so a backtest with
+    thousands of fills only costs one Finnhub call per unique ticker.
+    """
+    cache_key = f"{ticker}_{date_str}"
+    if cache_key in _HIST_PRICE_CACHE:
+        return _HIST_PRICE_CACHE[cache_key]
+
+    price = 0.0
+    try:
+        from fetcher import fh_get
+        from datetime import timedelta
+        target_dt = datetime.strptime(date_str, "%Y-%m-%d")
+        from_ts   = int((target_dt - timedelta(days=5)).timestamp())
+        to_ts     = int((target_dt + timedelta(days=1)).timestamp())
+        data = fh_get("/stock/candle", {"symbol": ticker, "resolution": "D",
+                                        "from": from_ts, "to": to_ts})
+        if data and data.get("s") == "ok":
+            closes = data.get("c", [])
+            times  = data.get("t", [])
+            target_date_only = target_dt.date()
+            best_price = None
+            for c, t in zip(closes, times):
+                if datetime.utcfromtimestamp(t).date() == target_date_only:
+                    best_price = c
+                    break
+            if best_price is None and closes:
+                best_price = closes[-1]   # fallback to most recent available close
+            if best_price:
+                price = float(best_price)
+    except Exception as e:
+        print(f"[REPEAT_BT] Historical price fetch error for {ticker} {date_str}: {e}")
+
+    _HIST_PRICE_CACHE[cache_key] = price
+    return price
+
+
 def _furthest_out_fill(fills: list) -> dict:
     return sorted(
         fills,
@@ -165,6 +212,8 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
                 premium  = float(inner.get("alertPremium") or 0)
                 is_sweep = str(inner.get("alertFillType","")).upper() in ("FULL_ASK","AA")
                 stock_px = float(inner.get("stockPrice") or 0)
+                if not stock_px:
+                    stock_px = _fetch_historical_stock_price(ticker, date)
 
                 event_ts = float(inner.get("timestamp") or time.time())
                 est_str  = str(inner.get("estTimestamp",""))
@@ -213,7 +262,8 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
         send_telegram(
             f"🔁 Repeat Flow Backtest: {date}\n"
             f"No alerts found for filter: {REPEAT_FILTER!r}\n"
-            f"({event_count} total events, calls + puts both checked)\n\n"
+            f"({repeat_events} matching events of {event_count} total, "
+            f"calls + puts both checked)\n\n"
             f"Alert names seen in stream:\n{names_str}\n\n"
             f"If your filter name differs, set REPEAT_FLOW_FILTER_NAME in Railway.",
             bot_token, chat_id)
