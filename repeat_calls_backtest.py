@@ -27,6 +27,7 @@ REPEAT_FILTER   = (os.environ.get("REPEAT_FLOW_FILTER_NAME") or
                    os.environ.get("REPEAT_CALLS_FILTER_NAME") or
                    "Repeat_Flow_Tracker")
 RATIO_THRESHOLD = float(os.environ.get("REPEAT_CALLS_RATIO_THRESHOLD", "50000"))
+MIN_FILLS       = int(os.environ.get("REPEAT_CALLS_MIN_FILLS", "2"))
 
 
 def _puts_enabled() -> bool:
@@ -241,7 +242,8 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
                 ratio      = (total_prem / avg_px) if avg_px > 0 else 0
                 last_alerted = bt_state[key]["last_alerted_ratio"]
 
-                if avg_px > 0 and ratio >= RATIO_THRESHOLD and ratio > last_alerted:
+                if (len(fills) >= MIN_FILLS and avg_px > 0 and
+                        ratio >= RATIO_THRESHOLD and ratio > last_alerted):
                     bt_state[key]["last_alerted_ratio"] = ratio
                     furthest = _furthest_out_fill(fills)
                     alerts_fired.append({

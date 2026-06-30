@@ -1098,13 +1098,14 @@ def handle_command(text: str, from_chat_id: str):
             _rbt_ok     = _rbt_start(_rbt_date, _rbt_bot, from_chat_id, detail=_rbt_detail)
             if _rbt_ok:
                 _rratio = _rbtos.environ.get("REPEAT_CALLS_RATIO_THRESHOLD","50000")
+                _rminf  = _rbtos.environ.get("REPEAT_CALLS_MIN_FILLS","2")
                 _rfilt  = (_rbtos.environ.get("REPEAT_FLOW_FILTER_NAME") or
                            _rbtos.environ.get("REPEAT_CALLS_FILTER_NAME") or
                            "Repeat_Flow_Tracker")
                 _rmode  = " + detailed alerts" if _rbt_detail else " (summary only)"
                 _rmsg   = (f"Repeat flow backtest started: {_rbt_date}\n"
                            f"Filter: {_rfilt}\n"
-                           f"Ratio threshold: {_rratio}  |  Calls + Puts (always both)\n"
+                           f"Ratio threshold: {_rratio}  |  Min fills: {_rminf}  |  Calls + Puts (always both)\n"
                            f"Speed: 60x | Results in ~6 minutes{_rmode}.")
                 send_reply(_rmsg, from_chat_id)
             else:

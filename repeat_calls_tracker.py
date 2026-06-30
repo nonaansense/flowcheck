@@ -25,6 +25,7 @@ Config env vars:
   REPEAT_FLOW_FILTER_NAME       = Repeat_Flow_Tracker   (falls back to
                                    REPEAT_CALLS_FILTER_NAME for old deploys)
   REPEAT_CALLS_RATIO_THRESHOLD  = 50000     user-defined ratio trigger
+  REPEAT_CALLS_MIN_FILLS        = 2         minimum fills required before firing
   REPEAT_PUTS_ENABLED           = true      track puts in addition to calls
 """
 import os, time
@@ -37,6 +38,7 @@ REPEAT_FLOW_FILTER = (os.environ.get("REPEAT_FLOW_FILTER_NAME") or
                       os.environ.get("REPEAT_CALLS_FILTER_NAME") or
                       "Repeat_Flow_Tracker")
 RATIO_THRESHOLD     = float(os.environ.get("REPEAT_CALLS_RATIO_THRESHOLD", "50000"))
+MIN_FILLS           = int(os.environ.get("REPEAT_CALLS_MIN_FILLS", "2"))
 STORAGE_KEY         = "repeat_flow_history"
 
 
@@ -101,8 +103,9 @@ def process_repeat_calls(alert: dict, filter_name: str) -> dict | None:
     """
     Track same-direction fills (calls OR puts) on a ticker for the current
     trading day. Fires when total_premium / avg_stock_price crosses
-    RATIO_THRESHOLD. Re-fires on every subsequent qualifying fill the
-    same day. Calls always tracked; puts gated by REPEAT_PUTS_ENABLED.
+    RATIO_THRESHOLD AND at least MIN_FILLS fills have accumulated.
+    Re-fires on every subsequent qualifying fill the same day.
+    Calls always tracked; puts gated by REPEAT_PUTS_ENABLED.
     """
     if filter_name != REPEAT_FLOW_FILTER:
         return None
@@ -162,9 +165,10 @@ def process_repeat_calls(alert: dict, filter_name: str) -> dict | None:
 
     print(f"[REPEAT] {ticker} {direction}: {len(fills)} fills today | "
           f"{_fmt_prem(total_prem)} total | avg px ${avg_px:.2f} | "
-          f"ratio {ratio:,.0f} (need {RATIO_THRESHOLD:,.0f})")
+          f"ratio {ratio:,.0f} (need {RATIO_THRESHOLD:,.0f}, min {MIN_FILLS} fills)")
 
-    if avg_px <= 0 or ratio < RATIO_THRESHOLD or ratio <= last_alerted:
+    if (len(fills) < MIN_FILLS or avg_px <= 0 or
+            ratio < RATIO_THRESHOLD or ratio <= last_alerted):
         return None
 
     _REPEAT[key]["last_alerted_ratio"] = ratio
