@@ -1085,6 +1085,32 @@ def handle_command(text: str, from_chat_id: str):
                 send_reply(f"Invalid date: {_bt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
                            from_chat_id)
 
+    elif cmd in ("repeat_backtest", "repeatbt", "backtest_repeat"):
+        _rbt_date = args[0].strip() if args else ""
+        if not _rbt_date:
+            send_reply('Usage: /repeat_backtest YYYY-MM-DD [detail]  e.g. 2026-05-27\nStreams full day at 60x speed (~6 min). Summary sent on completion; add "detail" for full breakdowns.',
+                       from_chat_id)
+        else:
+            from repeat_calls_backtest import start_backtest as _rbt_start
+            import os as _rbtos
+            _rbt_bot    = _rbtos.environ.get("TELEGRAM_BOT_TOKEN","")
+            _rbt_detail = len(args) > 1 and args[1].lower() in ("detail","detailed","full","d")
+            _rbt_ok     = _rbt_start(_rbt_date, _rbt_bot, from_chat_id, detail=_rbt_detail)
+            if _rbt_ok:
+                _rratio = _rbtos.environ.get("REPEAT_CALLS_RATIO_THRESHOLD","50000")
+                _rfilt  = (_rbtos.environ.get("REPEAT_FLOW_FILTER_NAME") or
+                           _rbtos.environ.get("REPEAT_CALLS_FILTER_NAME") or
+                           "Repeat_Flow_Tracker")
+                _rmode  = " + detailed alerts" if _rbt_detail else " (summary only)"
+                _rmsg   = (f"Repeat flow backtest started: {_rbt_date}\n"
+                           f"Filter: {_rfilt}\n"
+                           f"Ratio threshold: {_rratio}  |  Calls + Puts (always both)\n"
+                           f"Speed: 60x | Results in ~6 minutes{_rmode}.")
+                send_reply(_rmsg, from_chat_id)
+            else:
+                send_reply(f"Invalid date: {_rbt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
+                           from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2412,13 +2438,15 @@ def handle_help(reply_chat_id: str):
         "/alert off all  — quiet mode (disable all alerts)",
         "/alert on all   — re-enable all alerts",
         "  Types: trade tape conviction bm_auto double cluster",
-        "         straddle darkpool sector expiry reminder priceaction eod spx_block pair_flow",
+        "         straddle darkpool sector expiry reminder priceaction eod spx_block",
+        "         pair_flow repeat_calls",
         "/retail — retail flow status  |  /retail on/off — toggle",
         "/test — connectivity check (all APIs + services)",
         "/scan — technical watchlist status",
         "/backtest URL TIME — replay historical tweet",
         "/pair_backtest YYYY-MM-DD — backtest pair flow (summary only by default)",
         "/pair_backtest YYYY-MM-DD detail — include full alert breakdowns",
+        "/repeat_backtest YYYY-MM-DD [detail] — backtest repeat call activity",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",

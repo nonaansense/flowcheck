@@ -888,6 +888,59 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     except Exception as _ece:
         print(f"[EXPIRY] Error: {_ece}")
 
+    # ── Repeat call activity ratio detector ──────
+    try:
+        from repeat_calls_tracker import process_repeat_calls, build_repeat_calls_alert
+        _rc_sym  = alert_data.get("symbol","")
+        _rc_occ  = None
+        try:
+            import re as _rc_re
+            _rc_m = _rc_re.search(r'O:([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)', _rc_sym)
+            if _rc_m:
+                _rc_stk = int(_rc_m.group(6)) / 1000.0
+                _rc_occ = {
+                    "ticker":      _rc_m.group(1),
+                    "option_type": "call" if _rc_m.group(5) == "C" else "put",
+                    "strike":      str(int(_rc_stk)) if _rc_stk == int(_rc_stk) else f"{_rc_stk:.1f}",
+                    "expiry":      f"{_rc_m.group(3)}/{_rc_m.group(4)}/{_rc_m.group(2)}",
+                }
+                from datetime import datetime as _rc_dt, timezone as _rc_tz
+                try:
+                    _rc_exp_dt = _rc_dt(int(f"20{_rc_m.group(2)}"), int(_rc_m.group(3)),
+                                        int(_rc_m.group(4)), tzinfo=_rc_tz.utc)
+                    _rc_occ["dte"] = max(0, (_rc_exp_dt - _rc_dt.now(_rc_tz.utc)).days)
+                except Exception:
+                    _rc_occ["dte"] = 0
+        except Exception: pass
+
+        _rc_parsed = {
+            "ticker":       (_rc_occ["ticker"]       if _rc_occ else _rc_sym.split(":")[0][:10]),
+            "option_type":  (_rc_occ["option_type"]  if _rc_occ else "call"),
+            "strike":       (_rc_occ["strike"]        if _rc_occ else ""),
+            "expiry":       (_rc_occ["expiry"]        if _rc_occ else ""),
+            "dte":          (_rc_occ["dte"]           if _rc_occ else 0),
+            "option_price": float(alert_data.get("averageFillPrice") or
+                                  alert_data.get("tradePrice")        or 0),
+            "premium":      float(alert_data.get("alertPremium") or 0),
+            "is_sweep":     str(alert_data.get("alertFillType","")).upper() in ("FULL_ASK","AA"),
+            "stock_price":  float(alert_data.get("stockPrice") or 0),
+        }
+        _rc_result = process_repeat_calls(_rc_parsed, alert_name)
+        if _rc_result:
+            if not _alert_on("repeat_calls"):
+                print(f"[TOGGLES] repeat_calls disabled — Telegram suppressed, state updated")
+            else:
+                _rc_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                _rc_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                            os.environ.get("TELEGRAM_CHAT_ID",""))
+                if _rc_bot and _rc_chat:
+                    from sms import send_telegram as _sms_rc
+                    _sms_rc(build_repeat_calls_alert(_rc_result), _rc_bot, _rc_chat)
+                    print(f"[REPEAT] ✅ Alert sent: {_rc_result['ticker']} "
+                          f"ratio={_rc_result['ratio']:,.0f}")
+    except Exception as _rce:
+        print(f"[REPEAT] Error: {_rce}")
+
     # ── Pair flow rapid accumulation detector ────
     try:
         from pair_flow_tracker import process_pair_flow, build_pair_alert
