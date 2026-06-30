@@ -76,43 +76,48 @@ _HIST_PRICE_CACHE: dict = {}   # f"{ticker}_{date}" → price (float)
 
 def _fetch_historical_stock_price(ticker: str, date_str: str) -> float:
     """
-    Fetch the historical daily close for ticker on date_str (YYYY-MM-DD)
-    via Finnhub. The Bullflow backtest stream does NOT include a stock
-    price field on any fill, so this is required to compute a meaningful
-    premium/price ratio for a historical date — fetcher.fetch_price()
-    only returns TODAY's live price, which would be wrong for backtests.
+    Fetch the historical daily close for ticker on date_str (YYYY-MM-DD).
+    The Bullflow backtest stream does NOT include a stock price field on
+    any fill, so this is required to compute a meaningful premium/price
+    ratio for a historical date — fetcher.fetch_price() only returns
+    TODAY's live price, which would be wrong for backtests.
+
+    Uses Tradier's /v1/markets/history endpoint (free tier, already proven
+    working elsewhere in this codebase for intraday data). Finnhub's
+    /stock/candle endpoint is premium-only and returns 403 on free plans,
+    so it is intentionally NOT used here.
 
     Cached per ticker+date within the process so a backtest with
-    thousands of fills only costs one Finnhub call per unique ticker.
+    thousands of fills only costs one Tradier call per unique ticker.
     """
     cache_key = f"{ticker}_{date_str}"
     if cache_key in _HIST_PRICE_CACHE:
         return _HIST_PRICE_CACHE[cache_key]
 
     price = 0.0
-    try:
-        from fetcher import fh_get
-        from datetime import timedelta
-        target_dt = datetime.strptime(date_str, "%Y-%m-%d")
-        from_ts   = int((target_dt - timedelta(days=5)).timestamp())
-        to_ts     = int((target_dt + timedelta(days=1)).timestamp())
-        data = fh_get("/stock/candle", {"symbol": ticker, "resolution": "D",
-                                        "from": from_ts, "to": to_ts})
-        if data and data.get("s") == "ok":
-            closes = data.get("c", [])
-            times  = data.get("t", [])
-            target_date_only = target_dt.date()
-            best_price = None
-            for c, t in zip(closes, times):
-                if datetime.utcfromtimestamp(t).date() == target_date_only:
-                    best_price = c
-                    break
-            if best_price is None and closes:
-                best_price = closes[-1]   # fallback to most recent available close
-            if best_price:
-                price = float(best_price)
-    except Exception as e:
-        print(f"[REPEAT_BT] Historical price fetch error for {ticker} {date_str}: {e}")
+    token = os.environ.get("TRADIER_TOKEN", "")
+    if token:
+        try:
+            r = requests.get(
+                "https://api.tradier.com/v1/markets/history",
+                params={"symbol": ticker.upper(), "interval": "daily",
+                        "start": date_str, "end": date_str},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=8,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                day  = (data.get("history") or {}).get("day")
+                if isinstance(day, list) and day:
+                    price = float(day[0].get("close", 0) or 0)
+                elif isinstance(day, dict):
+                    price = float(day.get("close", 0) or 0)
+            elif r.status_code == 429:
+                time.sleep(1)
+        except Exception as e:
+            print(f"[REPEAT_BT] Tradier history error for {ticker} {date_str}: {e}")
+    else:
+        print(f"[REPEAT_BT] No TRADIER_TOKEN — cannot fetch historical price for {ticker}")
 
     _HIST_PRICE_CACHE[cache_key] = price
     return price
