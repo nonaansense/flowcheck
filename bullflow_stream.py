@@ -975,6 +975,13 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             "is_sweep":     str(alert_data.get("alertFillType","")).upper() in ("FULL_ASK","AA"),
             "stock_price":  float(alert_data.get("stockPrice") or 0),
         }
+        # Feed the swing scanner day-long ledger (every filter, every fill)
+        try:
+            from swing_scanner import record_fill as _sw_record
+            _sw_record(_pf_parsed, alert_name)
+        except Exception as _swe:
+            print(f"[SWING] record error: {_swe}")
+
         _pf_result = process_pair_flow(_pf_parsed, alert_name)
         if _pf_result:
             # Always track state — only gate the Telegram send

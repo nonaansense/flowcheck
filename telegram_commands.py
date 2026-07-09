@@ -1085,6 +1085,17 @@ def handle_command(text: str, from_chat_id: str):
                 send_reply(f"Invalid date: {_bt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
                            from_chat_id)
 
+    elif cmd in ("swing", "top5", "swingscan"):
+        from swing_scanner import start_swing_scan_async as _sw_start
+        import os as _swos
+        _sw_bot = _swos.environ.get("TELEGRAM_BOT_TOKEN","")
+        def _sw_send(msg, _b=_sw_bot, _c=from_chat_id):
+            from sms import send_telegram as _sw_st
+            _sw_st(msg, _b, _c)
+        _sw_start(_sw_send)
+        send_reply("Swing scan running - full-day flow + daily/4H/1H/30M analysis. Results in ~30s.",
+                   from_chat_id)
+
     elif cmd in ("repeat_backtest", "repeatbt", "backtest_repeat"):
         _rbt_date = args[0].strip() if args else ""
         if not _rbt_date:
@@ -2440,7 +2451,7 @@ def handle_help(reply_chat_id: str):
         "/alert on all   — re-enable all alerts",
         "  Types: trade tape conviction bm_auto double cluster",
         "         straddle darkpool sector expiry reminder priceaction eod spx_block",
-        "         pair_flow repeat_calls",
+        "         pair_flow repeat_calls technical swing",
         "/retail — retail flow status  |  /retail on/off — toggle",
         "/test — connectivity check (all APIs + services)",
         "/scan — technical watchlist status",
@@ -2448,6 +2459,7 @@ def handle_help(reply_chat_id: str):
         "/pair_backtest YYYY-MM-DD — backtest pair flow (summary only by default)",
         "/pair_backtest YYYY-MM-DD detail — include full alert breakdowns",
         "/repeat_backtest YYYY-MM-DD [detail] — backtest repeat call activity",
+        "/swing - top 5 swing plays from full-day flow + chart story",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",

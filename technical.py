@@ -1003,7 +1003,11 @@ def run_technical_scan(send_sms_fn):
                                 if _tweet_tc:
                                     _tc_parts.append(f"🐦 {_tweet_tc}")
                                 _upgrade_msg = "\n".join(p for p in _tc_parts if p is not None)
-                                send_telegram(_upgrade_msg, _bot, _trade_ch)
+                                from alert_toggles import is_enabled as _at_enabled
+                                if not _at_enabled("technical"):
+                                    print(f"[TOGGLES] technical alerts disabled — Telegram suppressed")
+                                else:
+                                    send_telegram(_upgrade_msg, _bot, _trade_ch)
                                 print(f"[TECHNICAL] ⬆️ Pushed {ticker} STRONG+GEX to priority (24h cooldown started)")
                             else:
                                 print(f"[TECHNICAL] {ticker} STRONG but GEX not aligned — skipping priority alert")

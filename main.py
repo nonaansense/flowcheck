@@ -404,6 +404,20 @@ async def startup():
         scheduler.add_job(lambda: send_daily_pnl(send_sms) if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=10, id="daily_pnl",
                           max_instances=1, coalesce=True)
+        def _run_swing_scan():
+            try:
+                from alert_toggles import is_enabled as _sw_on
+                if not _sw_on("swing"):
+                    print("[TOGGLES] swing disabled — 3:45pm scan suppressed")
+                    return
+                from swing_scanner import start_swing_scan_async
+                start_swing_scan_async(send_sms)
+            except Exception as _swe:
+                print(f"[SWING] Scheduler error: {_swe}")
+        scheduler.add_job(_run_swing_scan, "cron",
+                          day_of_week="mon-fri", hour=15, minute=45,
+                          timezone="America/New_York", id="swing_scan_345")
+
         scheduler.add_job(lambda: run_technical_scan(send_sms),
                           "cron", day_of_week="mon-fri", hour="10-15", minute="*/10", id="technical_scan")
 
