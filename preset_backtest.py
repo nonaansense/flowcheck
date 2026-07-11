@@ -162,17 +162,22 @@ def _fetch_historical_stock_price(ticker: str, date_str: str) -> float:
     return price
 
 
-def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool = False):
-    from sms import send_telegram
+def collect_day(date: str) -> dict:
+    """
+    Stream one trading day and return its preset results WITHOUT sending to
+    Telegram. Used by both the single-day backtest and the range export.
+
+    Returns {"date","alerts":[result,...],"preset_events","event_count",
+             "seen_names","error"(optional)}.
+    """
     import bullflow_presets as bp
 
     api_key = os.environ.get("BULLFLOW_API_KEY", "")
     if not api_key:
-        send_telegram("❌ BULLFLOW_API_KEY not set", bot_token, chat_id)
-        return
+        return {"date": date, "alerts": [], "preset_events": 0,
+                "event_count": 0, "seen_names": {}, "error": "BULLFLOW_API_KEY not set"}
 
     url = _build_url(api_key, date)
-
     alerts_fired: list = []
     event_count   = 0
     preset_events = 0
@@ -221,11 +226,8 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
                 is_sweep = str(inner.get("alertFillType","")).upper() in ("FULL_ASK","AA")
                 stock_px = float(inner.get("stockPrice") or 0)
                 if not stock_px:
-                    # Match the alert's timestamp to the intraday price at that
-                    # moment (falls back to daily close if intraday unavailable)
                     stock_px = _price_at_time(ticker, date, inner.get("timestamp"))
 
-                # Build the same shape process_preset expects
                 fill = {
                     "ticker":       ticker,
                     "option_type":  parsed["option_type"],
@@ -244,8 +246,30 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
                     alerts_fired.append(result)
 
     except Exception as e:
-        send_telegram(f"❌ Backtest error ({date}): {e}", bot_token, chat_id)
+        return {"date": date, "alerts": alerts_fired, "preset_events": preset_events,
+                "event_count": event_count, "seen_names": seen_names, "error": str(e)}
+
+    return {"date": date, "alerts": alerts_fired, "preset_events": preset_events,
+            "event_count": event_count, "seen_names": seen_names}
+
+
+def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool = False):
+    from sms import send_telegram
+    import bullflow_presets as bp
+
+    if not os.environ.get("BULLFLOW_API_KEY", ""):
+        send_telegram("❌ BULLFLOW_API_KEY not set", bot_token, chat_id)
         return
+
+    day = collect_day(date)
+    if day.get("error"):
+        send_telegram(f"❌ Backtest error ({date}): {day['error']}", bot_token, chat_id)
+        return
+
+    alerts_fired = day["alerts"]
+    preset_events = day["preset_events"]
+    event_count   = day["event_count"]
+    seen_names    = day["seen_names"]
 
     # ── Report ──
     if not alerts_fired:

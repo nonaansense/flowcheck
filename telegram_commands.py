@@ -1146,6 +1146,19 @@ def handle_command(text: str, from_chat_id: str):
                 send_reply(f"Invalid date: {_pbt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
                            from_chat_id)
 
+    elif cmd in ("preset_backtest_range", "presetrange", "preset_range"):
+        _prr = [a.strip() for a in args if a.strip()]
+        if len(_prr) < 2:
+            send_reply('Usage: /preset_backtest_range YYYY-MM-DD YYYY-MM-DD\ne.g. /preset_backtest_range 2026-06-01 2026-06-30\nRuns each weekday, returns an Excel file with one tab per date. Max 31 days.',
+                       from_chat_id)
+        else:
+            from preset_backtest_range import start_range_backtest as _prr_start
+            import os as _prros
+            _prr_bot = _prros.environ.get("TELEGRAM_BOT_TOKEN","")
+            _prr_ok, _prr_msg = _prr_start(_prr[0], _prr[1], _prr_bot, from_chat_id)
+            if not _prr_ok:
+                send_reply(_prr_msg, from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2487,6 +2500,7 @@ def handle_help(reply_chat_id: str):
         "/repeat_backtest YYYY-MM-DD [detail] — backtest repeat call activity",
         "/swing - top 5 swing plays from full-day flow + chart story",
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",
+        "/preset_backtest_range YYYY-MM-DD YYYY-MM-DD — month backtest to Excel (tab per date)",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",

@@ -61,6 +61,30 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
         print(f"[SMS] Telegram exception: {e}")
         return False
 
+def send_telegram_document(file_path: str, bot_token: str, chat_id: str,
+                           caption: str = "") -> bool:
+    """Send a file (e.g. an .xlsx) to Telegram via sendDocument."""
+    try:
+        with open(file_path, "rb") as f:
+            data = {"chat_id": chat_id}
+            if caption:
+                data["caption"] = caption[:1000]
+            r = requests.post(
+                f"https://api.telegram.org/bot{bot_token}/sendDocument",
+                data=data,
+                files={"document": f},
+                timeout=60,
+            )
+        if r.status_code == 200:
+            print(f"[SMS] Telegram document sent: {file_path}")
+            return True
+        print(f"[SMS] Telegram document error {r.status_code}: {r.text[:200]}")
+        return False
+    except Exception as e:
+        print(f"[SMS] Telegram document exception: {e}")
+        return False
+
+
 def send_twilio(message: str) -> bool:
     account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token  = os.environ.get("TWILIO_AUTH_TOKEN")
