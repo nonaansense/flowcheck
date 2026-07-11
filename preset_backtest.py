@@ -10,8 +10,11 @@ moneyness, contract count, suggested entry, and trailing-stop offset.
 URL: https://api.bullflow.io/v1/streaming/backtesting?key={KEY}&date={DATE}&speed=60
 
 Uses actual event timestamps from the stream (not real-clock + speed
-scaling). Historical stock price for moneyness is fetched from Tradier
-(the backtest stream has no stockPrice field), cached per ticker+date.
+scaling). Stock price for moneyness is matched to each alert's timestamp
+using Tradier 15-min intraday candles (the backtest stream has no
+stockPrice field), so a 9:32 AM alert and a 3:43 PM alert on the same
+ticker use their own point-in-time prices — not a single daily close.
+Falls back to the daily close if intraday data is unavailable.
 
 Telegram command: /preset_backtest YYYY-MM-DD [detail]
 """
@@ -57,13 +60,82 @@ def _parse_occ(symbol: str, ref_date: str = None) -> dict | None:
             "strike": strike, "expiry": expiry, "dte": dte}
 
 
-_HIST_PRICE_CACHE: dict = {}
+_HIST_PRICE_CACHE: dict = {}   # ticker_date → daily close (fallback)
+_INTRADAY_CACHE:   dict = {}   # ticker_date → [(epoch, price), ...] sorted by time
+
+
+def _fetch_intraday_series(ticker: str, date_str: str) -> list:
+    """
+    Fetch the backtest day's 15-min candles via Tradier /markets/timesales
+    and return a sorted list of (epoch_seconds, close_price) tuples so an
+    alert's timestamp can be matched to the price AT THAT TIME (not the
+    end-of-day close). Cached per ticker+date. Returns [] on failure.
+    """
+    cache_key = f"{ticker}_{date_str}"
+    if cache_key in _INTRADAY_CACHE:
+        return _INTRADAY_CACHE[cache_key]
+
+    series_out = []
+    token = os.environ.get("TRADIER_TOKEN", "")
+    if token:
+        try:
+            r = requests.get(
+                "https://api.tradier.com/v1/markets/timesales",
+                params={"symbol": ticker.upper(), "interval": "15min",
+                        "start": f"{date_str} 09:30", "end": f"{date_str} 16:00",
+                        "session_filter": "open"},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = ((r.json().get("series") or {}).get("data"))
+                if isinstance(data, dict):
+                    data = [data]
+                for bar in (data or []):
+                    # Each bar has 'time' (ET ISO string) and 'close'; 'timestamp' is epoch
+                    epoch = bar.get("timestamp")
+                    close = bar.get("close")
+                    if epoch is not None and close:
+                        series_out.append((float(epoch), float(close)))
+                series_out.sort(key=lambda x: x[0])
+        except Exception as e:
+            print(f"[PRESET_BT] Tradier timesales error {ticker} {date_str}: {e}")
+
+    _INTRADAY_CACHE[cache_key] = series_out
+    return series_out
+
+
+def _price_at_time(ticker: str, date_str: str, event_epoch) -> float:
+    """
+    Return the stock price at the alert's timestamp using intraday candles:
+    the close of the most recent 15-min bar at or before the alert time
+    (or the nearest bar if the alert precedes the first candle). Falls back
+    to the daily close if intraday data is unavailable.
+    """
+    series = _fetch_intraday_series(ticker, date_str)
+    if series and event_epoch:
+        try:
+            ev = float(event_epoch)
+            # Most recent bar at or before the event
+            chosen = None
+            for epoch, close in series:
+                if epoch <= ev:
+                    chosen = close
+                else:
+                    break
+            # Alert before first candle → use the first available bar
+            if chosen is None:
+                chosen = series[0][1]
+            return chosen
+        except Exception:
+            pass
+    # Fallback: daily close
+    return _fetch_historical_stock_price(ticker, date_str)
 
 
 def _fetch_historical_stock_price(ticker: str, date_str: str) -> float:
     """Historical daily close via Tradier /markets/history (free tier),
-    cached per ticker+date. Needed for moneyness since the backtest
-    stream carries no stockPrice."""
+    cached per ticker+date. Fallback when intraday candles are unavailable."""
     cache_key = f"{ticker}_{date_str}"
     if cache_key in _HIST_PRICE_CACHE:
         return _HIST_PRICE_CACHE[cache_key]
@@ -149,7 +221,9 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
                 is_sweep = str(inner.get("alertFillType","")).upper() in ("FULL_ASK","AA")
                 stock_px = float(inner.get("stockPrice") or 0)
                 if not stock_px:
-                    stock_px = _fetch_historical_stock_price(ticker, date)
+                    # Match the alert's timestamp to the intraday price at that
+                    # moment (falls back to daily close if intraday unavailable)
+                    stock_px = _price_at_time(ticker, date, inner.get("timestamp"))
 
                 # Build the same shape process_preset expects
                 fill = {
