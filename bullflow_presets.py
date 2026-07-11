@@ -74,6 +74,9 @@ ATM_BAND_PCT       = float(os.environ.get("BULLFLOW_PRESET_ATM_BAND_PCT", "0.005
 ENTRY_DISCOUNT_PCT = float(os.environ.get("BULLFLOW_PRESET_ENTRY_DISCOUNT_PCT", "0.20"))
 # Trailing-stop offset = this fraction of the flow trade price (75% → 0.75)
 TRAIL_OFFSET_PCT   = float(os.environ.get("BULLFLOW_PRESET_TRAIL_OFFSET_PCT", "0.75"))
+# Whether to show ITM alerts. Set false to suppress in-the-money contracts
+# (some traders only want OTM/ATM directional bets, not ITM).
+SHOW_ITM = os.environ.get("BULLFLOW_PRESET_SHOW_ITM", "true").lower() not in ("false","0","no","off")
 
 # Case-insensitive lookup set for matching incoming alert names
 _PRESET_LOWER = {t.lower() for t in PRESET_TYPES}
@@ -176,6 +179,11 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
             moneyness = "ITM" if stock_px > strike_f else "OTM"
         else:  # put
             moneyness = "ITM" if stock_px < strike_f else "OTM"
+
+    # Suppress ITM alerts when disabled
+    if moneyness == "ITM" and not SHOW_ITM:
+        print(f"[PRESET] {filter_name} {ticker}: ITM suppressed (SHOW_ITM off)")
+        return None
 
     # ── Trade size in # of contracts ──
     # Each contract controls 100 shares, so cost per contract = price * 100.
