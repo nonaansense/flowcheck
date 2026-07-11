@@ -28,7 +28,11 @@ def _build_url(api_key: str, date: str) -> str:
             f"?key={api_key}&date={date}&speed={SPEED}")
 
 
-def _parse_occ(symbol: str) -> dict | None:
+def _parse_occ(symbol: str, ref_date: str = None) -> dict | None:
+    """Parse OCC option symbol. DTE is measured from ref_date (the backtest
+    date, YYYY-MM-DD) when provided, NOT from today — otherwise a backtest
+    of a past date would compute wrong DTE and let long-dated contracts
+    slip through the DTE filter."""
     if not symbol:
         return None
     m = re.search(r'O:([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)', symbol)
@@ -42,7 +46,11 @@ def _parse_occ(symbol: str) -> dict | None:
     expiry      = f"{mm}/{dd}/{yy}"
     try:
         exp_dt = datetime(int(f"20{yy}"), int(mm), int(dd), tzinfo=timezone.utc)
-        dte    = max(0, (exp_dt - datetime.now(timezone.utc)).days)
+        if ref_date:
+            base_dt = datetime.strptime(ref_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        else:
+            base_dt = datetime.now(timezone.utc)
+        dte    = max(0, (exp_dt - base_dt).days)
     except Exception:
         dte = 0
     return {"ticker": ticker, "option_type": option_type,
@@ -130,7 +138,7 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
                 preset_events += 1
 
                 symbol = inner.get("symbol", inner.get("ticker", ""))
-                parsed = _parse_occ(symbol) if "O:" in str(symbol) else None
+                parsed = _parse_occ(symbol, ref_date=date) if "O:" in str(symbol) else None
                 if not parsed:
                     continue
 
