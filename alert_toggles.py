@@ -25,7 +25,10 @@ STORAGE_KEY   = "alert_toggles"
 ALL_TYPES = [
     "trade", "tape", "conviction", "bm_auto", "double",
     "cluster", "straddle", "darkpool", "sector", "expiry",
-    "reminder", "priceaction", "eod", "spx_block", "pair_flow", "repeat_calls", "technical", "swing",
+    "reminder", "priceaction", "eod", "spx_block", "pair_flow", "repeat_calls", "technical", "swing", "bullflow_preset",
+    "top_setups", "trailing_stop", "gex_monitor", "exit_signals",
+    "premarket_summary", "premarket_gap", "position_check",
+    "daily_pnl", "weekly_report", "theta_calendar", "spy_gex_snapshot",
 ]
 LABELS = {
     "trade":       "🅱 Main FlowCheck TRADE alerts",
@@ -46,6 +49,18 @@ LABELS = {
     "repeat_calls": "🔁 Repeat flow activity ratio (calls + optional puts)",
     "technical":    "📡 Technical confirmation (STRONG multi-TF + GEX aligned)",
     "swing":        "🎯 3:45pm top-5 swing play ranking",
+    "bullflow_preset": "🔔 Bullflow pre-defined alerts (Sweep/Repeater/Grenade etc.)",
+    "top_setups":       "🌅 Morning top setups briefing (9:45am)",
+    "trailing_stop":    "🛑 Trailing stop alerts",
+    "gex_monitor":      "⚡ Intraday GEX monitor alerts",
+    "exit_signals":     "🚪 Exit signal alerts",
+    "premarket_summary":"🌄 Pre-market + EOD summaries",
+    "premarket_gap":    "📊 Pre-market gap alerts (7:30am)",
+    "position_check":   "📋 Midday position check",
+    "daily_pnl":        "💰 Daily P&L summary",
+    "weekly_report":    "📈 Weekly performance report",
+    "theta_calendar":   "🗓️ Theta decay calendar",
+    "spy_gex_snapshot": "🎯 SPY GEX snapshots (10am/1pm)",
 }
 
 # Module-level state — loaded once per process, updated on change

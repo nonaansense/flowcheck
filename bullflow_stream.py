@@ -924,6 +924,8 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             "premium":      float(alert_data.get("alertPremium") or 0),
             "is_sweep":     str(alert_data.get("alertFillType","")).upper() in ("FULL_ASK","AA"),
             "stock_price":  float(alert_data.get("stockPrice") or 0),
+            "timestamp":    alert_data.get("timestamp"),
+            "est_timestamp": alert_data.get("estTimestamp", ""),
         }
         _rc_result = process_repeat_calls(_rc_parsed, alert_name)
         if _rc_result:
@@ -974,6 +976,8 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             "premium":      float(alert_data.get("alertPremium") or 0),
             "is_sweep":     str(alert_data.get("alertFillType","")).upper() in ("FULL_ASK","AA"),
             "stock_price":  float(alert_data.get("stockPrice") or 0),
+            "timestamp":    alert_data.get("timestamp"),
+            "est_timestamp": alert_data.get("estTimestamp", ""),
         }
         # Feed the swing scanner day-long ledger (every filter, every fill)
         try:
@@ -981,6 +985,26 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             _sw_record(_pf_parsed, alert_name)
         except Exception as _swe:
             print(f"[SWING] record error: {_swe}")
+
+        # Bullflow pre-defined preset alerts (Discord Trade, Sizable Sweep, etc.)
+        try:
+            from bullflow_presets import process_preset, build_preset_alert, is_preset
+            if is_preset(alert_name):
+                _pre_result = process_preset(_pf_parsed, alert_name)
+                if _pre_result:
+                    if not _alert_on("bullflow_preset"):
+                        print(f"[TOGGLES] bullflow_preset disabled — Telegram suppressed")
+                    else:
+                        _pre_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                        _pre_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                                     os.environ.get("TELEGRAM_CHAT_ID",""))
+                        if _pre_bot and _pre_chat:
+                            from sms import send_telegram as _sms_pre
+                            _sms_pre(build_preset_alert(_pre_result), _pre_bot, _pre_chat)
+                            print(f"[PRESET] ✅ Alert sent: {_pre_result['preset_type']} "
+                                  f"{_pre_result['ticker']}")
+        except Exception as _pree:
+            print(f"[PRESET] Error: {_pree}")
 
         _pf_result = process_pair_flow(_pf_parsed, alert_name)
         if _pf_result:

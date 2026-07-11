@@ -371,7 +371,16 @@ def send_entry_reminder(ticker: str, direction: str, signal_type: str,
 @app.on_event("startup")
 async def startup():
     try:
-        scheduler.add_job(lambda: send_premarket_summary(analyses),
+        # ── Toggle gate for scheduler-driven alerts ──
+        def _alert_gate(toggle_name):
+            """Returns True if this alert type is enabled (default True on error)."""
+            try:
+                from alert_toggles import is_enabled
+                return is_enabled(toggle_name)
+            except Exception:
+                return True
+
+        scheduler.add_job(lambda: send_premarket_summary(analyses) if _alert_gate("premarket_summary") else None,
                           "cron", day_of_week="mon-fri", hour=8, minute=0,
                           id="premarket", misfire_grace_time=1800, max_instances=1)
         scheduler.add_job(preload_earnings_calendar,
@@ -390,7 +399,7 @@ async def startup():
             lambda: send_positions_eod_confirmation(),
             "cron", day_of_week="mon-fri", hour=16, minute=5,
             id="positions_eod", max_instances=1)
-        scheduler.add_job(lambda: send_eod_summary(analyses) if is_market_open() else None,
+        scheduler.add_job(lambda: send_eod_summary(analyses) if (is_market_open() and _alert_gate("premarket_summary")) else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=30, id="eod_summary")
         scheduler.add_job(cleanup_expired_positions,
                           "cron", day_of_week="mon-fri", hour=16, minute=2, id="expire_cleanup", max_instances=1)
@@ -398,10 +407,10 @@ async def startup():
                           "cron", hour=0, minute=1, id="analyses_cleanup", max_instances=1)
         scheduler.add_job(lambda: remind_open_journal_trades() if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=10, id="journal_reminder", max_instances=1)
-        scheduler.add_job(lambda: send_position_check() if is_market_open() else None,
+        scheduler.add_job(lambda: send_position_check() if (is_market_open() and _alert_gate("position_check")) else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=5, id="position_check",
                           max_instances=1, coalesce=True)
-        scheduler.add_job(lambda: send_daily_pnl(send_sms) if is_market_open() else None,
+        scheduler.add_job(lambda: send_daily_pnl(send_sms) if (is_market_open() and _alert_gate("daily_pnl")) else None,
                           "cron", day_of_week="mon-fri", hour=16, minute=10, id="daily_pnl",
                           max_instances=1, coalesce=True)
         def _run_swing_scan():
@@ -423,6 +432,9 @@ async def startup():
 
         # Morning top setups briefing — 9:45 AM ET
         def _run_morning_summary():
+            if not _alert_gate("top_setups"):
+                print("[TOGGLES] top_setups disabled — skipping morning briefing")
+                return
             try:
                 from morning_summary import send_morning_summary
                 from sms import send_telegram as _stg_ms
@@ -437,6 +449,8 @@ async def startup():
 
 
         def _run_gex_mon():
+            if not _alert_gate("gex_monitor"):
+                return
             try:
                 from gex_monitor import run_gex_monitor
                 from sms import send_telegram as _stg_gm
@@ -447,7 +461,7 @@ async def startup():
         scheduler.add_job(_run_gex_mon, "cron", day_of_week="mon-fri", hour="10-15", minute="*/5",
                           id="gex_monitor", max_instances=1)
 
-        scheduler.add_job(lambda: check_exit_signals(),
+        scheduler.add_job(lambda: check_exit_signals() if _alert_gate("exit_signals") else None,
                           "cron", day_of_week="mon-fri", hour="10-15", minute="*/15", id="exit_signals")
 
         # Cloudflare queue poller — drains buffered tweets during Railway outages
@@ -466,6 +480,9 @@ async def startup():
 
 
         def _run_trailing_stop():
+            if not _alert_gate("trailing_stop"):
+                print("[TOGGLES] trailing_stop disabled — skipping")
+                return
             try:
                 from trailing_stop import check_trailing_stop
                 from sms import send_telegram as _stg_ts
@@ -478,7 +495,7 @@ async def startup():
         scheduler.add_job(lambda: track_outcomes(analyses),
                           "cron", day_of_week="mon-fri", hour=16, minute=0, id="outcome_track")
         # Gap alert at 7:30 AM — true pre-market, before regular summary
-        scheduler.add_job(lambda: send_premarket_gap_alerts(get_watchlist()),
+        scheduler.add_job(lambda: send_premarket_gap_alerts(get_watchlist()) if _alert_gate("premarket_gap") else None,
                           "cron", day_of_week="mon-fri", hour=7, minute=30,
                           id="premarket_gap", max_instances=1)
         scheduler.add_job(poll_commands,
@@ -487,17 +504,17 @@ async def startup():
         scheduler.add_job(lambda: check_price_alerts(send_sms),
                           "interval", seconds=60, id="price_alerts",
                           max_instances=1, coalesce=True)
-        scheduler.add_job(send_weekly_report,
+        scheduler.add_job(lambda: send_weekly_report() if _alert_gate("weekly_report") else None,
                           "cron", day_of_week="fri", hour=16, minute=45, id="weekly_report", max_instances=1)
 
         # SPY GEX snapshots for day trading context
         if os.environ.get("TELEGRAM_SPX_CHAT_ID"):
-            scheduler.add_job(lambda: send_spy_gex_snapshot("10AM"),
+            scheduler.add_job(lambda: send_spy_gex_snapshot("10AM") if _alert_gate("spy_gex_snapshot") else None,
                               "cron", day_of_week="mon-fri", hour=10, minute=0, id="gex_10am")
-            scheduler.add_job(lambda: send_spy_gex_snapshot("1PM"),
+            scheduler.add_job(lambda: send_spy_gex_snapshot("1PM") if _alert_gate("spy_gex_snapshot") else None,
                               "cron", day_of_week="mon-fri", hour=13, minute=0, id="gex_1pm")
             print("[SCHEDULER] SPY GEX snapshots scheduled: 10AM + 1PM ET")
-        scheduler.add_job(lambda: send_theta_calendar(send_sms) if is_market_open() else None,
+        scheduler.add_job(lambda: send_theta_calendar(send_sms) if (is_market_open() and _alert_gate("theta_calendar")) else None,
                           "cron", day_of_week="mon", hour=8, minute=5, id="theta_calendar")
         scheduler.add_job(lambda: check_polygon_health() if is_market_open() else None,
                           "cron", day_of_week="mon-fri", hour=9, minute=25, id="polygon_health")

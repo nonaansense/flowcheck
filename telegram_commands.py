@@ -1123,6 +1123,29 @@ def handle_command(text: str, from_chat_id: str):
                 send_reply(f"Invalid date: {_rbt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
                            from_chat_id)
 
+    elif cmd in ("preset_backtest", "presetbt", "backtest_preset"):
+        _pbt_date = args[0].strip() if args else ""
+        if not _pbt_date:
+            send_reply('Usage: /preset_backtest YYYY-MM-DD [detail]  e.g. 2026-05-27\nStreams full day at 60x speed (~6 min). Summary sent on completion; add "detail" for full cards.',
+                       from_chat_id)
+        else:
+            from preset_backtest import start_backtest as _pbt_start
+            import os as _pbtos
+            _pbt_bot    = _pbtos.environ.get("TELEGRAM_BOT_TOKEN","")
+            _pbt_detail = len(args) > 1 and args[1].lower() in ("detail","detailed","full","d")
+            _pbt_ok     = _pbt_start(_pbt_date, _pbt_bot, from_chat_id, detail=_pbt_detail)
+            if _pbt_ok:
+                _pmin  = _pbtos.environ.get("BULLFLOW_PRESET_MIN_PREMIUM","500000")
+                _pdte  = _pbtos.environ.get("BULLFLOW_PRESET_MAX_DTE","14")
+                _pmode = " + detailed cards" if _pbt_detail else " (summary only)"
+                _pmsg  = (f"Preset backtest started: {_pbt_date}\n"
+                          f"Filters: ≥${int(float(_pmin)):,} premium | ≤{_pdte}d DTE\n"
+                          f"Speed: 60x | Results in ~6 minutes{_pmode}.")
+                send_reply(_pmsg, from_chat_id)
+            else:
+                send_reply(f"Invalid date: {_pbt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
+                           from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2451,7 +2474,10 @@ def handle_help(reply_chat_id: str):
         "/alert on all   — re-enable all alerts",
         "  Types: trade tape conviction bm_auto double cluster",
         "         straddle darkpool sector expiry reminder priceaction eod spx_block",
-        "         pair_flow repeat_calls technical swing",
+        "         pair_flow repeat_calls technical swing bullflow_preset",
+        "         top_setups trailing_stop gex_monitor exit_signals",
+        "         premarket_summary premarket_gap position_check daily_pnl",
+        "         weekly_report theta_calendar spy_gex_snapshot",
         "/retail — retail flow status  |  /retail on/off — toggle",
         "/test — connectivity check (all APIs + services)",
         "/scan — technical watchlist status",
@@ -2460,6 +2486,7 @@ def handle_help(reply_chat_id: str):
         "/pair_backtest YYYY-MM-DD detail — include full alert breakdowns",
         "/repeat_backtest YYYY-MM-DD [detail] — backtest repeat call activity",
         "/swing - top 5 swing plays from full-day flow + chart story",
+        "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",
