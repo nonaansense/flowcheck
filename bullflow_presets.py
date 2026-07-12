@@ -432,14 +432,18 @@ def build_preset_alert(result: dict) -> str:
     else:
         lines.append("➡️ PLAY: watch 30M for TREND CONTINUATION")
     if is_early:
-        lines.append("⚠️ EARLY (pre-10:30am) — elevated reversal risk, "
+        _cut_h = int(EARLY_CUTOFF_HOUR)
+        _cut_m = int(round((EARLY_CUTOFF_HOUR - _cut_h) * 60))
+        _cut_s = f"{(_cut_h - 12) if _cut_h > 12 else _cut_h}:{_cut_m:02d}{'pm' if _cut_h >= 12 else 'am'}"
+        lines.append(f"⚠️ EARLY (pre-{_cut_s}) — elevated reversal risk, "
                      "let the opening range resolve")
 
     if entry_price:
         lines += [
             "",
-            f"🎯 Entry: ${entry_price:.2f}  (20% below flow)",
-            f"🛑 Trail stop offset: -${trail_offset:.2f}  (75% of flow price)",
+            f"🎯 Entry: ${entry_price:.2f}  ({ENTRY_DISCOUNT_PCT*100:.0f}% below flow)",
+            f"🛑 Trail stop offset: -${trail_offset:.2f}  "
+            f"({TRAIL_OFFSET_PCT*100:.0f}% of flow price)",
         ]
 
     # ── Roll suggestion: same-week call → next week, same strike ──
