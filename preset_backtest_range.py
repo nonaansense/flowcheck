@@ -57,6 +57,13 @@ _COLUMNS = [
     ("Sweep",         lambda a: "YES" if a.get("sweep") else ""),
     ("30M Play",      lambda a: "REVERSAL" if a.get("playbook") == "reversal" else "FOLLOW"),
     ("Early <10:30",  lambda a: "YES — reversal risk" if a.get("is_early") else ""),
+    ("Entry Filled",  lambda a: "YES" if (a.get("pnl") or {}).get("entry_filled") else "NO"),
+    ("Exit Price",    lambda a: (a.get("pnl") or {}).get("exit_price") or ""),
+    ("Exit Reason",   lambda a: (a.get("pnl") or {}).get("exit_reason") or ""),
+    ("P/L %",         lambda a: (a.get("pnl") or {}).get("pnl_pct")
+                                if (a.get("pnl") or {}).get("pnl_pct") is not None else ""),
+    ("P/L $/contract",lambda a: (a.get("pnl") or {}).get("pnl_per_contract")
+                                if (a.get("pnl") or {}).get("pnl_per_contract") is not None else ""),
 ]
 
 
@@ -80,19 +87,40 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
     # ── Summary tab (first) ──
     summary = wb.active
     summary.title = "Summary"
-    summary.append(["Date", "Alerts", "Total Premium", "Preset Events", "Note"])
-    for c in range(1, 6):
+    summary.append(["Date", "Alerts", "Total Premium", "Preset Events",
+                    "Filled", "Wins", "Losses", "Win Rate %", "Avg P/L %", "Note"])
+    for c in range(1, 11):
         cell = summary.cell(row=1, column=c)
         cell.font = header_font; cell.fill = header_fill; cell.alignment = center
 
+    all_pnls = []
     for day in day_results:
         alerts = day["alerts"]
         total_prem = sum(a.get("premium", 0) for a in alerts)
+        pnls = [(a.get("pnl") or {}).get("pnl_pct") for a in alerts]
+        pnls = [p for p in pnls if p is not None]
+        all_pnls.extend(pnls)
+        wins   = sum(1 for p in pnls if p > 0)
+        losses = sum(1 for p in pnls if p <= 0)
+        win_rate = round(wins / len(pnls) * 100, 1) if pnls else ""
+        avg_pnl  = round(sum(pnls) / len(pnls), 1) if pnls else ""
         note = day.get("error", "") or ("no alerts" if not alerts else "")
         summary.append([day["date"], len(alerts), round(total_prem, 2),
-                        day.get("preset_events", 0), note])
+                        day.get("preset_events", 0), len(pnls), wins, losses,
+                        win_rate, avg_pnl, note])
 
-    for col, width in zip("ABCDE", (12, 8, 16, 14, 24)):
+    # Overall totals row
+    if all_pnls:
+        t_wins = sum(1 for p in all_pnls if p > 0)
+        summary.append([])
+        summary.append(["TOTAL", "", "", "", len(all_pnls), t_wins,
+                        len(all_pnls) - t_wins,
+                        round(t_wins / len(all_pnls) * 100, 1),
+                        round(sum(all_pnls) / len(all_pnls), 1), "all filled trades"])
+        for c in range(1, 11):
+            summary.cell(row=summary.max_row, column=c).font = Font(bold=True)
+
+    for col, width in zip("ABCDEFGHIJ", (12, 8, 16, 14, 8, 7, 8, 11, 11, 24)):
         summary.column_dimensions[col].width = width
 
     # ── One tab per date ──
@@ -108,7 +136,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
             ws.append([fn(a) for _, fn in _COLUMNS])
 
         # Reasonable column widths
-        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20]
+        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 15, 9, 15]
         for idx, w in enumerate(widths, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
         ws.freeze_panes = "A2"

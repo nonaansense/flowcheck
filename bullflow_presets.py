@@ -82,6 +82,9 @@ SHOW_ITM = os.environ.get("BULLFLOW_PRESET_SHOW_ITM", "true").lower() not in ("f
 # Early-session flow often fades once the opening range resolves.
 EARLY_CUTOFF_HOUR = float(os.environ.get("BULLFLOW_PRESET_EARLY_CUTOFF_HOUR", "10.5"))
 
+# Suppress early alerts entirely (rather than just flagging them).
+SUPPRESS_EARLY = os.environ.get("BULLFLOW_PRESET_SUPPRESS_EARLY", "false").lower() in ("true","1","yes","on")
+
 # Preset types to play as 30M trend REVERSAL (all others → 30M trend FOLLOW).
 _DEFAULT_REVERSAL_TYPES = "Grenade Trade"
 REVERSAL_TYPES = [t.strip().lower() for t in
@@ -224,6 +227,11 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
     # Flow printed before EARLY_CUTOFF_HOUR (10:30am ET default) lands while the
     # opening range is still resolving and frequently fades — flag it.
     is_early = alert_hour is not None and alert_hour < EARLY_CUTOFF_HOUR
+
+    if is_early and SUPPRESS_EARLY:
+        print(f"[PRESET] {filter_name} {ticker}: pre-{EARLY_CUTOFF_HOUR:.2f} ET "
+              f"suppressed (SUPPRESS_EARLY on)")
+        return None
 
     # ── 30M playbook ──
     # Grenade Trades (and any other configured type) are played as 30M trend
