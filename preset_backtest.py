@@ -19,7 +19,7 @@ Falls back to the daily close if intraday data is unavailable.
 Telegram command: /preset_backtest YYYY-MM-DD [detail]
 """
 import os, re, time, json, threading, requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 ET    = ZoneInfo("America/New_York")
@@ -77,6 +77,63 @@ def _expiry_to_iso(expiry: str) -> str:
         return ""
 
 
+_OPT_INTRADAY_CACHE: dict = {}   # occ_date → [{ts, high, low, close}] sorted
+
+# Check the entry limit against intraday bars AFTER the alert timestamp,
+# rather than the whole alert-day low (which includes pre-alert trading).
+INTRADAY_FILL = os.environ.get("BULLFLOW_BACKTEST_INTRADAY_FILL", "true").lower() not in ("false","0","no","off")
+
+
+def _fetch_option_intraday(occ_symbol: str, date_str: str) -> list:
+    """
+    15-min intraday bars for an OPTION contract on one date via Tradier
+    /markets/timesales. Returns [{"ts","high","low","close"}] sorted by time.
+    Cached per contract+date. [] on failure.
+    """
+    sym = str(occ_symbol or "").replace("O:", "").strip().upper()
+    if not sym or not date_str:
+        return []
+    key = f"{sym}_{date_str}"
+    if key in _OPT_INTRADAY_CACHE:
+        return _OPT_INTRADAY_CACHE[key]
+
+    out = []
+    token = os.environ.get("TRADIER_TOKEN", "")
+    if token:
+        try:
+            r = requests.get(
+                "https://api.tradier.com/v1/markets/timesales",
+                params={"symbol": sym, "interval": "15min",
+                        "start": f"{date_str} 09:30", "end": f"{date_str} 16:00",
+                        "session_filter": "open"},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = ((r.json().get("series") or {}).get("data"))
+                if isinstance(data, dict):
+                    data = [data]
+                for b in (data or []):
+                    try:
+                        ts = b.get("timestamp")
+                        if ts is None:
+                            continue
+                        out.append({
+                            "ts":    float(ts),
+                            "high":  float(b.get("high", 0) or 0),
+                            "low":   float(b.get("low", 0) or 0),
+                            "close": float(b.get("close", 0) or 0),
+                        })
+                    except Exception:
+                        continue
+                out.sort(key=lambda x: x["ts"])
+        except Exception as e:
+            print(f"[PRESET_BT] Tradier option timesales error {sym}: {e}")
+
+    _OPT_INTRADAY_CACHE[key] = out
+    return out
+
+
 def _fetch_option_daily(occ_symbol: str, start_date: str, end_date: str) -> list:
     """
     Daily OHLC bars for an OPTION contract via Tradier /markets/history.
@@ -124,24 +181,30 @@ def _fetch_option_daily(occ_symbol: str, start_date: str, end_date: str) -> list
     return bars
 
 
-def simulate_trade(result: dict, occ_symbol: str, alert_date: str) -> dict:
+def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
+                   alert_epoch=None) -> dict:
     """
-    Simulate the alert's OWN rules against the option's daily price path:
+    Simulate the alert's OWN rules against the option's price path:
 
-      Entry — limit at entry_price (20% below the flow's trade price); filled
-              if the option trades down to it on/after the alert date.
+      Entry — limit at entry_price (20% below the flow's trade price).
+              On the ALERT DAY the limit is checked only against intraday
+              bars AFTER the alert timestamp (so a fill can't be credited to
+              price action that happened before the alert fired). Later days
+              use daily bars.
       Exit  — trailing stop, offset (75% of flow trade price) below the running
               peak. If never hit, held to the last bar (expiry) close.
 
-    Resolution is DAILY, so intraday sequencing inside a session (e.g. peak
-    then stop on the same bar) is approximated. Treat P/L as directional
-    evidence, not a fill-accurate backtest.
+    Also reports excursions over the life of the trade: max/min price, MFE
+    (best unrealized gain), MAE (worst heat), max peak-to-trough drawdown.
 
-    Returns entry_filled / fill_price / exit_price / exit_reason /
-            pnl_pct / pnl_per_contract / bars.
+    Daily bars can't sequence intra-bar moves, so MAE/MaxDD are worst-case
+    reads. Directional evidence, not a fill-accurate backtest.
     """
     out = {"entry_filled": False, "fill_price": 0.0, "exit_price": 0.0,
-           "exit_reason": "", "pnl_pct": None, "pnl_per_contract": None, "bars": 0}
+           "exit_reason": "", "pnl_pct": None, "pnl_per_contract": None, "bars": 0,
+           "max_price": None, "min_price": None, "mfe_pct": None,
+           "mae_pct": None, "max_dd_pct": None, "days_held": 0,
+           "fill_time": "", "fill_source": ""}
 
     entry  = float(result.get("entry_price") or 0)
     offset = float(result.get("trail_offset") or 0)
@@ -154,14 +217,43 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str) -> dict:
         out["exit_reason"] = "bad expiry"
         return out
 
-    bars = _fetch_option_daily(occ_symbol, alert_date, exp_iso)
-    out["bars"] = len(bars)
-    if not bars:
+    # ── Build the bar path: post-alert intraday (day 0) + daily (day 1..expiry) ──
+    path = []          # unified list of {"high","low","close"} in time order
+    day0_intraday = []
+    used_intraday = False
+
+    if INTRADAY_FILL and alert_epoch:
+        raw = _fetch_option_intraday(occ_symbol, alert_date)
+        try:
+            ae = float(alert_epoch)
+            day0_intraday = [b for b in raw if b["ts"] >= ae]
+        except Exception:
+            day0_intraday = []
+        if day0_intraday:
+            used_intraday = True
+            path.extend(day0_intraday)
+
+    # Daily bars. If we used intraday for day 0, start daily from the NEXT day
+    # so the alert day isn't double-counted with its pre-alert low.
+    daily_start = alert_date
+    if used_intraday:
+        try:
+            d0 = datetime.strptime(alert_date, "%Y-%m-%d").date()
+            daily_start = (d0 + timedelta(days=1)).strftime("%Y-%m-%d")
+        except Exception:
+            daily_start = alert_date
+
+    daily = _fetch_option_daily(occ_symbol, daily_start, exp_iso)
+    path.extend(daily)
+
+    out["bars"] = len(path)
+    if not path:
         out["exit_reason"] = "no option data"
         return out
 
+    # ── Entry: first bar whose low touches the limit ──
     fill_idx = None
-    for i, b in enumerate(bars):
+    for i, b in enumerate(path):
         if b["low"] > 0 and b["low"] <= entry:
             fill_idx = i
             break
@@ -172,26 +264,64 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str) -> dict:
 
     out["entry_filled"] = True
     out["fill_price"]   = entry
+    # Where the fill came from — intraday (post-alert, accurate) vs daily bar
+    if used_intraday and fill_idx < len(day0_intraday):
+        out["fill_source"] = "intraday (post-alert)"
+        try:
+            out["fill_time"] = datetime.fromtimestamp(
+                day0_intraday[fill_idx]["ts"], ET).strftime("%-I:%M %p")
+        except Exception:
+            out["fill_time"] = ""
+    else:
+        out["fill_source"] = "daily bar"
 
-    peak = bars[fill_idx]["high"]
-    exit_price, exit_reason = None, ""
+    peak = path[fill_idx]["high"]
+    exit_price, exit_reason, exit_idx = None, "", len(path) - 1
 
-    for b in bars[fill_idx:]:
+    for i in range(fill_idx, len(path)):
+        b = path[i]
         peak = max(peak, b["high"])
         stop = peak - offset
         if stop > 0 and b["low"] <= stop:
             exit_price  = max(stop, 0.0)
             exit_reason = "trail stop"
+            exit_idx    = i
             break
 
     if exit_price is None:
-        exit_price  = bars[-1]["close"]
+        exit_price  = path[-1]["close"]
         exit_reason = "held to expiry"
+        exit_idx    = len(path) - 1
+
+    # ── Excursion stats over the LIFE OF THE TRADE (fill → exit) ──
+    window = path[fill_idx:exit_idx + 1]
+    highs  = [b["high"] for b in window if b["high"] > 0]
+    lows   = [b["low"]  for b in window if b["low"]  > 0]
+
+    max_price = max(highs) if highs else entry
+    min_price = min(lows)  if lows  else entry
+
+    mfe_pct = round((max_price - entry) / entry * 100.0, 1)
+    mae_pct = round((min_price - entry) / entry * 100.0, 1)
+
+    run_peak, max_dd = 0.0, 0.0
+    for b in window:
+        run_peak = max(run_peak, b["high"])
+        if run_peak > 0 and b["low"] > 0:
+            dd = (run_peak - b["low"]) / run_peak * 100.0
+            max_dd = max(max_dd, dd)
+
+    out["max_price"]  = round(max_price, 2)
+    out["min_price"]  = round(min_price, 2)
+    out["mfe_pct"]    = mfe_pct
+    out["mae_pct"]    = mae_pct
+    out["max_dd_pct"] = round(max_dd, 1)
+    out["days_held"]  = len(window)
 
     out["exit_price"]       = round(exit_price, 2)
     out["exit_reason"]      = exit_reason
     out["pnl_pct"]          = round((exit_price - entry) / entry * 100.0, 1)
-    out["pnl_per_contract"] = round((exit_price - entry) * 100.0, 2)   # 100 shares/contract
+    out["pnl_per_contract"] = round((exit_price - entry) * 100.0, 2)
     return out
 
 
@@ -378,7 +508,8 @@ def collect_day(date: str) -> dict:
                     # the option's actual price path to produce P/L
                     if PNL_ENABLED:
                         try:
-                            result["pnl"] = simulate_trade(result, symbol, date)
+                            result["pnl"] = simulate_trade(result, symbol, date,
+                                                             alert_epoch=inner.get("timestamp"))
                         except Exception as _pe:
                             print(f"[PRESET_BT] P/L sim error {ticker}: {_pe}")
                             result["pnl"] = {}
@@ -439,6 +570,8 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
         if _p.get("pnl_pct") is not None:
             _sign = "🟢" if _p["pnl_pct"] >= 0 else "🔴"
             pnl_s = f" | {_sign} {_p['pnl_pct']:+.0f}%"
+            if _p.get("mfe_pct") is not None:
+                pnl_s += f" (peak {_p['mfe_pct']:+.0f}%)"
         elif _p.get("exit_reason"):
             pnl_s = f" | ({_p['exit_reason']})"
         else:
