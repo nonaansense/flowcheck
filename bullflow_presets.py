@@ -22,7 +22,7 @@ Config env vars:
 """
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
@@ -85,6 +85,77 @@ EARLY_CUTOFF_HOUR = float(os.environ.get("BULLFLOW_PRESET_EARLY_CUTOFF_HOUR", "1
 # Suppress early alerts entirely (rather than just flagging them).
 SUPPRESS_EARLY = os.environ.get("BULLFLOW_PRESET_SUPPRESS_EARLY", "false").lower() in ("true","1","yes","on")
 
+# For CALL alerts whose contract expires the SAME WEEK as the alert, suggest
+# rolling out to the next week's expiry at the same strike (more time, less
+# gamma/theta cliff into Friday).
+ROLL_SUGGEST = os.environ.get("BULLFLOW_PRESET_ROLL_SUGGEST", "true").lower() not in ("false","0","no","off")
+
+
+def _expiry_to_date(expiry: str):
+    """'07/18/26' → date(2026, 7, 18). None on failure."""
+    try:
+        mm, dd, yy = expiry.split("/")
+        return datetime(2000 + int(yy), int(mm), int(dd)).date()
+    except Exception:
+        return None
+
+
+def _same_week(alert_d, expiry_d) -> bool:
+    """True if both dates fall in the same Mon-Sun ISO week."""
+    if not alert_d or not expiry_d:
+        return False
+    return alert_d.isocalendar()[:2] == expiry_d.isocalendar()[:2]
+
+
+def _next_week_expiry(expiry_d):
+    """Same weekday, one week later (weeklies expire Friday → next Friday)."""
+    if not expiry_d:
+        return None
+    return expiry_d + timedelta(days=7)
+
+
+def _build_occ(ticker: str, exp_d, otype: str, strike: float) -> str:
+    """Build an OCC symbol, e.g. NVDA260718C00220000 (no 'O:' prefix)."""
+    try:
+        yy = exp_d.strftime("%y")
+        mm = exp_d.strftime("%m")
+        dd = exp_d.strftime("%d")
+        cp = "C" if otype == "call" else "P"
+        strike_int = int(round(float(strike) * 1000))
+        return f"{ticker.upper()}{yy}{mm}{dd}{cp}{strike_int:08d}"
+    except Exception:
+        return ""
+
+
+def _fetch_option_quote(occ_symbol: str) -> float:
+    """
+    Last/mid price for an option contract via Tradier /markets/quotes.
+    Returns 0.0 if the contract doesn't exist or the call fails.
+    """
+    token = os.environ.get("TRADIER_TOKEN", "")
+    if not token or not occ_symbol:
+        return 0.0
+    try:
+        r = requests.get(
+            "https://api.tradier.com/v1/markets/quotes",
+            params={"symbols": occ_symbol, "greeks": "false"},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=6,
+        )
+        if r.status_code == 200:
+            q = (r.json().get("quotes") or {}).get("quote")
+            if isinstance(q, list):
+                q = q[0] if q else None
+            if q:
+                px = q.get("last") or q.get("close")
+                if not px:
+                    bid, ask = q.get("bid") or 0, q.get("ask") or 0
+                    px = (bid + ask) / 2 if (bid and ask) else 0
+                return float(px or 0)
+    except Exception as e:
+        print(f"[PRESET] Tradier option quote error {occ_symbol}: {e}")
+    return 0.0
+
 # Preset types to play as 30M trend REVERSAL (all others → 30M trend FOLLOW).
 _DEFAULT_REVERSAL_TYPES = "Grenade Trade"
 REVERSAL_TYPES = [t.strip().lower() for t in
@@ -94,6 +165,20 @@ REVERSAL_TYPES = [t.strip().lower() for t in
 
 # Case-insensitive lookup set for matching incoming alert names
 _PRESET_LOWER = {t.lower() for t in PRESET_TYPES}
+
+
+def _round_up_tenth(value: float) -> float:
+    """
+    Round UP to the nearest $0.10.  2.44 → 2.50,  2.40 → 2.40,  1.61 → 1.70.
+
+    Float-safe: 2.40 * 10 is 24.000000000000004 in binary floating point, so a
+    naive ceil() would wrongly bump it to 2.50. Rounding to 6dp first snaps
+    that back to 24.0 before the ceiling is applied.
+    """
+    import math
+    if value <= 0:
+        return 0.0
+    return math.ceil(round(value * 10, 6)) / 10.0
 
 
 def _fmt_prem(p: float) -> str:
@@ -127,10 +212,11 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
 
     # Alert timestamp — prefer Bullflow's est_timestamp string, then epoch,
     # then fall back to now. Displayed in ET as HH:MM:SS AM/PM.
-    # Also capture alert_hour (float ET, e.g. 10.5 = 10:30am) for the
-    # early-session reversal-risk check.
+    # Also capture alert_hour (float ET) for the early-session check, and
+    # alert_date (date obj) for the same-week expiry roll suggestion.
     time_str   = ""
     alert_hour = None
+    alert_date = None
     est = str(alert.get("est_timestamp", "") or "")
     if len(est) >= 19:
         # e.g. "2026-06-05 09:32:26 EST" → "9:32:26 AM"
@@ -138,9 +224,10 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
             dt = datetime.strptime(est[:19], "%Y-%m-%d %H:%M:%S")
             time_str   = dt.strftime("%-I:%M:%S %p")
             alert_hour = dt.hour + dt.minute / 60.0
+            alert_date = dt.date()
         except Exception:
             time_str = est[11:19]
-    if not time_str or alert_hour is None:
+    if not time_str or alert_hour is None or alert_date is None:
         epoch = alert.get("timestamp")
         try:
             if epoch:
@@ -149,6 +236,8 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
                     time_str = _dt.strftime("%-I:%M:%S %p")
                 if alert_hour is None:
                     alert_hour = _dt.hour + _dt.minute / 60.0
+                if alert_date is None:
+                    alert_date = _dt.date()
         except Exception:
             pass
     if not time_str:
@@ -156,6 +245,8 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
         time_str = _now.strftime("%-I:%M:%S %p")
         if alert_hour is None:
             alert_hour = _now.hour + _now.minute / 60.0
+    if alert_date is None:
+        alert_date = datetime.now(ET).date()
 
     # Fall back to a live Tradier quote if the fill carried no stock price
     if not stock_px:
@@ -220,8 +311,31 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
     # ── Suggested entry + trailing stop, derived from flow trade price ──
     # Entry = 20% below flow trade price. Trail stop OFFSET = 75% of trade
     # price (e.g. $2.00 → entry $1.60, trail offset $1.50).
-    entry_price  = round(price * (1 - ENTRY_DISCOUNT_PCT), 2) if price > 0 else 0.0
-    trail_offset = round(price * TRAIL_OFFSET_PCT, 2)          if price > 0 else 0.0
+    # Entry = 20% below flow trade price, rounded UP to the nearest $0.10
+    # (a slightly higher limit is more likely to actually fill).
+    entry_price  = _round_up_tenth(price * (1 - ENTRY_DISCOUNT_PCT)) if price > 0 else 0.0
+    trail_offset = round(price * TRAIL_OFFSET_PCT, 2)                if price > 0 else 0.0
+
+    # ── Same-week CALL → suggest rolling to next week's expiry, same strike ──
+    # A call expiring the same week as the alert faces a hard theta/gamma cliff
+    # into Friday. The next weekly at the same strike keeps the thesis with
+    # more time. Only for calls; only when the alert's own expiry is this week.
+    roll = None
+    if ROLL_SUGGEST and direction == "call":
+        exp_d = _expiry_to_date(expiry)
+        if exp_d and _same_week(alert_date, exp_d):
+            next_d = _next_week_expiry(exp_d)
+            if next_d:
+                next_occ = _build_occ(ticker, next_d, "call", strike_f)
+                next_px  = _fetch_option_quote(next_occ) if next_occ else 0.0
+                roll = {
+                    "expiry":   next_d.strftime("%m/%d/%y"),
+                    "strike":   strike,
+                    "dte":      max(0, (next_d - alert_date).days),
+                    "price":    next_px,
+                    "occ":      next_occ,
+                    "available": next_px > 0,
+                }
 
     # ── Early-session reversal risk ──
     # Flow printed before EARLY_CUTOFF_HOUR (10:30am ET default) lands while the
@@ -262,8 +376,10 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
         "earnings_flag": earnings_flag,
         "time_str":     time_str,
         "alert_hour":   alert_hour,
+        "alert_date":   alert_date.strftime("%Y-%m-%d") if alert_date else "",
         "is_early":     is_early,
         "playbook":     playbook,
+        "roll":         roll,
     }
 
 
@@ -325,6 +441,26 @@ def build_preset_alert(result: dict) -> str:
             f"🎯 Entry: ${entry_price:.2f}  (20% below flow)",
             f"🛑 Trail stop offset: -${trail_offset:.2f}  (75% of flow price)",
         ]
+
+    # ── Roll suggestion: same-week call → next week, same strike ──
+    roll = result.get("roll")
+    if roll:
+        otype_r = "C"
+        if roll.get("available") and roll.get("price"):
+            lines += [
+                "",
+                f"🔁 EXPIRES THIS WEEK — consider next week instead:",
+                f"   {roll['strike']}{otype_r} {roll['expiry']}  "
+                f"({roll['dte']}d DTE)  @ ${roll['price']:.2f}",
+            ]
+        else:
+            lines += [
+                "",
+                f"🔁 EXPIRES THIS WEEK — consider next week instead:",
+                f"   {roll['strike']}{otype_r} {roll['expiry']}  "
+                f"({roll['dte']}d DTE)  (quote unavailable)",
+            ]
+
     lines += [
         "",
         f"📈 https://www.tradingview.com/chart/?symbol={ticker}",

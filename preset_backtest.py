@@ -443,11 +443,13 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
             pnl_s = f" | ({_p['exit_reason']})"
         else:
             pnl_s = ""
+        _r    = a.get("roll") or {}
+        roll_s = f" | 🔁→{_r['expiry']}" if _r.get("expiry") else ""
         summary.append(
             f"{emoji} {a['preset_type']}: ${a['ticker']} "
             f"{a['strike']}{otype} {a['expiry']}{money}  "
             f"{bp._fmt_prem(a['premium'])} | {a['contracts']:,}x | "
-            f"@ {a.get('time_str','')} | {play}{early}{pnl_s}"
+            f"@ {a.get('time_str','')} | {play}{early}{pnl_s}{roll_s}"
         )
     send_telegram("\n".join(summary), bot_token, chat_id)
 
