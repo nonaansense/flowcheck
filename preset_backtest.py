@@ -204,7 +204,10 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
            "exit_reason": "", "pnl_pct": None, "pnl_per_contract": None, "bars": 0,
            "max_price": None, "min_price": None, "mfe_pct": None,
            "mae_pct": None, "max_dd_pct": None, "days_held": 0,
-           "fill_time": "", "fill_source": ""}
+           "fill_time": "", "fill_source": "",
+           "max_profit_pct": None, "max_profit_per_contract": None,
+           "target1": 0.0, "target2": 0.0, "t1_hit": False, "t2_hit": False,
+           "t1_pnl_pct": None, "t2_pnl_pct": None}
 
     entry  = float(result.get("entry_price") or 0)
     offset = float(result.get("trail_offset") or 0)
@@ -317,6 +320,24 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
     out["mae_pct"]    = mae_pct
     out["max_dd_pct"] = round(max_dd, 1)
     out["days_held"]  = len(window)
+
+    # ── Max profit (best the trade was ever worth, per contract) ──
+    out["max_profit_pct"]          = mfe_pct
+    out["max_profit_per_contract"] = round((max_price - entry) * 100.0, 2)
+
+    # ── Did the profit targets get hit before the exit? ──
+    # max_price is the highest the option traded while held, so a target was
+    # reachable iff max_price touched it. (Exit is still the trailing stop —
+    # these flags tell you whether taking profit at T1/T2 was possible.)
+    t1 = float(result.get("target1") or 0)
+    t2 = float(result.get("target2") or 0)
+    out["target1"]     = t1
+    out["target2"]     = t2
+    out["t1_hit"]      = bool(t1 > 0 and max_price >= t1)
+    out["t2_hit"]      = bool(t2 > 0 and max_price >= t2)
+    # P/L you'd have realized taking profit at each target
+    out["t1_pnl_pct"]  = round((t1 - entry) / entry * 100.0, 1) if out["t1_hit"] else None
+    out["t2_pnl_pct"]  = round((t2 - entry) / entry * 100.0, 1) if out["t2_hit"] else None
 
     out["exit_price"]       = round(exit_price, 2)
     out["exit_reason"]      = exit_reason

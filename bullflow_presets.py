@@ -74,6 +74,10 @@ ATM_BAND_PCT       = float(os.environ.get("BULLFLOW_PRESET_ATM_BAND_PCT", "0.005
 ENTRY_DISCOUNT_PCT = float(os.environ.get("BULLFLOW_PRESET_ENTRY_DISCOUNT_PCT", "0.20"))
 # Trailing-stop offset = this fraction of the flow trade price (75% → 0.75)
 TRAIL_OFFSET_PCT   = float(os.environ.get("BULLFLOW_PRESET_TRAIL_OFFSET_PCT", "0.75"))
+# Profit targets, as a fraction ABOVE entry.
+#   T1 = 1.01 → +101% (entry x 2.01)   T2 = 2.01 → +201% (entry x 3.01)
+TARGET1_PCT        = float(os.environ.get("BULLFLOW_PRESET_TARGET1_PCT", "1.01"))
+TARGET2_PCT        = float(os.environ.get("BULLFLOW_PRESET_TARGET2_PCT", "2.01"))
 # Whether to show ITM alerts. Set false to suppress in-the-money contracts
 # (some traders only want OTM/ATM directional bets, not ITM).
 SHOW_ITM = os.environ.get("BULLFLOW_PRESET_SHOW_ITM", "true").lower() not in ("false","0","no","off")
@@ -179,6 +183,18 @@ def _round_up_tenth(value: float) -> float:
     if value <= 0:
         return 0.0
     return math.ceil(round(value * 10, 6)) / 10.0
+
+
+def _floor_cent(value: float) -> float:
+    """
+    Round DOWN to the nearest cent. Used for profit targets (sell limits):
+    flooring keeps the target reachable and never overstates the % gain,
+    and avoids float-rounding ambiguity (2.50 x 2.01 = 5.025 → 5.02).
+    """
+    import math
+    if value <= 0:
+        return 0.0
+    return math.floor(round(value * 100, 6)) / 100.0
 
 
 def _fmt_prem(p: float) -> str:
@@ -316,6 +332,11 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
     entry_price  = _round_up_tenth(price * (1 - ENTRY_DISCOUNT_PCT)) if price > 0 else 0.0
     trail_offset = round(price * TRAIL_OFFSET_PCT, 2)                if price > 0 else 0.0
 
+    # Profit targets measured from the ENTRY (not the flow price).
+    # Floored to the cent — a sell limit should never overstate the target.
+    target1 = _floor_cent(entry_price * (1 + TARGET1_PCT)) if entry_price > 0 else 0.0
+    target2 = _floor_cent(entry_price * (1 + TARGET2_PCT)) if entry_price > 0 else 0.0
+
     # ── Same-week CALL → suggest rolling to next week's expiry, same strike ──
     # A call expiring the same week as the alert faces a hard theta/gamma cliff
     # into Friday. The next weekly at the same strike keeps the thesis with
@@ -372,6 +393,8 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
         "contracts":    contracts,
         "entry_price":  entry_price,
         "trail_offset": trail_offset,
+        "target1":      target1,
+        "target2":      target2,
         "earnings_str": earnings_str,
         "earnings_flag": earnings_flag,
         "time_str":     time_str,
@@ -439,9 +462,13 @@ def build_preset_alert(result: dict) -> str:
                      "let the opening range resolve")
 
     if entry_price:
+        _t1 = result.get("target1", 0)
+        _t2 = result.get("target2", 0)
         lines += [
             "",
             f"🎯 Entry: ${entry_price:.2f}  ({ENTRY_DISCOUNT_PCT*100:.0f}% below flow)",
+            f"🥇 Target 1: ${_t1:.2f}  (+{TARGET1_PCT*100:.0f}% from entry)",
+            f"🥈 Target 2: ${_t2:.2f}  (+{TARGET2_PCT*100:.0f}% from entry)",
             f"🛑 Trail stop offset: -${trail_offset:.2f}  "
             f"({TRAIL_OFFSET_PCT*100:.0f}% of flow price)",
         ]

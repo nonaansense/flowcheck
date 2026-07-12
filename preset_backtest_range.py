@@ -77,6 +77,16 @@ _COLUMNS = [
     ("Days Held",     lambda a: (a.get("pnl") or {}).get("days_held") or ""),
     ("Fill Time",     lambda a: (a.get("pnl") or {}).get("fill_time") or ""),
     ("Fill Source",   lambda a: (a.get("pnl") or {}).get("fill_source") or ""),
+    ("Target 1",      lambda a: a.get("target1") or ""),
+    ("Target 2",      lambda a: a.get("target2") or ""),
+    ("T1 Hit",        lambda a: "YES" if (a.get("pnl") or {}).get("t1_hit") else
+                                ("NO" if (a.get("pnl") or {}).get("entry_filled") else "")),
+    ("T2 Hit",        lambda a: "YES" if (a.get("pnl") or {}).get("t2_hit") else
+                                ("NO" if (a.get("pnl") or {}).get("entry_filled") else "")),
+    ("Max Profit %",  lambda a: (a.get("pnl") or {}).get("max_profit_pct")
+                                if (a.get("pnl") or {}).get("max_profit_pct") is not None else ""),
+    ("Max Profit $/ct", lambda a: (a.get("pnl") or {}).get("max_profit_per_contract")
+                                if (a.get("pnl") or {}).get("max_profit_per_contract") is not None else ""),
 ]
 
 
@@ -102,12 +112,14 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
     summary.title = "Summary"
     summary.append(["Date", "Alerts", "Total Premium", "Preset Events",
                     "Filled", "Wins", "Losses", "Win Rate %", "Avg P/L %",
-                    "Avg MFE %", "Avg MAE %", "Note"])
-    for c in range(1, 13):
+                    "Avg MFE %", "Avg MAE %", "T1 Hit", "T1 %", "T2 Hit", "T2 %",
+                    "Note"])
+    for c in range(1, 17):
         cell = summary.cell(row=1, column=c)
         cell.font = header_font; cell.fill = header_fill; cell.alignment = center
 
     all_pnls, all_mfes, all_maes = [], [], []
+    all_t1 = all_t2 = all_filled = 0
     for day in day_results:
         alerts = day["alerts"]
         total_prem = sum(a.get("premium", 0) for a in alerts)
@@ -117,6 +129,10 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
         mfes = [m for m in mfes if m is not None]
         maes = [(a.get("pnl") or {}).get("mae_pct") for a in alerts]
         maes = [m for m in maes if m is not None]
+        filled = [a for a in alerts if (a.get("pnl") or {}).get("entry_filled")]
+        t1s = sum(1 for a in filled if (a.get("pnl") or {}).get("t1_hit"))
+        t2s = sum(1 for a in filled if (a.get("pnl") or {}).get("t2_hit"))
+        all_t1 += t1s; all_t2 += t2s; all_filled += len(filled)
         all_pnls.extend(pnls); all_mfes.extend(mfes); all_maes.extend(maes)
         wins   = sum(1 for p in pnls if p > 0)
         losses = sum(1 for p in pnls if p <= 0)
@@ -124,10 +140,13 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
         avg_pnl  = round(sum(pnls) / len(pnls), 1) if pnls else ""
         avg_mfe  = round(sum(mfes) / len(mfes), 1) if mfes else ""
         avg_mae  = round(sum(maes) / len(maes), 1) if maes else ""
+        t1_rate  = round(t1s / len(filled) * 100, 1) if filled else ""
+        t2_rate  = round(t2s / len(filled) * 100, 1) if filled else ""
         note = day.get("error", "") or ("no alerts" if not alerts else "")
         summary.append([day["date"], len(alerts), round(total_prem, 2),
                         day.get("preset_events", 0), len(pnls), wins, losses,
-                        win_rate, avg_pnl, avg_mfe, avg_mae, note])
+                        win_rate, avg_pnl, avg_mfe, avg_mae,
+                        t1s, t1_rate, t2s, t2_rate, note])
 
     # Overall totals row
     if all_pnls:
@@ -139,11 +158,15 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
                         round(sum(all_pnls) / len(all_pnls), 1),
                         round(sum(all_mfes) / len(all_mfes), 1) if all_mfes else "",
                         round(sum(all_maes) / len(all_maes), 1) if all_maes else "",
+                        all_t1,
+                        round(all_t1 / all_filled * 100, 1) if all_filled else "",
+                        all_t2,
+                        round(all_t2 / all_filled * 100, 1) if all_filled else "",
                         "all filled trades"])
-        for c in range(1, 13):
+        for c in range(1, 17):
             summary.cell(row=summary.max_row, column=c).font = Font(bold=True)
 
-    for col, width in zip("ABCDEFGHIJKL", (12, 8, 16, 14, 8, 7, 8, 11, 11, 11, 11, 24)):
+    for col, width in zip("ABCDEFGHIJKLMNOP", (12, 8, 16, 14, 8, 7, 8, 11, 11, 11, 11, 8, 8, 8, 8, 24)):
         summary.column_dimensions[col].width = width
 
     # ── One tab per date ──
@@ -159,7 +182,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
             ws.append([fn(a) for _, fn in _COLUMNS])
 
         # Reasonable column widths
-        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 15, 9, 15, 12, 11, 11, 13, 13, 10, 10, 11, 20]
+        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 15, 9, 15, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15]
         for idx, w in enumerate(widths, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
         ws.freeze_panes = "A2"
