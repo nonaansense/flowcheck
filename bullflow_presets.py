@@ -78,6 +78,17 @@ TRAIL_OFFSET_PCT   = float(os.environ.get("BULLFLOW_PRESET_TRAIL_OFFSET_PCT", "0
 # (some traders only want OTM/ATM directional bets, not ITM).
 SHOW_ITM = os.environ.get("BULLFLOW_PRESET_SHOW_ITM", "true").lower() not in ("false","0","no","off")
 
+# Alerts before this ET hour are flagged for reversal risk (10.5 = 10:30am).
+# Early-session flow often fades once the opening range resolves.
+EARLY_CUTOFF_HOUR = float(os.environ.get("BULLFLOW_PRESET_EARLY_CUTOFF_HOUR", "10.5"))
+
+# Preset types to play as 30M trend REVERSAL (all others → 30M trend FOLLOW).
+_DEFAULT_REVERSAL_TYPES = "Grenade Trade"
+REVERSAL_TYPES = [t.strip().lower() for t in
+                  os.environ.get("BULLFLOW_PRESET_REVERSAL_TYPES",
+                                 _DEFAULT_REVERSAL_TYPES).split(",")
+                  if t.strip()]
+
 # Case-insensitive lookup set for matching incoming alert names
 _PRESET_LOWER = {t.lower() for t in PRESET_TYPES}
 
@@ -113,24 +124,35 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
 
     # Alert timestamp — prefer Bullflow's est_timestamp string, then epoch,
     # then fall back to now. Displayed in ET as HH:MM:SS AM/PM.
-    time_str = ""
+    # Also capture alert_hour (float ET, e.g. 10.5 = 10:30am) for the
+    # early-session reversal-risk check.
+    time_str   = ""
+    alert_hour = None
     est = str(alert.get("est_timestamp", "") or "")
     if len(est) >= 19:
         # e.g. "2026-06-05 09:32:26 EST" → "9:32:26 AM"
         try:
             dt = datetime.strptime(est[:19], "%Y-%m-%d %H:%M:%S")
-            time_str = dt.strftime("%-I:%M:%S %p")
+            time_str   = dt.strftime("%-I:%M:%S %p")
+            alert_hour = dt.hour + dt.minute / 60.0
         except Exception:
             time_str = est[11:19]
-    if not time_str:
+    if not time_str or alert_hour is None:
         epoch = alert.get("timestamp")
         try:
             if epoch:
-                time_str = datetime.fromtimestamp(float(epoch), ET).strftime("%-I:%M:%S %p")
+                _dt = datetime.fromtimestamp(float(epoch), ET)
+                if not time_str:
+                    time_str = _dt.strftime("%-I:%M:%S %p")
+                if alert_hour is None:
+                    alert_hour = _dt.hour + _dt.minute / 60.0
         except Exception:
-            time_str = ""
+            pass
     if not time_str:
-        time_str = datetime.now(ET).strftime("%-I:%M:%S %p")
+        _now = datetime.now(ET)
+        time_str = _now.strftime("%-I:%M:%S %p")
+        if alert_hour is None:
+            alert_hour = _now.hour + _now.minute / 60.0
 
     # Fall back to a live Tradier quote if the fill carried no stock price
     if not stock_px:
@@ -198,8 +220,20 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
     entry_price  = round(price * (1 - ENTRY_DISCOUNT_PCT), 2) if price > 0 else 0.0
     trail_offset = round(price * TRAIL_OFFSET_PCT, 2)          if price > 0 else 0.0
 
+    # ── Early-session reversal risk ──
+    # Flow printed before EARLY_CUTOFF_HOUR (10:30am ET default) lands while the
+    # opening range is still resolving and frequently fades — flag it.
+    is_early = alert_hour is not None and alert_hour < EARLY_CUTOFF_HOUR
+
+    # ── 30M playbook ──
+    # Grenade Trades (and any other configured type) are played as 30M trend
+    # REVERSALS; every other preset type is played as 30M trend FOLLOWING.
+    is_reversal = str(filter_name).strip().lower() in REVERSAL_TYPES
+    playbook    = "reversal" if is_reversal else "follow"
+
     print(f"[PRESET] 🎯 {filter_name}: {ticker} {strike}{'C' if direction=='call' else 'P'} "
-          f"{expiry} | {_fmt_prem(premium)} | {dte}d | {moneyness} | {contracts} contracts")
+          f"{expiry} | {_fmt_prem(premium)} | {dte}d | {moneyness} | {contracts} contracts "
+          f"| 30M {playbook}{' | EARLY' if is_early else ''}")
 
     return {
         "preset_type":  filter_name,
@@ -219,6 +253,9 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
         "earnings_str": earnings_str,
         "earnings_flag": earnings_flag,
         "time_str":     time_str,
+        "alert_hour":   alert_hour,
+        "is_early":     is_early,
+        "playbook":     playbook,
     }
 
 
@@ -239,6 +276,8 @@ def build_preset_alert(result: dict) -> str:
     contracts    = result.get("contracts", 0)
     entry_price  = result.get("entry_price", 0)
     trail_offset = result.get("trail_offset", 0)
+    is_early     = result.get("is_early", False)
+    playbook     = result.get("playbook", "follow")
 
     otype = "C" if direction == "call" else "P"
     emoji = "📈" if direction == "call" else "📉"
@@ -261,6 +300,17 @@ def build_preset_alert(result: dict) -> str:
         lines.append(f"🕐 Alert time: {time_str} ET")
     if eflag:
         lines.append(eflag)
+
+    # ── Playbook + timing warnings ──
+    lines.append("")
+    if playbook == "reversal":
+        lines.append("🔄 PLAY: watch 30M for TREND REVERSAL")
+    else:
+        lines.append("➡️ PLAY: watch 30M for TREND CONTINUATION")
+    if is_early:
+        lines.append("⚠️ EARLY (pre-10:30am) — elevated reversal risk, "
+                     "let the opening range resolve")
+
     if entry_price:
         lines += [
             "",

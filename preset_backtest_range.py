@@ -55,6 +55,8 @@ _COLUMNS = [
     ("Stock @ Alert", lambda a: round(a.get("stock_px", 0), 2)),
     ("Earnings",      lambda a: a.get("earnings_str") or ""),
     ("Sweep",         lambda a: "YES" if a.get("sweep") else ""),
+    ("30M Play",      lambda a: "REVERSAL" if a.get("playbook") == "reversal" else "FOLLOW"),
+    ("Early <10:30",  lambda a: "YES — reversal risk" if a.get("is_early") else ""),
 ]
 
 
@@ -106,7 +108,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
             ws.append([fn(a) for _, fn in _COLUMNS])
 
         # Reasonable column widths
-        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7]
+        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20]
         for idx, w in enumerate(widths, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
         ws.freeze_panes = "A2"

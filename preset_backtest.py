@@ -294,11 +294,13 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
         emoji = "📈" if a["direction"] == "call" else "📉"
         otype = "C" if a["direction"] == "call" else "P"
         money = f" [{a['moneyness']}]" if a.get("moneyness") else ""
+        play  = "🔄REV" if a.get("playbook") == "reversal" else "➡️FOLLOW"
+        early = " ⚠️EARLY" if a.get("is_early") else ""
         summary.append(
             f"{emoji} {a['preset_type']}: ${a['ticker']} "
             f"{a['strike']}{otype} {a['expiry']}{money}  "
             f"{bp._fmt_prem(a['premium'])} | {a['contracts']:,}x | "
-            f"@ {a.get('time_str','')}"
+            f"@ {a.get('time_str','')} | {play}{early}"
         )
     send_telegram("\n".join(summary), bot_token, chat_id)
 
