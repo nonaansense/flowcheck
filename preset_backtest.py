@@ -181,36 +181,121 @@ def _fetch_option_daily(occ_symbol: str, start_date: str, end_date: str) -> list
     return bars
 
 
+def _run_legs(window: list, entry: float, offset: float,
+              t1: float, t2: float, use_trail: bool) -> dict:
+    """
+    Walk the price path with a 2-contract position:
+      Leg 1 exits at TP1, Leg 2 exits at TP2.
+      Any leg that never reaches its target exits on the trailing stop
+      (if use_trail) or at the final close.
+
+    Within a bar, targets are checked BEFORE the stop — a resting limit sell
+    fills on the way up, before any later decline could trigger the stop.
+    The trailing stop is NOT applied on the fill bar: that bar's low is what
+    filled the entry, so it cannot also be a post-peak decline. Stop checking
+    starts on the next bar. (Daily bars can't sequence intra-bar moves.)
+
+    Returns per-leg exits + totals for 2 contracts (100 shares each).
+    """
+    legs = [{"target": t1, "open": True, "exit": 0.0, "reason": "", "label": "TP1"},
+            {"target": t2, "open": True, "exit": 0.0, "reason": "", "label": "TP2"}]
+
+    peak     = window[0]["high"] if window else entry
+    exit_idx = 0
+
+    for i, b in enumerate(window):
+        peak = max(peak, b["high"])
+
+        # 1) Profit targets (limit sells fill on the way up)
+        for leg in legs:
+            if leg["open"] and leg["target"] > 0 and b["high"] >= leg["target"]:
+                leg["exit"]   = leg["target"]
+                leg["reason"] = leg["label"]
+                leg["open"]   = False
+                exit_idx      = i
+
+        # 2) Trailing stop takes out whatever is still open.
+        #    NOT on the fill bar (i == 0): that bar's low is what FILLED us, so
+        #    it can't also be a post-peak decline that stops us out. With daily
+        #    bars the intra-bar sequence is unknowable, and treating the entry
+        #    low as a stop trigger would be contradictory. Stop checking begins
+        #    on the next bar, using the running peak.
+        if use_trail and i > 0:
+            stop = peak - offset
+            if stop > 0 and b["low"] > 0 and b["low"] <= stop:
+                for leg in legs:
+                    if leg["open"]:
+                        leg["exit"]   = max(stop, 0.0)
+                        leg["reason"] = "trail stop"
+                        leg["open"]   = False
+                        exit_idx      = i
+
+        if not any(l["open"] for l in legs):
+            break
+
+    # Anything still open rides to the last bar's close (expiry)
+    if window:
+        for leg in legs:
+            if leg["open"]:
+                leg["exit"]   = window[-1]["close"]
+                leg["reason"] = "expiry"
+                leg["open"]   = False
+                exit_idx      = len(window) - 1
+
+    cost   = entry * 2 * 100.0                       # 2 contracts x 100 shares
+    proceeds = sum(l["exit"] for l in legs) * 100.0  # each leg = 1 contract
+    pnl_usd  = round(proceeds - cost, 2)
+    pnl_pct  = round((proceeds - cost) / cost * 100.0, 1) if cost > 0 else 0.0
+
+    return {
+        "leg1_exit":   round(legs[0]["exit"], 2),
+        "leg1_reason": legs[0]["reason"],
+        "leg2_exit":   round(legs[1]["exit"], 2),
+        "leg2_reason": legs[1]["reason"],
+        "pnl_usd":     pnl_usd,
+        "pnl_pct":     pnl_pct,
+        "exit_idx":    exit_idx,
+    }
+
+
 def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
                    alert_epoch=None) -> dict:
     """
-    Simulate the alert's OWN rules against the option's price path:
+    Simulate a 2-CONTRACT position against the option's real price path:
 
-      Entry — limit at entry_price (20% below the flow's trade price).
-              On the ALERT DAY the limit is checked only against intraday
-              bars AFTER the alert timestamp (so a fill can't be credited to
-              price action that happened before the alert fired). Later days
-              use daily bars.
-      Exit  — trailing stop, offset (75% of flow trade price) below the running
-              peak. If never hit, held to the last bar (expiry) close.
+      Entry — limit at entry_price (20% below the flow's trade price). On the
+              ALERT DAY the limit is checked only against intraday bars AFTER
+              the alert timestamp, so a fill can't be credited to price action
+              that happened before the alert fired. Later days use daily bars.
+      Exit  — Leg 1 sells at TP1 (+101% from entry), Leg 2 sells at TP2 (+201%).
+              Any leg that never reaches its target exits on the trailing stop
+              (offset = 75% of flow price below the running peak), or at the
+              final close if the stop never triggers.
 
-    Also reports excursions over the life of the trade: max/min price, MFE
-    (best unrealized gain), MAE (worst heat), max peak-to-trough drawdown.
+    Reports P/L BOTH WITH and WITHOUT the trailing stop, so the cost of the
+    stop is visible. Also reports peak (MFE), heat (MAE), and max drawdown.
 
-    Daily bars can't sequence intra-bar moves, so MAE/MaxDD are worst-case
-    reads. Directional evidence, not a fill-accurate backtest.
+    Daily bars can't sequence intra-bar moves — targets are assumed to fill
+    before the stop within the same bar. Directional evidence, not a
+    fill-accurate backtest.
     """
-    out = {"entry_filled": False, "fill_price": 0.0, "exit_price": 0.0,
-           "exit_reason": "", "pnl_pct": None, "pnl_per_contract": None, "bars": 0,
+    out = {"entry_filled": False, "fill_price": 0.0, "bars": 0,
+           "exit_reason": "", "pnl_pct": None, "pnl_per_contract": None,
+           "exit_price": 0.0,
            "max_price": None, "min_price": None, "mfe_pct": None,
            "mae_pct": None, "max_dd_pct": None, "days_held": 0,
            "fill_time": "", "fill_source": "",
            "max_profit_pct": None, "max_profit_per_contract": None,
            "target1": 0.0, "target2": 0.0, "t1_hit": False, "t2_hit": False,
-           "t1_pnl_pct": None, "t2_pnl_pct": None}
+           "leg1_exit": None, "leg1_reason": "", "leg2_exit": None, "leg2_reason": "",
+           "pnl_usd_trail": None, "pnl_pct_trail": None,
+           "pnl_usd_notrail": None, "pnl_pct_notrail": None,
+           "trail_cost_usd": None}
 
     entry  = float(result.get("entry_price") or 0)
     offset = float(result.get("trail_offset") or 0)
+    t1     = float(result.get("target1") or 0)
+    t2     = float(result.get("target2") or 0)
     if entry <= 0 or offset <= 0:
         out["exit_reason"] = "no rules"
         return out
@@ -221,7 +306,7 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
         return out
 
     # ── Build the bar path: post-alert intraday (day 0) + daily (day 1..expiry) ──
-    path = []          # unified list of {"high","low","close"} in time order
+    path = []
     day0_intraday = []
     used_intraday = False
 
@@ -236,8 +321,6 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
             used_intraday = True
             path.extend(day0_intraday)
 
-    # Daily bars. If we used intraday for day 0, start daily from the NEXT day
-    # so the alert day isn't double-counted with its pre-alert low.
     daily_start = alert_date
     if used_intraday:
         try:
@@ -246,8 +329,7 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
         except Exception:
             daily_start = alert_date
 
-    daily = _fetch_option_daily(occ_symbol, daily_start, exp_iso)
-    path.extend(daily)
+    path.extend(_fetch_option_daily(occ_symbol, daily_start, exp_iso))
 
     out["bars"] = len(path)
     if not path:
@@ -267,7 +349,9 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
 
     out["entry_filled"] = True
     out["fill_price"]   = entry
-    # Where the fill came from — intraday (post-alert, accurate) vs daily bar
+    out["target1"]      = t1
+    out["target2"]      = t2
+
     if used_intraday and fill_idx < len(day0_intraday):
         out["fill_source"] = "intraday (post-alert)"
         try:
@@ -278,71 +362,57 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
     else:
         out["fill_source"] = "daily bar"
 
-    peak = path[fill_idx]["high"]
-    exit_price, exit_reason, exit_idx = None, "", len(path) - 1
+    window = path[fill_idx:]
 
-    for i in range(fill_idx, len(path)):
-        b = path[i]
-        peak = max(peak, b["high"])
-        stop = peak - offset
-        if stop > 0 and b["low"] <= stop:
-            exit_price  = max(stop, 0.0)
-            exit_reason = "trail stop"
-            exit_idx    = i
-            break
+    # ── Run both scenarios ──
+    with_trail = _run_legs(window, entry, offset, t1, t2, use_trail=True)
+    no_trail   = _run_legs(window, entry, offset, t1, t2, use_trail=False)
 
-    if exit_price is None:
-        exit_price  = path[-1]["close"]
-        exit_reason = "held to expiry"
-        exit_idx    = len(path) - 1
+    out["leg1_exit"]   = with_trail["leg1_exit"]
+    out["leg1_reason"] = with_trail["leg1_reason"]
+    out["leg2_exit"]   = with_trail["leg2_exit"]
+    out["leg2_reason"] = with_trail["leg2_reason"]
 
-    # ── Excursion stats over the LIFE OF THE TRADE (fill → exit) ──
-    window = path[fill_idx:exit_idx + 1]
-    highs  = [b["high"] for b in window if b["high"] > 0]
-    lows   = [b["low"]  for b in window if b["low"]  > 0]
+    out["pnl_usd_trail"]   = with_trail["pnl_usd"]
+    out["pnl_pct_trail"]   = with_trail["pnl_pct"]
+    out["pnl_usd_notrail"] = no_trail["pnl_usd"]
+    out["pnl_pct_notrail"] = no_trail["pnl_pct"]
+    # Positive = the trailing stop COST you money vs just holding to targets
+    out["trail_cost_usd"]  = round(no_trail["pnl_usd"] - with_trail["pnl_usd"], 2)
+
+    # Headline P/L = the WITH-trail scenario (what your rules actually do)
+    out["pnl_pct"]          = with_trail["pnl_pct"]
+    out["pnl_per_contract"] = round(with_trail["pnl_usd"] / 2.0, 2)
+    out["exit_price"]       = round((with_trail["leg1_exit"] + with_trail["leg2_exit"]) / 2.0, 2)
+    _reasons = {with_trail["leg1_reason"], with_trail["leg2_reason"]}
+    out["exit_reason"] = " + ".join(sorted(_reasons))
+
+    # ── Excursions over the life of the trade (fill → last leg closed) ──
+    life = window[: with_trail["exit_idx"] + 1] or window[:1]
+    highs = [b["high"] for b in life if b["high"] > 0]
+    lows  = [b["low"]  for b in life if b["low"]  > 0]
 
     max_price = max(highs) if highs else entry
     min_price = min(lows)  if lows  else entry
 
-    mfe_pct = round((max_price - entry) / entry * 100.0, 1)
-    mae_pct = round((min_price - entry) / entry * 100.0, 1)
-
-    run_peak, max_dd = 0.0, 0.0
-    for b in window:
-        run_peak = max(run_peak, b["high"])
-        if run_peak > 0 and b["low"] > 0:
-            dd = (run_peak - b["low"]) / run_peak * 100.0
-            max_dd = max(max_dd, dd)
-
     out["max_price"]  = round(max_price, 2)
     out["min_price"]  = round(min_price, 2)
-    out["mfe_pct"]    = mfe_pct
-    out["mae_pct"]    = mae_pct
-    out["max_dd_pct"] = round(max_dd, 1)
-    out["days_held"]  = len(window)
+    out["mfe_pct"]    = round((max_price - entry) / entry * 100.0, 1)
+    out["mae_pct"]    = round((min_price - entry) / entry * 100.0, 1)
+    out["days_held"]  = len(life)
 
-    # ── Max profit (best the trade was ever worth, per contract) ──
-    out["max_profit_pct"]          = mfe_pct
+    run_peak, max_dd = 0.0, 0.0
+    for b in life:
+        run_peak = max(run_peak, b["high"])
+        if run_peak > 0 and b["low"] > 0:
+            max_dd = max(max_dd, (run_peak - b["low"]) / run_peak * 100.0)
+    out["max_dd_pct"] = round(max_dd, 1)
+
+    out["max_profit_pct"]          = out["mfe_pct"]
     out["max_profit_per_contract"] = round((max_price - entry) * 100.0, 2)
 
-    # ── Did the profit targets get hit before the exit? ──
-    # max_price is the highest the option traded while held, so a target was
-    # reachable iff max_price touched it. (Exit is still the trailing stop —
-    # these flags tell you whether taking profit at T1/T2 was possible.)
-    t1 = float(result.get("target1") or 0)
-    t2 = float(result.get("target2") or 0)
-    out["target1"]     = t1
-    out["target2"]     = t2
-    out["t1_hit"]      = bool(t1 > 0 and max_price >= t1)
-    out["t2_hit"]      = bool(t2 > 0 and max_price >= t2)
-    # P/L you'd have realized taking profit at each target
-    out["t1_pnl_pct"]  = round((t1 - entry) / entry * 100.0, 1) if out["t1_hit"] else None
-    out["t2_pnl_pct"]  = round((t2 - entry) / entry * 100.0, 1) if out["t2_hit"] else None
-
-    out["exit_price"]       = round(exit_price, 2)
-    out["exit_reason"]      = exit_reason
-    out["pnl_pct"]          = round((exit_price - entry) / entry * 100.0, 1)
-    out["pnl_per_contract"] = round((exit_price - entry) * 100.0, 2)
+    out["t1_hit"] = bool(t1 > 0 and max_price >= t1)
+    out["t2_hit"] = bool(t2 > 0 and max_price >= t2)
     return out
 
 
@@ -588,11 +658,18 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
         play  = "🔄REV" if a.get("playbook") == "reversal" else "➡️FOLLOW"
         early = " ⚠️EARLY" if a.get("is_early") else ""
         _p    = a.get("pnl") or {}
-        if _p.get("pnl_pct") is not None:
-            _sign = "🟢" if _p["pnl_pct"] >= 0 else "🔴"
-            pnl_s = f" | {_sign} {_p['pnl_pct']:+.0f}%"
+        if _p.get("pnl_usd_trail") is not None:
+            _sign = "🟢" if _p["pnl_usd_trail"] >= 0 else "🔴"
+            pnl_s = (f" | {_sign} ${_p['pnl_usd_trail']:+,.0f} "
+                     f"({_p['pnl_pct_trail']:+.0f}%)")
+            _l1 = _p.get("leg1_reason", "")
+            _l2 = _p.get("leg2_reason", "")
+            if _l1 or _l2:
+                pnl_s += f" [{_l1}/{_l2}]"
+            if _p.get("pnl_usd_notrail") is not None:
+                pnl_s += f" | no-trail ${_p['pnl_usd_notrail']:+,.0f}"
             if _p.get("mfe_pct") is not None:
-                pnl_s += f" (peak {_p['mfe_pct']:+.0f}%)"
+                pnl_s += f" | peak {_p['mfe_pct']:+.0f}%"
         elif _p.get("exit_reason"):
             pnl_s = f" | ({_p['exit_reason']})"
         else:

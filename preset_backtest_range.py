@@ -58,12 +58,22 @@ _COLUMNS = [
     ("30M Play",      lambda a: "REVERSAL" if a.get("playbook") == "reversal" else "FOLLOW"),
     ("Early <10:30",  lambda a: "YES — reversal risk" if a.get("is_early") else ""),
     ("Entry Filled",  lambda a: "YES" if (a.get("pnl") or {}).get("entry_filled") else "NO"),
-    ("Exit Price",    lambda a: (a.get("pnl") or {}).get("exit_price") or ""),
-    ("Exit Reason",   lambda a: (a.get("pnl") or {}).get("exit_reason") or ""),
-    ("P/L %",         lambda a: (a.get("pnl") or {}).get("pnl_pct")
-                                if (a.get("pnl") or {}).get("pnl_pct") is not None else ""),
-    ("P/L $/contract",lambda a: (a.get("pnl") or {}).get("pnl_per_contract")
-                                if (a.get("pnl") or {}).get("pnl_per_contract") is not None else ""),
+    ("Leg1 Exit",     lambda a: (a.get("pnl") or {}).get("leg1_exit")
+                                if (a.get("pnl") or {}).get("leg1_exit") is not None else ""),
+    ("Leg1 Reason",   lambda a: (a.get("pnl") or {}).get("leg1_reason") or ""),
+    ("Leg2 Exit",     lambda a: (a.get("pnl") or {}).get("leg2_exit")
+                                if (a.get("pnl") or {}).get("leg2_exit") is not None else ""),
+    ("Leg2 Reason",   lambda a: (a.get("pnl") or {}).get("leg2_reason") or ""),
+    ("P/L $ (2ct)",   lambda a: (a.get("pnl") or {}).get("pnl_usd_trail")
+                                if (a.get("pnl") or {}).get("pnl_usd_trail") is not None else ""),
+    ("P/L % (2ct)",   lambda a: (a.get("pnl") or {}).get("pnl_pct_trail")
+                                if (a.get("pnl") or {}).get("pnl_pct_trail") is not None else ""),
+    ("P/L $ NO trail",lambda a: (a.get("pnl") or {}).get("pnl_usd_notrail")
+                                if (a.get("pnl") or {}).get("pnl_usd_notrail") is not None else ""),
+    ("P/L % NO trail",lambda a: (a.get("pnl") or {}).get("pnl_pct_notrail")
+                                if (a.get("pnl") or {}).get("pnl_pct_notrail") is not None else ""),
+    ("Trail Cost $",  lambda a: (a.get("pnl") or {}).get("trail_cost_usd")
+                                if (a.get("pnl") or {}).get("trail_cost_usd") is not None else ""),
     ("Roll Expiry",   lambda a: (a.get("roll") or {}).get("expiry") or ""),
     ("Roll Price",    lambda a: (a.get("roll") or {}).get("price") or ""),
     ("Max Price",     lambda a: (a.get("pnl") or {}).get("max_price")
@@ -112,19 +122,25 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
     summary.title = "Summary"
     summary.append(["Date", "Alerts", "Total Premium", "Preset Events",
                     "Filled", "Wins", "Losses", "Win Rate %", "Avg P/L %",
+                    "P/L $ (2ct)", "P/L $ NO trail", "Trail Cost $",
                     "Avg MFE %", "Avg MAE %", "T1 Hit", "T1 %", "T2 Hit", "T2 %",
                     "Note"])
-    for c in range(1, 17):
+    for c in range(1, 20):
         cell = summary.cell(row=1, column=c)
         cell.font = header_font; cell.fill = header_fill; cell.alignment = center
 
     all_pnls, all_mfes, all_maes = [], [], []
+    all_usd_t, all_usd_nt = [], []
     all_t1 = all_t2 = all_filled = 0
     for day in day_results:
         alerts = day["alerts"]
         total_prem = sum(a.get("premium", 0) for a in alerts)
-        pnls = [(a.get("pnl") or {}).get("pnl_pct") for a in alerts]
+        pnls = [(a.get("pnl") or {}).get("pnl_pct_trail") for a in alerts]
         pnls = [p for p in pnls if p is not None]
+        usd_t  = [(a.get("pnl") or {}).get("pnl_usd_trail") for a in alerts]
+        usd_t  = [u for u in usd_t if u is not None]
+        usd_nt = [(a.get("pnl") or {}).get("pnl_usd_notrail") for a in alerts]
+        usd_nt = [u for u in usd_nt if u is not None]
         mfes = [(a.get("pnl") or {}).get("mfe_pct") for a in alerts]
         mfes = [m for m in mfes if m is not None]
         maes = [(a.get("pnl") or {}).get("mae_pct") for a in alerts]
@@ -134,6 +150,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
         t2s = sum(1 for a in filled if (a.get("pnl") or {}).get("t2_hit"))
         all_t1 += t1s; all_t2 += t2s; all_filled += len(filled)
         all_pnls.extend(pnls); all_mfes.extend(mfes); all_maes.extend(maes)
+        all_usd_t.extend(usd_t); all_usd_nt.extend(usd_nt)
         wins   = sum(1 for p in pnls if p > 0)
         losses = sum(1 for p in pnls if p <= 0)
         win_rate = round(wins / len(pnls) * 100, 1) if pnls else ""
@@ -143,10 +160,13 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
         t1_rate  = round(t1s / len(filled) * 100, 1) if filled else ""
         t2_rate  = round(t2s / len(filled) * 100, 1) if filled else ""
         note = day.get("error", "") or ("no alerts" if not alerts else "")
+        d_usd_t  = round(sum(usd_t), 2)  if usd_t  else ""
+        d_usd_nt = round(sum(usd_nt), 2) if usd_nt else ""
+        d_cost   = round(sum(usd_nt) - sum(usd_t), 2) if (usd_t and usd_nt) else ""
         summary.append([day["date"], len(alerts), round(total_prem, 2),
                         day.get("preset_events", 0), len(pnls), wins, losses,
-                        win_rate, avg_pnl, avg_mfe, avg_mae,
-                        t1s, t1_rate, t2s, t2_rate, note])
+                        win_rate, avg_pnl, d_usd_t, d_usd_nt, d_cost,
+                        avg_mfe, avg_mae, t1s, t1_rate, t2s, t2_rate, note])
 
     # Overall totals row
     if all_pnls:
@@ -156,6 +176,9 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
                         len(all_pnls) - t_wins,
                         round(t_wins / len(all_pnls) * 100, 1),
                         round(sum(all_pnls) / len(all_pnls), 1),
+                        round(sum(all_usd_t), 2) if all_usd_t else "",
+                        round(sum(all_usd_nt), 2) if all_usd_nt else "",
+                        round(sum(all_usd_nt) - sum(all_usd_t), 2) if (all_usd_t and all_usd_nt) else "",
                         round(sum(all_mfes) / len(all_mfes), 1) if all_mfes else "",
                         round(sum(all_maes) / len(all_maes), 1) if all_maes else "",
                         all_t1,
@@ -163,10 +186,10 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
                         all_t2,
                         round(all_t2 / all_filled * 100, 1) if all_filled else "",
                         "all filled trades"])
-        for c in range(1, 17):
+        for c in range(1, 20):
             summary.cell(row=summary.max_row, column=c).font = Font(bold=True)
 
-    for col, width in zip("ABCDEFGHIJKLMNOP", (12, 8, 16, 14, 8, 7, 8, 11, 11, 11, 11, 8, 8, 8, 8, 24)):
+    for col, width in zip("ABCDEFGHIJKLMNOPQRS", (12, 8, 16, 14, 8, 7, 8, 11, 11, 13, 15, 12, 11, 11, 8, 8, 8, 8, 24)):
         summary.column_dimensions[col].width = width
 
     # ── One tab per date ──
@@ -182,7 +205,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
             ws.append([fn(a) for _, fn in _COLUMNS])
 
         # Reasonable column widths
-        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 15, 9, 15, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15]
+        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15]
         for idx, w in enumerate(widths, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
         ws.freeze_panes = "A2"
