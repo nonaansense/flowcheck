@@ -21,6 +21,7 @@ Config env vars:
   BULLFLOW_PRESET_MAX_DTE      = 14
 """
 import os
+import time
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -135,42 +136,83 @@ def _norm_epoch(v) -> float:
     return e
 
 
-def _polygon_30m_closes(ticker: str, start_d: str, end_d: str, ae: float) -> list:
-    """
-    30-minute closes from Polygon aggregates — used when Tradier's intraday
-    window doesn't reach back far enough (it only holds a few weeks, so any
-    older backtest date returns nothing).
+_MASSIVE_CALLS: list = []   # epoch times of recent calls (free tier: 5/min)
 
-    Polygon: /v2/aggs/ticker/{T}/range/30/minute/{from}/{to}
-    Returns closes at or before `ae` (epoch seconds), oldest first. [] on failure.
+
+def _massive_key() -> str:
+    """Massive (formerly Polygon.io). Legacy POLYGON_API_KEY still works."""
+    return (os.environ.get("MASSIVE_API_KEY", "") or
+            os.environ.get("POLYGON_API_KEY", ""))
+
+
+def _massive_throttle():
     """
-    key = os.environ.get("POLYGON_API_KEY", "")
+    Free tier allows 5 requests/minute. Block until a slot is free rather than
+    eating 429s — a backtest can afford the wait, and a silent rate-limit
+    failure would just fail the EMA open again.
+    """
+    limit = int(os.environ.get("MASSIVE_CALLS_PER_MIN", "5"))
+    now = time.time()
+    # Drop calls older than 60s
+    while _MASSIVE_CALLS and now - _MASSIVE_CALLS[0] > 60:
+        _MASSIVE_CALLS.pop(0)
+    if len(_MASSIVE_CALLS) >= limit:
+        wait = 61 - (now - _MASSIVE_CALLS[0])
+        if wait > 0:
+            print(f"[EMA] Massive rate limit ({limit}/min) — waiting {wait:.0f}s")
+            time.sleep(wait)
+            now = time.time()
+            while _MASSIVE_CALLS and now - _MASSIVE_CALLS[0] > 60:
+                _MASSIVE_CALLS.pop(0)
+    _MASSIVE_CALLS.append(time.time())
+
+
+def _massive_30m_closes(ticker: str, start_d: str, end_d: str, ae: float) -> list:
+    """
+    30-minute closes from Massive (formerly Polygon.io) aggregates.
+
+    This is what makes the EMA filter work on BACKTEST dates — Tradier's
+    intraday window is only a few weeks deep, while Massive's FREE tier
+    carries 2 years of minute aggregates (rate-limited to 5 calls/min).
+
+    Endpoint: /v2/aggs/ticker/{T}/range/30/minute/{from}/{to}
+    Returns closes for bars that CLOSED at or before `ae` (epoch seconds).
+    """
+    key = _massive_key()
     if not key:
         return []
-    try:
-        r = requests.get(
-            f"https://api.polygon.io/v2/aggs/ticker/{ticker.upper()}"
-            f"/range/30/minute/{start_d}/{end_d}",
-            params={"adjusted": "true", "sort": "asc", "limit": 50000,
-                    "apiKey": key},
-            timeout=12,
-        )
-        if r.status_code != 200:
-            print(f"[EMA] {ticker}: Polygon HTTP {r.status_code} — {r.text[:120]}")
-            return []
-        out = []
-        for b in (r.json().get("results") or []):
-            # Polygon 't' is epoch MILLISECONDS at the bar's START
-            t_ms, c = b.get("t"), b.get("c")
-            if t_ms is None or c is None:
+
+    base = os.environ.get("MASSIVE_BASE_URL", "https://api.massive.com")
+    url  = (f"{base}/v2/aggs/ticker/{ticker.upper()}"
+            f"/range/30/minute/{start_d}/{end_d}")
+    params = {"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": key}
+
+    for attempt in range(2):
+        try:
+            _massive_throttle()
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 429:
+                print(f"[EMA] {ticker}: Massive 429 — backing off 20s")
+                time.sleep(20)
                 continue
-            # Include the bar only if it CLOSED at or before the alert
-            if (float(t_ms) / 1000.0) + 1800 <= ae:
-                out.append(float(c))
-        return out
-    except Exception as e:
-        print(f"[EMA] {ticker}: Polygon error {e}")
-        return []
+            if r.status_code != 200:
+                print(f"[EMA] {ticker}: Massive HTTP {r.status_code} — {r.text[:120]}")
+                return []
+
+            out = []
+            for b in (r.json().get("results") or []):
+                # 't' is epoch MILLISECONDS at the bar's START
+                t_ms, c = b.get("t"), b.get("c")
+                if t_ms is None or c is None:
+                    continue
+                # Only count bars that had CLOSED by the alert (no lookahead)
+                if (float(t_ms) / 1000.0) + 1800 <= ae:
+                    out.append(float(c))
+            return out
+        except Exception as e:
+            print(f"[EMA] {ticker}: Massive error {e}")
+            return []
+    return []
 
 
 def _ema_30m(ticker: str, as_of_epoch) -> tuple:
@@ -180,13 +222,13 @@ def _ema_30m(ticker: str, as_of_epoch) -> tuple:
     the moment the alert fired (works identically live and in backtest).
 
     Source order:
-      1. Tradier 15-min timesales (aggregated in pairs) — good for LIVE and
-         recent dates, but Tradier's intraday history is only a few weeks deep.
-      2. Polygon 30-min aggregates — years of history, so this is what makes
-         the filter work on older BACKTEST dates.
+      1. Tradier 15-min timesales (aggregated in pairs) — fast, and fine for
+         LIVE alerts, but Tradier's intraday history is only weeks deep.
+      2. Massive (ex-Polygon) 30-min aggregates — FREE tier gives 2 years of
+         history, which is what makes the filter work on backtest dates.
 
-    Returns (ema_fast, ema_slow). (0.0, 0.0) means UNAVAILABLE — and the
-    reason is always logged, so this can never fail silently.
+    Returns (ema_fast, ema_slow). (0.0, 0.0) means UNAVAILABLE — always logged,
+    so this can never fail silently.
     """
     if not ticker:
         return (0.0, 0.0)
@@ -249,17 +291,19 @@ def _ema_30m(ticker: str, as_of_epoch) -> tuple:
         else:
             print(f"[EMA] {ticker} @ {end_d}: Tradier thin "
                   f"({raw_n} 15m bars → {len(cand)} 30m closes, need {need}) "
-                  f"— trying Polygon")
+                  f"— trying Massive")
 
-    # ── Source 2: Polygon 30-min aggregates (deep history) ──
+    # ── Source 2: Massive 30-min aggregates (2yr history on the FREE tier) ──
     if not closes30:
-        cand = _polygon_30m_closes(ticker, start_d, end_d, ae)
+        cand = _massive_30m_closes(ticker, start_d, end_d, ae)
         if len(cand) >= need:
-            closes30, src = cand, "polygon"
+            closes30, src = cand, "massive"
 
     if len(closes30) < need:
-        print(f"[EMA] {ticker} @ {end_d}: NO DATA from Tradier OR Polygon "
-              f"(need {need} 30m closes). Filter will "
+        _has_key = bool(_massive_key())
+        print(f"[EMA] {ticker} @ {end_d}: NO DATA "
+              f"(Tradier thin; Massive {'returned too little' if _has_key else 'KEY NOT SET'}). "
+              f"Need {need} 30m closes. Filter will "
               f"{'SKIP the trade' if EMA_REQUIRE else 'FAIL OPEN'}.")
         _EMA_CACHE[ckey] = (0.0, 0.0)
         return (0.0, 0.0)

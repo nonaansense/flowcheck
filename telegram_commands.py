@@ -1175,41 +1175,102 @@ def handle_command(text: str, from_chat_id: str):
     elif cmd in ("ema_test", "ematest", "emacheck"):
         _ea = [a.strip() for a in args if a.strip()]
         if len(_ea) < 2:
-            send_reply('Usage: /ema_test TICKER YYYY-MM-DD [HH:MM]\ne.g. /ema_test INTC 2026-05-11 10:34\nChecks whether 30M EMA data is available for that moment.',
+            send_reply('Usage: /ema_test TICKER YYYY-MM-DD [HH:MM]\ne.g. /ema_test INTC 2026-05-11 10:34\nProbes both data sources and reports exactly what each returned.',
                        from_chat_id)
         else:
             import bullflow_presets as _ebp
-            from datetime import datetime as _edt
+            import requests as _ereq
+            import os as _eos
+            from datetime import datetime as _edt, timedelta as _etd
             _et_tick = _ea[0].upper()
             _et_date = _ea[1]
             _et_time = _ea[2] if len(_ea) > 2 else "14:00"
             try:
                 _eh, _em = _et_time.split(":")
-                _edt_obj = _edt.strptime(f"{_et_date} {int(_eh):02d}:{int(_em):02d}",
-                                         "%Y-%m-%d %H:%M").replace(tzinfo=_ebp.ET)
-                _e_epoch = _edt_obj.timestamp()
+                _eobj = _edt.strptime(f"{_et_date} {int(_eh):02d}:{int(_em):02d}",
+                                      "%Y-%m-%d %H:%M").replace(tzinfo=_ebp.ET)
+                _e_epoch = _eobj.timestamp()
             except Exception as _ee:
                 send_reply(f"Bad date/time: {_ee}", from_chat_id)
                 return
+
+            _start = (_eobj - _etd(days=15)).strftime("%Y-%m-%d")
+            _lines = [f"🔬 EMA probe: {_et_tick} @ {_et_date} {_et_time} ET",
+                      f"Window: {_start} → {_et_date}", ""]
+
+            # ── Probe 1: Tradier ──
+            _ttok = _eos.environ.get("TRADIER_TOKEN", "")
+            if not _ttok:
+                _lines.append("TRADIER: no token set")
+            else:
+                try:
+                    _tr = _ereq.get(
+                        "https://api.tradier.com/v1/markets/timesales",
+                        params={"symbol": _et_tick, "interval": "15min",
+                                "start": f"{_start} 09:30", "end": f"{_et_date} 16:00",
+                                "session_filter": "open"},
+                        headers={"Authorization": f"Bearer {_ttok}",
+                                 "Accept": "application/json"}, timeout=12)
+                    if _tr.status_code == 200:
+                        _td = ((_tr.json().get("series") or {}).get("data")) or []
+                        if isinstance(_td, dict):
+                            _td = [_td]
+                        _lines.append(f"TRADIER: HTTP 200, {len(_td)} 15min bars")
+                    else:
+                        _lines.append(f"TRADIER: HTTP {_tr.status_code} — {_tr.text[:80]}")
+                except Exception as _e1:
+                    _lines.append(f"TRADIER: error {_e1}")
+
+            # ── Probe 2: Massive (ex-Polygon) ──
+            _mkey = _ebp._massive_key()
+            if not _mkey:
+                _lines += ["MASSIVE: API KEY NOT SET",
+                           "  → free key at massive.com, set MASSIVE_API_KEY"]
+            else:
+                _which = ("MASSIVE_API_KEY" if _eos.environ.get("MASSIVE_API_KEY")
+                          else "POLYGON_API_KEY (legacy)")
+                _base = _eos.environ.get("MASSIVE_BASE_URL", "https://api.massive.com")
+                _murl = (f"{_base}/v2/aggs/ticker/{_et_tick}"
+                         f"/range/30/minute/{_start}/{_et_date}")
+                try:
+                    _mr = _ereq.get(_murl, params={"adjusted": "true", "sort": "asc",
+                                                   "limit": 50000, "apiKey": _mkey},
+                                    timeout=15)
+                    _mj = {}
+                    try:
+                        _mj = _mr.json()
+                    except Exception:
+                        pass
+                    _res = _mj.get("results") or []
+                    _lines.append(f"MASSIVE ({_which}): HTTP {_mr.status_code}")
+                    _lines.append(f"  status={_mj.get('status','?')} "
+                                  f"resultsCount={_mj.get('resultsCount', len(_res))}")
+                    if _mj.get("error"):
+                        _lines.append(f"  error: {str(_mj['error'])[:120]}")
+                    if _mr.status_code != 200 and not _mj:
+                        _lines.append(f"  body: {_mr.text[:120]}")
+                    if _res:
+                        _usable = sum(1 for b in _res
+                                      if b.get("t") and
+                                      (float(b["t"])/1000.0) + 1800 <= _e_epoch)
+                        _lines.append(f"  {len(_res)} bars, {_usable} closed before alert "
+                                      f"(need {_ebp.EMA_SLOW + 1})")
+                except Exception as _e2:
+                    _lines.append(f"MASSIVE: error {_e2}")
+
+            # ── Result ──
             _ebp._EMA_CACHE.clear()
             _f, _s = _ebp._ema_30m(_et_tick, _e_epoch)
+            _lines.append("")
             if _f and _s:
-                _state = "5EMA > 12EMA (uptrend)" if _f > _s else "5EMA < 12EMA (downtrend)"
-                _msg = (f"📊 EMA check: {_et_tick} @ {_et_date} {_et_time} ET\n"
-                        f"5EMA:  {_f:.2f}\n12EMA: {_s:.2f}\n{_state}\n\n"
-                        f"Grenade: {'PUT' if _f > _s else 'CALL'} would be TAKEN\n"
-                        f"Others:  {'CALL' if _f > _s else 'PUT'} would be TAKEN")
+                _st = "5EMA > 12EMA (uptrend)" if _f > _s else "5EMA < 12EMA (downtrend)"
+                _lines += [f"✅ 5EMA {_f:.2f} | 12EMA {_s:.2f}",
+                           _st, "",
+                           f"Grenade: {'PUT' if _f > _s else 'CALL'} would be TAKEN",
+                           f"Others:  {'CALL' if _f > _s else 'PUT'} would be TAKEN"]
             else:
-                import os as _eos
-                _has_poly = bool(_eos.environ.get("POLYGON_API_KEY",""))
-                _msg = (f"❌ EMA unavailable: {_et_tick} @ {_et_date} {_et_time} ET\n\n"
-                        f"Tradier: no intraday history that far back (expected).\n"
-                        f"Polygon: {'tried, also no data' if _has_poly else 'POLYGON_API_KEY NOT SET'}\n\n"
-                        + ("Set POLYGON_API_KEY in Railway — Polygon has years of\n"
-                           "30min history and is the fallback for backtest dates."
-                           if not _has_poly else
-                           "Check Railway logs for the [EMA] line with exact counts."))
-            send_reply(_msg, from_chat_id)
+                _lines.append("❌ EMA unavailable — see the probe results above.")
+            send_reply("\n".join(_lines), from_chat_id)
 
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
