@@ -595,12 +595,30 @@ def collect_day(date: str) -> dict:
                 }
                 result = bp.process_preset(fill, alert_name)
                 if result:
-                    # Simulate the alert's own entry + trail-stop rules against
-                    # the option's actual price path to produce P/L
+                    # If a roll applies, the trade we'd ACTUALLY take is the
+                    # rolled contract — so simulate THAT, not the original.
+                    _roll = result.get("roll") or {}
+                    if _roll.get("available") and _roll.get("entry", 0) > 0 and _roll.get("occ"):
+                        sim_symbol = f"O:{_roll['occ']}"
+                        sim_params = {
+                            "expiry":       _roll["expiry"],
+                            "entry_price":  _roll["entry"],
+                            "trail_offset": _roll["trail"],
+                            "target1":      _roll["target1"],
+                            "target2":      _roll["target2"],
+                        }
+                        result["traded"] = "rolled"
+                    else:
+                        sim_symbol = symbol
+                        sim_params = result
+                        result["traded"] = ("rolled (no quote)" if _roll else "original")
+
                     if PNL_ENABLED:
                         try:
-                            result["pnl"] = simulate_trade(result, symbol, date,
-                                                             alert_epoch=inner.get("timestamp"))
+                            result["pnl"] = simulate_trade(
+                                sim_params, sim_symbol, date,
+                                alert_epoch=inner.get("timestamp"))
+                            result["pnl"]["traded"] = result["traded"]
                         except Exception as _pe:
                             print(f"[PRESET_BT] P/L sim error {ticker}: {_pe}")
                             result["pnl"] = {}
@@ -675,7 +693,13 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
         else:
             pnl_s = ""
         _r    = a.get("roll") or {}
-        roll_s = f" | 🔁→{_r['expiry']}" if _r.get("expiry") else ""
+        if a.get("traded") == "rolled":
+            # We traded the ROLLED contract, not the one in the alert
+            roll_s = f" | 🔁TRADED {_r['strike']}C {_r['expiry']} @ ${_r['price']:.2f}"
+        elif _r.get("expiry"):
+            roll_s = f" | 🔁{_r['expiry']} (no quote — traded original)"
+        else:
+            roll_s = ""
         _ef, _es = a.get("ema_fast", 0), a.get("ema_slow", 0)
         if _ef and _es:
             # Arrows, not < / > — those break Telegram's HTML parse_mode

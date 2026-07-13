@@ -79,6 +79,7 @@ _COLUMNS = [
                                 if (a.get("pnl") or {}).get("pnl_pct_notrail") is not None else ""),
     ("Trail Cost $",  lambda a: (a.get("pnl") or {}).get("trail_cost_usd")
                                 if (a.get("pnl") or {}).get("trail_cost_usd") is not None else ""),
+    ("Traded",        lambda a: a.get("traded") or "original"),
     ("Roll Expiry",   lambda a: (a.get("roll") or {}).get("expiry") or ""),
     ("Roll Reason",   lambda a: (a.get("roll") or {}).get("reason") or ""),
     ("Roll Price",    lambda a: (a.get("roll") or {}).get("price") or ""),
@@ -216,7 +217,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
             ws.append([fn(a) for _, fn in _COLUMNS])
 
         # Reasonable column widths
-        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15, 10, 10, 11, 12, 10, 10, 10, 10]
+        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15, 10, 10, 11, 12, 10, 10, 10, 10, 16]
         for idx, w in enumerate(widths, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
         ws.freeze_panes = "A2"

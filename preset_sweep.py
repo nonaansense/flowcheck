@@ -158,9 +158,19 @@ def _collect_trades(days: list, send, bot, chat) -> list:
             flow = float(a.get("price") or 0)
             if flow <= 0:
                 continue
-            occ = (f"O:{a['ticker']}"
-                   f"{_occ_tail(a)}")
-            exp_iso = _expiry_to_iso(a.get("expiry", ""))
+
+            # If a roll applies, the contract we'd actually TAKE is the rolled
+            # one — sweep that contract's path and price, not the original's.
+            _roll = a.get("roll") or {}
+            if _roll.get("available") and _roll.get("price", 0) > 0 and _roll.get("occ"):
+                occ     = f"O:{_roll['occ']}"
+                flow    = float(_roll["price"])     # the rolled contract's price
+                exp_iso = _expiry_to_iso(_roll.get("expiry", ""))
+                traded  = "rolled"
+            else:
+                occ     = f"O:{a['ticker']}{_occ_tail(a)}"
+                exp_iso = _expiry_to_iso(a.get("expiry", ""))
+                traded  = "original"
             if not exp_iso:
                 continue
 
@@ -194,7 +204,8 @@ def _collect_trades(days: list, send, bot, chat) -> list:
             trades.append({
                 "date":       date,
                 "ticker":     a["ticker"],
-                "flow_price": flow,
+                "flow_price": flow,     # rolled contract's price if a roll applied
+                "traded":     traded,
                 "path":       path,
             })
 
@@ -292,10 +303,11 @@ def _build_workbook(rows: list, disc_rows: list, trades: list,
 
     # ── Tab 4: the alerts the sweep ran on ──
     ws4 = wb.create_sheet("Alerts")
-    _hdr(ws4, ["Date", "Ticker", "Flow Price", "Bars"])
+    _hdr(ws4, ["Date", "Ticker", "Traded", "Contract Price", "Bars"])
     for t in trades:
-        ws4.append([t["date"], t["ticker"], t["flow_price"], len(t["path"])])
-    for col, w in zip("ABCD", (12, 9, 11, 7)):
+        ws4.append([t["date"], t["ticker"], t.get("traded", "original"),
+                    t["flow_price"], len(t["path"])])
+    for col, w in zip("ABCDE", (12, 9, 10, 14, 7)):
         ws4.column_dimensions[col].width = w
 
     os.makedirs("/tmp", exist_ok=True)
