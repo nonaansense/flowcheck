@@ -226,6 +226,26 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
     if not ticker or not strike or not expiry:
         return None
 
+    # ── Sanity-check the payload before deriving anything from it ──
+    # Bad upstream data would otherwise produce alerts with $0.00 entries,
+    # unparseable strikes, or negative DTE.
+    if price <= 0:
+        print(f"[PRESET] {filter_name} {ticker}: invalid trade price {price} — skipping")
+        return None
+    if dte < 0:
+        print(f"[PRESET] {filter_name} {ticker}: negative DTE {dte} — skipping")
+        return None
+    try:
+        _sv = float(strike)
+        if _sv <= 0:
+            raise ValueError
+    except Exception:
+        print(f"[PRESET] {filter_name} {ticker}: unparseable strike {strike!r} — skipping")
+        return None
+    if _expiry_to_date(expiry) is None:
+        print(f"[PRESET] {filter_name} {ticker}: invalid expiry {expiry!r} — skipping")
+        return None
+
     # Alert timestamp — prefer Bullflow's est_timestamp string, then epoch,
     # then fall back to now. Displayed in ET as HH:MM:SS AM/PM.
     # Also capture alert_hour (float ET) for the early-session check, and
