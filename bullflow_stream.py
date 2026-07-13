@@ -955,12 +955,23 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
             _pf_m = _pf_re.search(r'O:([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)', _pf_sym)
             if _pf_m:
                 _pf_stk  = int(_pf_m.group(6)) / 1000.0
+                # DTE must be COMPUTED from the expiry, not hardcoded. A hardcoded
+                # 0 silently bypasses the MAX_DTE filter (0 <= anything) and makes
+                # every call look short-dated to the roll trigger.
+                _pf_dte = 0
+                try:
+                    from datetime import datetime as _pf_dt, timezone as _pf_tz
+                    _pf_exp = _pf_dt(int(f"20{_pf_m.group(2)}"), int(_pf_m.group(3)),
+                                     int(_pf_m.group(4)), tzinfo=_pf_tz.utc)
+                    _pf_dte = max(0, (_pf_exp - _pf_dt.now(_pf_tz.utc)).days)
+                except Exception:
+                    _pf_dte = 0
                 _pf_occ  = {
                     "ticker":      _pf_m.group(1),
                     "option_type": "call" if _pf_m.group(5) == "C" else "put",
                     "strike":      str(int(_pf_stk)) if _pf_stk == int(_pf_stk) else f"{_pf_stk:.1f}",
                     "expiry":      f"{_pf_m.group(3)}/{_pf_m.group(4)}/{_pf_m.group(2)}",
-                    "dte":         0,
+                    "dte":         _pf_dte,
                 }
         except Exception: pass
 
