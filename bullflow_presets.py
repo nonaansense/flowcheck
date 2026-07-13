@@ -100,6 +100,10 @@ ROLL_SUGGEST = os.environ.get("BULLFLOW_PRESET_ROLL_SUGGEST", "true").lower() no
 # Every other preset type is a FOLLOW: call needs 5EMA above 12EMA,
 # put needs 5EMA below 12EMA.
 EMA_FILTER    = os.environ.get("BULLFLOW_PRESET_EMA_FILTER", "true").lower() not in ("false","0","no","off")
+# When EMA data is unavailable: false = take the trade anyway (fail-open),
+# true = skip it (fail-closed). Fail-closed makes backtests honest — you
+# never bank a result the filter could not actually have approved.
+EMA_REQUIRE   = os.environ.get("BULLFLOW_PRESET_EMA_REQUIRE", "false").lower() in ("true","1","yes","on")
 EMA_FAST      = int(os.environ.get("BULLFLOW_PRESET_EMA_FAST", "5"))
 EMA_SLOW      = int(os.environ.get("BULLFLOW_PRESET_EMA_SLOW", "12"))
 
@@ -117,35 +121,58 @@ def _ema(closes: list, period: int) -> float:
     return e
 
 
+def _norm_epoch(v) -> float:
+    """
+    Bullflow may send epoch in seconds OR milliseconds. Normalize to seconds.
+    Anything above ~1e11 is milliseconds (year 5138+ if read as seconds).
+    """
+    try:
+        e = float(v)
+    except Exception:
+        return 0.0
+    if e > 1e11:
+        e = e / 1000.0
+    return e
+
+
 def _ema_30m(ticker: str, as_of_epoch) -> tuple:
     """
     30-minute EMA(fast) and EMA(slow) on the UNDERLYING, computed from bars
     at or before as_of_epoch — so it reflects what the chart looked like at
     the moment the alert fired (works identically live and in backtest).
 
-    Built from Tradier 15-min bars aggregated in pairs. Needs ~7 calendar days
-    of history so the slow EMA has enough warmup.
+    Built from Tradier 15-min bars aggregated in pairs. Needs ~10 calendar
+    days of history so the slow EMA has enough warmup.
 
-    Returns (ema_fast, ema_slow) or (0.0, 0.0) if unavailable.
+    Returns (ema_fast, ema_slow). (0.0, 0.0) means UNAVAILABLE — and the
+    reason is always logged, so this can never fail silently.
     """
     token = os.environ.get("TRADIER_TOKEN", "")
-    if not token or not ticker or not as_of_epoch:
+    if not token:
+        print(f"[EMA] {ticker}: no TRADIER_TOKEN")
         return (0.0, 0.0)
+    if not ticker:
+        return (0.0, 0.0)
+
+    ae = _norm_epoch(as_of_epoch)
+    if ae <= 0:
+        print(f"[EMA] {ticker}: bad/missing timestamp ({as_of_epoch!r})")
+        return (0.0, 0.0)
+
     try:
-        ae = float(as_of_epoch)
-    except Exception:
+        as_of_dt = datetime.fromtimestamp(ae, ET)
+    except Exception as e:
+        print(f"[EMA] {ticker}: un-convertible epoch {ae} ({e})")
         return (0.0, 0.0)
 
-    as_of_dt = datetime.fromtimestamp(ae, ET)
-    end_d    = as_of_dt.strftime("%Y-%m-%d")
-    start_d  = (as_of_dt - timedelta(days=10)).strftime("%Y-%m-%d")
+    end_d   = as_of_dt.strftime("%Y-%m-%d")
+    start_d = (as_of_dt - timedelta(days=10)).strftime("%Y-%m-%d")
 
-    # Cache per ticker + 30-min bucket (EMAs don't change within a bar)
     ckey = f"{ticker}_{int(ae // 1800)}"
     if ckey in _EMA_CACHE:
         return _EMA_CACHE[ckey]
 
-    bars15 = []
+    bars15, raw_n = [], 0
     try:
         r = requests.get(
             "https://api.tradier.com/v1/markets/timesales",
@@ -155,30 +182,41 @@ def _ema_30m(ticker: str, as_of_epoch) -> tuple:
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
             timeout=10,
         )
-        if r.status_code == 200:
-            data = ((r.json().get("series") or {}).get("data"))
-            if isinstance(data, dict):
-                data = [data]
-            for b in (data or []):
-                ts = b.get("timestamp")
-                close = b.get("close")
-                if ts is None or not close:
-                    continue
-                if float(ts) <= ae:          # only bars up to the alert
-                    bars15.append((float(ts), float(close)))
-            bars15.sort(key=lambda x: x[0])
+        if r.status_code != 200:
+            print(f"[EMA] {ticker}: Tradier HTTP {r.status_code} — {r.text[:120]}")
+            _EMA_CACHE[ckey] = (0.0, 0.0)
+            return (0.0, 0.0)
+
+        data = ((r.json().get("series") or {}).get("data"))
+        if isinstance(data, dict):
+            data = [data]
+        raw_n = len(data or [])
+        for b in (data or []):
+            ts, close = b.get("timestamp"), b.get("close")
+            if ts is None or not close:
+                continue
+            if float(ts) <= ae:
+                bars15.append((float(ts), float(close)))
+        bars15.sort(key=lambda x: x[0])
     except Exception as e:
-        print(f"[PRESET] EMA fetch error {ticker}: {e}")
+        print(f"[EMA] {ticker}: fetch error {e}")
         _EMA_CACHE[ckey] = (0.0, 0.0)
         return (0.0, 0.0)
 
-    # Aggregate 15-min → 30-min (close of each pair)
     closes30 = [bars15[i + 1][1] for i in range(0, len(bars15) - 1, 2)]
-    if len(closes30) < EMA_SLOW + 1:
+    need = EMA_SLOW + 1
+    if len(closes30) < need:
+        print(f"[EMA] {ticker} @ {end_d}: NOT ENOUGH DATA — "
+              f"Tradier returned {raw_n} 15m bars, {len(bars15)} before alert, "
+              f"{len(closes30)} 30m closes (need {need}). "
+              f"Range {start_d}→{end_d}. Filter will FAIL OPEN.")
         _EMA_CACHE[ckey] = (0.0, 0.0)
         return (0.0, 0.0)
 
     out = (_ema(closes30, EMA_FAST), _ema(closes30, EMA_SLOW))
+    print(f"[EMA] {ticker} @ {as_of_dt.strftime('%Y-%m-%d %H:%M')}: "
+          f"{EMA_FAST}EMA={out[0]:.2f} {EMA_SLOW}EMA={out[1]:.2f} "
+          f"({len(closes30)} 30m bars)")
     _EMA_CACHE[ckey] = out
     return out
 
@@ -198,7 +236,8 @@ def _ema_filter_passes(ticker: str, direction: str, is_reversal: bool,
     """
     fast, slow = _ema_30m(ticker, as_of_epoch)
     if fast <= 0 or slow <= 0:
-        return (True, 0.0, 0.0, "EMA unavailable")
+        # No EMA data. Fail-closed if required (honest backtests), else allow.
+        return (not EMA_REQUIRE, 0.0, 0.0, "EMA unavailable")
 
     fast_above = fast > slow
     if is_reversal:
@@ -527,8 +566,10 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
         _ok, ema_fast, ema_slow, ema_note = _ema_filter_passes(
             ticker, direction, is_reversal, _epoch)
         if not _ok:
+            _why = ("no EMA data (EMA_REQUIRE=true)"
+                    if ema_note == "EMA unavailable" else ema_note)
             print(f"[PRESET] {filter_name} {ticker} {direction}: EMA filter FAILED "
-                  f"({ema_note}) — skipping")
+                  f"({_why}) — skipping")
             return None
 
     print(f"[PRESET] 🎯 {filter_name}: {ticker} {strike}{'C' if direction=='call' else 'P'} "

@@ -676,11 +676,16 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
             pnl_s = ""
         _r    = a.get("roll") or {}
         roll_s = f" | 🔁→{_r['expiry']}" if _r.get("expiry") else ""
+        _ef, _es = a.get("ema_fast", 0), a.get("ema_slow", 0)
+        if _ef and _es:
+            ema_s = f" | 📊{'5>12' if _ef > _es else '5<12'}"
+        else:
+            ema_s = " | 📊no-EMA"
         summary.append(
             f"{emoji} {a['preset_type']}: ${a['ticker']} "
             f"{a['strike']}{otype} {a['expiry']}{money}  "
             f"{bp._fmt_prem(a['premium'])} | {a['contracts']:,}x | "
-            f"@ {a.get('time_str','')} | {play}{early}{pnl_s}{roll_s}"
+            f"@ {a.get('time_str','')} | {play}{ema_s}{early}{pnl_s}{roll_s}"
         )
     send_telegram("\n".join(summary), bot_token, chat_id)
 

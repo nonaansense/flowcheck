@@ -56,6 +56,11 @@ _COLUMNS = [
     ("Earnings",      lambda a: a.get("earnings_str") or ""),
     ("Sweep",         lambda a: "YES" if a.get("sweep") else ""),
     ("30M Play",      lambda a: "REVERSAL" if a.get("playbook") == "reversal" else "FOLLOW"),
+    ("EMA Fast",      lambda a: a.get("ema_fast") or ""),
+    ("EMA Slow",      lambda a: a.get("ema_slow") or ""),
+    ("EMA State",     lambda a: ("5>12" if (a.get("ema_fast") or 0) > (a.get("ema_slow") or 0)
+                                 else "5<12") if (a.get("ema_fast") and a.get("ema_slow"))
+                                else "no data"),
     ("Early <10:30",  lambda a: "YES — reversal risk" if a.get("is_early") else ""),
     ("Entry Filled",  lambda a: "YES" if (a.get("pnl") or {}).get("entry_filled") else "NO"),
     ("Leg1 Exit",     lambda a: (a.get("pnl") or {}).get("leg1_exit")
@@ -205,7 +210,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
             ws.append([fn(a) for _, fn in _COLUMNS])
 
         # Reasonable column widths
-        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15]
+        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15, 10, 10, 11]
         for idx, w in enumerate(widths, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
         ws.freeze_panes = "A2"

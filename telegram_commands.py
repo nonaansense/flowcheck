@@ -1172,6 +1172,40 @@ def handle_command(text: str, from_chat_id: str):
             if not _sw_ok:
                 send_reply(_sw_msg, from_chat_id)
 
+    elif cmd in ("ema_test", "ematest", "emacheck"):
+        _ea = [a.strip() for a in args if a.strip()]
+        if len(_ea) < 2:
+            send_reply('Usage: /ema_test TICKER YYYY-MM-DD [HH:MM]\ne.g. /ema_test INTC 2026-05-11 10:34\nChecks whether 30M EMA data is available for that moment.',
+                       from_chat_id)
+        else:
+            import bullflow_presets as _ebp
+            from datetime import datetime as _edt
+            _et_tick = _ea[0].upper()
+            _et_date = _ea[1]
+            _et_time = _ea[2] if len(_ea) > 2 else "14:00"
+            try:
+                _eh, _em = _et_time.split(":")
+                _edt_obj = _edt.strptime(f"{_et_date} {int(_eh):02d}:{int(_em):02d}",
+                                         "%Y-%m-%d %H:%M").replace(tzinfo=_ebp.ET)
+                _e_epoch = _edt_obj.timestamp()
+            except Exception as _ee:
+                send_reply(f"Bad date/time: {_ee}", from_chat_id)
+                return
+            _ebp._EMA_CACHE.clear()
+            _f, _s = _ebp._ema_30m(_et_tick, _e_epoch)
+            if _f and _s:
+                _state = "5EMA > 12EMA (uptrend)" if _f > _s else "5EMA < 12EMA (downtrend)"
+                _msg = (f"📊 EMA check: {_et_tick} @ {_et_date} {_et_time} ET\n"
+                        f"5EMA:  {_f:.2f}\n12EMA: {_s:.2f}\n{_state}\n\n"
+                        f"Grenade: {'PUT' if _f > _s else 'CALL'} would be TAKEN\n"
+                        f"Others:  {'CALL' if _f > _s else 'PUT'} would be TAKEN")
+            else:
+                _msg = (f"❌ EMA unavailable: {_et_tick} @ {_et_date} {_et_time} ET\n\n"
+                        f"Tradier returned no usable 15min history for that date.\n"
+                        f"Check Railway logs for the [EMA] line with the exact bar counts.\n\n"
+                        f"Likely: Tradier intraday history doesn't reach back that far.")
+            send_reply(_msg, from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2515,6 +2549,7 @@ def handle_help(reply_chat_id: str):
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",
         "/preset_backtest_range YYYY-MM-DD YYYY-MM-DD — month backtest to Excel (tab per date)",
         "/preset_sweep YYYY-MM-DD YYYY-MM-DD — test TP1/TP2/trail combos, ranked",
+        "/ema_test TICKER YYYY-MM-DD [HH:MM] — diagnose 30M EMA data availability",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",
