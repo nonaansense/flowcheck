@@ -37,7 +37,16 @@ def send_reply(text: str, reply_chat_id: str = None, with_keyboard: bool = False
     token = bot_token()
     cid   = reply_chat_id or chat_id()
     if not token or not cid:
+        print("[CMD] send_reply: no token/chat_id — message dropped")
         return
+    # Telegram parses with HTML, so a bare '<' (e.g. "5EMA < 12EMA") makes it
+    # 400 the ENTIRE message. sms.send_telegram already escapes; send_reply
+    # never did, so command replies containing '<' vanished silently.
+    try:
+        from sms import escape_html
+        text = escape_html(text)
+    except Exception:
+        pass
     payload = {
         "chat_id":                  cid,
         "text":                     text,
@@ -46,11 +55,30 @@ def send_reply(text: str, reply_chat_id: str = None, with_keyboard: bool = False
     }
     if with_keyboard:
         payload["reply_markup"] = FLOWCHECK_KEYBOARD
-    requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json=payload,
-        timeout=10
-    )
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json=payload,
+            timeout=10
+        )
+        if r.status_code == 200:
+            return
+        # Belt and braces: log it, then retry as plain text so the content
+        # still reaches the user instead of disappearing.
+        print(f"[CMD] send_reply HTTP {r.status_code}: {r.text[:200]}")
+        payload.pop("parse_mode", None)
+        r2 = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json=payload,
+            timeout=10
+        )
+        if r2.status_code == 200:
+            print("[CMD] send_reply: recovered by resending as plain text")
+        else:
+            print(f"[CMD] send_reply plain-text retry ALSO failed "
+                  f"{r2.status_code}: {r2.text[:200]}")
+    except Exception as e:
+        print(f"[CMD] send_reply exception: {e}")
 
 
 def send_keyboard(reply_chat_id: str = None):
@@ -1263,7 +1291,8 @@ def handle_command(text: str, from_chat_id: str):
             _f, _s = _ebp._ema_30m(_et_tick, _e_epoch)
             _lines.append("")
             if _f and _s:
-                _st = "5EMA > 12EMA (uptrend)" if _f > _s else "5EMA < 12EMA (downtrend)"
+                _st = ("5EMA ▲ 12EMA (uptrend)" if _f > _s
+                       else "5EMA ▼ 12EMA (downtrend)")
                 _lines += [f"✅ 5EMA {_f:.2f} | 12EMA {_s:.2f}",
                            _st, "",
                            f"Grenade: {'PUT' if _f > _s else 'CALL'} would be TAKEN",

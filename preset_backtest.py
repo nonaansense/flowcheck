@@ -678,7 +678,8 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
         roll_s = f" | 🔁→{_r['expiry']}" if _r.get("expiry") else ""
         _ef, _es = a.get("ema_fast", 0), a.get("ema_slow", 0)
         if _ef and _es:
-            ema_s = f" | 📊{'5>12' if _ef > _es else '5<12'}"
+            # Arrows, not < / > — those break Telegram's HTML parse_mode
+            ema_s = f" | 📊{'5▲12' if _ef > _es else '5▼12'}"
         else:
             ema_s = " | 📊no-EMA"
         summary.append(

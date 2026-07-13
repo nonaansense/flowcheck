@@ -94,6 +94,9 @@ SUPPRESS_EARLY = os.environ.get("BULLFLOW_PRESET_SUPPRESS_EARLY", "false").lower
 # rolling out to the next week's expiry at the same strike (more time, less
 # gamma/theta cliff into Friday).
 ROLL_SUGGEST = os.environ.get("BULLFLOW_PRESET_ROLL_SUGGEST", "true").lower() not in ("false","0","no","off")
+# A CALL expiring this week OR within this many days gets a roll suggestion
+# to the next weekly (same strike, +7 days).
+ROLL_MAX_DTE = int(os.environ.get("BULLFLOW_PRESET_ROLL_MAX_DTE", "5"))
 
 # ── 30M EMA trend filter ──
 # Grenade Trade is a FADE: take the put only when 30M 5EMA is ABOVE 12EMA
@@ -341,7 +344,9 @@ def _ema_filter_passes(ticker: str, direction: str, is_reversal: bool,
         want_above = (direction == "call")    # follow the trend
 
     passes = (fast_above == want_above)
-    note = (f"30M {EMA_FAST}EMA {'>' if fast_above else '<'} {EMA_SLOW}EMA "
+    # NB: '<' and '>' are HTML-special — Telegram sends with parse_mode=HTML and
+    # a bare '<' makes it 400 the whole message. Use arrows instead.
+    note = (f"30M {EMA_FAST}EMA {'▲' if fast_above else '▼'} {EMA_SLOW}EMA "
             f"({fast:.2f} vs {slow:.2f})")
     return (passes, fast, slow, note)
 
@@ -363,10 +368,34 @@ def _same_week(alert_d, expiry_d) -> bool:
 
 
 def _next_week_expiry(expiry_d):
-    """Same weekday, one week later (weeklies expire Friday → next Friday)."""
+    """
+    The roll target: the FRIDAY of the week after the original expiry.
+
+    Weeklies expire Friday, but not every contract does (SPX/QQQ have Mon/Wed
+    expiries too), so a naive +7 days could land on a Wednesday. Snap to the
+    Friday of that week instead. If that Friday is a market holiday (e.g. Good
+    Friday, or July 3rd observed), step back to the last trading day of the
+    week — Thursday, or earlier if that's closed too.
+    """
     if not expiry_d:
         return None
-    return expiry_d + timedelta(days=7)
+    # Move into the following week, then snap to that week's Friday.
+    nxt = expiry_d + timedelta(days=7)
+    friday = nxt + timedelta(days=(4 - nxt.weekday()))   # Mon=0 … Fri=4
+
+    try:
+        from market_calendar import MARKET_HOLIDAYS
+        holidays = MARKET_HOLIDAYS
+    except Exception:
+        holidays = set()
+
+    # Back off to the last open day of that week (Fri → Thu → Wed → …)
+    d = friday
+    for _ in range(5):
+        if d.weekday() < 5 and d not in holidays:
+            return d
+        d -= timedelta(days=1)
+    return friday
 
 
 def _build_occ(ticker: str, exp_d, otype: str, strike: float) -> str:
@@ -380,6 +409,95 @@ def _build_occ(ticker: str, exp_d, otype: str, strike: float) -> str:
         return f"{ticker.upper()}{yy}{mm}{dd}{cp}{strike_int:08d}"
     except Exception:
         return ""
+
+
+_OPT_PX_CACHE: dict = {}   # occ_epochbucket → price
+
+
+def _option_price_at(occ_symbol: str, as_of_epoch=None) -> float:
+    """
+    Price of an option contract AT a point in time.
+
+      • Alert is today (or no timestamp) → live Tradier quote.
+      • Alert is a past date (backtest)  → the option's own intraday bar at
+        that moment, falling back to that day's close.
+
+    This is what makes a BACKTESTED roll honest: pricing the next-week contract
+    at today's quote would be pure lookahead. Returns 0.0 if unavailable.
+    """
+    sym = str(occ_symbol or "").replace("O:", "").strip().upper()
+    token = os.environ.get("TRADIER_TOKEN", "")
+    if not sym or not token:
+        return 0.0
+
+    ae = _norm_epoch(as_of_epoch) if as_of_epoch else 0.0
+    today = datetime.now(ET).date()
+    as_of_d = None
+    if ae > 0:
+        try:
+            as_of_d = datetime.fromtimestamp(ae, ET).date()
+        except Exception:
+            as_of_d = None
+
+    # ── Live path: no timestamp, or the alert is from today ──
+    if as_of_d is None or as_of_d >= today:
+        return _fetch_option_quote(sym)
+
+    ckey = f"{sym}_{int(ae // 1800)}"
+    if ckey in _OPT_PX_CACHE:
+        return _OPT_PX_CACHE[ckey]
+
+    ds = as_of_d.strftime("%Y-%m-%d")
+    px = 0.0
+    hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    # ── Historical: intraday bar at/just before the alert ──
+    try:
+        r = requests.get(
+            "https://api.tradier.com/v1/markets/timesales",
+            params={"symbol": sym, "interval": "15min",
+                    "start": f"{ds} 09:30", "end": f"{ds} 16:00",
+                    "session_filter": "open"},
+            headers=hdrs, timeout=10,
+        )
+        if r.status_code == 200:
+            data = ((r.json().get("series") or {}).get("data"))
+            if isinstance(data, dict):
+                data = [data]
+            best = None
+            for b in (data or []):
+                ts, c = b.get("timestamp"), b.get("close")
+                if ts is None or not c:
+                    continue
+                if float(ts) <= ae:
+                    best = float(c)     # bars are ascending; keep the last one <= alert
+                else:
+                    break
+            if best:
+                px = best
+    except Exception as e:
+        print(f"[PRESET] roll timesales error {sym}: {e}")
+
+    # ── Fallback: that day's close ──
+    if px <= 0:
+        try:
+            r = requests.get(
+                "https://api.tradier.com/v1/markets/history",
+                params={"symbol": sym, "interval": "daily",
+                        "start": ds, "end": ds},
+                headers=hdrs, timeout=8,
+            )
+            if r.status_code == 200:
+                day = (r.json().get("history") or {}).get("day")
+                if isinstance(day, list) and day:
+                    px = float(day[0].get("close", 0) or 0)
+                elif isinstance(day, dict):
+                    px = float(day.get("close", 0) or 0)
+        except Exception as e:
+            print(f"[PRESET] roll history error {sym}: {e}")
+
+    _OPT_PX_CACHE[ckey] = px
+    return px
 
 
 def _fetch_option_quote(occ_symbol: str) -> float:
@@ -608,25 +726,41 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
     target1 = _floor_cent(entry_price * (1 + TARGET1_PCT)) if entry_price > 0 else 0.0
     target2 = _floor_cent(entry_price * (1 + TARGET2_PCT)) if entry_price > 0 else 0.0
 
-    # ── Same-week CALL → suggest rolling to next week's expiry, same strike ──
-    # A call expiring the same week as the alert faces a hard theta/gamma cliff
-    # into Friday. The next weekly at the same strike keeps the thesis with
-    # more time. Only for calls; only when the alert's own expiry is this week.
+    # ── Short-dated CALL → roll to next week's expiry, same strike ──
+    # Fires when the call expires THIS WEEK **or** within ROLL_MAX_DTE days.
+    # A near-dated call faces a hard theta/gamma cliff; the next weekly at the
+    # same strike keeps the thesis with more time. The rolled contract has its
+    # OWN price, so its entry limit and targets are derived from THAT price —
+    # not from the original contract's fill.
     roll = None
     if ROLL_SUGGEST and direction == "call":
         exp_d = _expiry_to_date(expiry)
-        if exp_d and _same_week(alert_date, exp_d):
+        if exp_d and (_same_week(alert_date, exp_d) or dte <= ROLL_MAX_DTE):
             next_d = _next_week_expiry(exp_d)
             if next_d:
                 next_occ = _build_occ(ticker, next_d, "call", strike_f)
-                next_px  = _fetch_option_quote(next_occ) if next_occ else 0.0
+                # Price the rolled contract AS OF THE ALERT — a live quote here
+                # would be lookahead in any backtest.
+                next_px  = (_option_price_at(next_occ, alert.get("timestamp"))
+                            if next_occ else 0.0)
+                # Entry + targets for the ROLLED contract, off its own price
+                r_entry = _round_up_tenth(next_px * (1 - ENTRY_DISCOUNT_PCT)) if next_px > 0 else 0.0
+                r_t1    = _floor_cent(r_entry * (1 + TARGET1_PCT)) if r_entry > 0 else 0.0
+                r_t2    = _floor_cent(r_entry * (1 + TARGET2_PCT)) if r_entry > 0 else 0.0
+                r_trail = round(next_px * TRAIL_OFFSET_PCT, 2)     if next_px > 0 else 0.0
                 roll = {
-                    "expiry":   next_d.strftime("%m/%d/%y"),
-                    "strike":   strike,
-                    "dte":      max(0, (next_d - alert_date).days),
-                    "price":    next_px,
-                    "occ":      next_occ,
+                    "expiry":    next_d.strftime("%m/%d/%y"),
+                    "strike":    strike,
+                    "dte":       max(0, (next_d - alert_date).days),
+                    "price":     next_px,
+                    "occ":       next_occ,
                     "available": next_px > 0,
+                    "reason":    ("expires this week" if _same_week(alert_date, exp_d)
+                                  else f"{dte}d DTE"),
+                    "entry":     r_entry,
+                    "target1":   r_t1,
+                    "target2":   r_t2,
+                    "trail":     r_trail,
                 }
 
     # ── Early-session reversal risk ──
@@ -772,24 +906,23 @@ def build_preset_alert(result: dict) -> str:
             f"({TRAIL_OFFSET_PCT*100:.0f}% of flow price)",
         ]
 
-    # ── Roll suggestion: same-week call → next week, same strike ──
+    # ── Roll suggestion: short-dated call → next week, same strike ──
     roll = result.get("roll")
     if roll:
-        otype_r = "C"
+        _why = roll.get("reason", "")
+        lines += ["",
+                  f"🔁 SHORT-DATED ({_why}) — take next week instead:",
+                  f"   {roll['strike']}C {roll['expiry']}  ({roll['dte']}d DTE)"]
         if roll.get("available") and roll.get("price"):
             lines += [
-                "",
-                f"🔁 EXPIRES THIS WEEK — consider next week instead:",
-                f"   {roll['strike']}{otype_r} {roll['expiry']}  "
-                f"({roll['dte']}d DTE)  @ ${roll['price']:.2f}",
+                f"   Contract price: ${roll['price']:.2f}",
+                f"   🎯 Entry: ${roll['entry']:.2f}  "
+                f"({ENTRY_DISCOUNT_PCT*100:.0f}% below its price)",
+                f"   🥇 T1: ${roll['target1']:.2f}   🥈 T2: ${roll['target2']:.2f}",
+                f"   🛑 Trail: -${roll['trail']:.2f}",
             ]
         else:
-            lines += [
-                "",
-                f"🔁 EXPIRES THIS WEEK — consider next week instead:",
-                f"   {roll['strike']}{otype_r} {roll['expiry']}  "
-                f"({roll['dte']}d DTE)  (quote unavailable)",
-            ]
+            lines.append("   (quote unavailable — check the chain)")
 
     lines += [
         "",
