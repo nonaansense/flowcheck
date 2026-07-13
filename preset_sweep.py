@@ -93,7 +93,10 @@ def _score_combo(trades: list, entry_pct: float, tp1_pct: float, tp2_pct: float,
         if offset <= 0:
             continue
 
-        res = _run_legs(window, entry, offset, t1, t2, use_trail=True)
+        from preset_backtest import _size_position
+        _n, _l1, _l2, _cap = _size_position(entry)
+        res = _run_legs(window, entry, offset, t1, t2, use_trail=True,
+                        leg1_ct=_l1, leg2_ct=_l2)
         total_usd += res["pnl_usd"]
         pcts.append(res["pnl_pct"])
         by_day[t["date"]] = round(by_day.get(t["date"], 0.0) + res["pnl_usd"], 2)

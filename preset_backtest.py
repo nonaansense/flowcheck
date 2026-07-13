@@ -181,11 +181,41 @@ def _fetch_option_daily(occ_symbol: str, start_date: str, end_date: str) -> list
     return bars
 
 
-def _run_legs(window: list, entry: float, offset: float,
-              t1: float, t2: float, use_trail: bool) -> dict:
+# Position sizing for the sim. Minimum 2 contracts (one per target leg), but
+# if 2 contracts cost less than the target capital, size up toward it — so a
+# $0.50 option and a $20 option deploy comparable money and the $ P/L across
+# trades becomes comparable instead of being dominated by expensive contracts.
+MIN_CONTRACTS  = int(os.environ.get("BULLFLOW_BACKTEST_MIN_CONTRACTS", "2"))
+TARGET_CAPITAL = float(os.environ.get("BULLFLOW_BACKTEST_TARGET_CAPITAL", "2000"))
+
+
+def _size_position(entry: float) -> tuple:
     """
-    Walk the price path with a 2-contract position:
-      Leg 1 exits at TP1, Leg 2 exits at TP2.
+    How many contracts to trade, and how they split across the two target legs.
+
+      • Never fewer than MIN_CONTRACTS (default 2 — one per leg).
+      • If MIN_CONTRACTS already costs >= TARGET_CAPITAL, that's all it takes.
+      • Otherwise scale up toward TARGET_CAPITAL.
+
+    Returns (total_contracts, leg1_contracts, leg2_contracts, capital).
+    Legs split as evenly as possible, with the odd contract going to leg 1
+    (the nearer target, so it's the one more likely to actually fill).
+    """
+    if entry <= 0:
+        return (0, 0, 0, 0.0)
+    cost_per = entry * 100.0
+    n = max(MIN_CONTRACTS, int(round(TARGET_CAPITAL / cost_per)))
+    leg1 = (n + 1) // 2      # ceil
+    leg2 = n - leg1          # floor
+    return (n, leg1, leg2, round(n * cost_per, 2))
+
+
+def _run_legs(window: list, entry: float, offset: float,
+              t1: float, t2: float, use_trail: bool,
+              leg1_ct: int = 1, leg2_ct: int = 1) -> dict:
+    """
+    Walk the price path with a sized position:
+      Leg 1 (leg1_ct contracts) exits at TP1, Leg 2 (leg2_ct) at TP2.
       Any leg that never reaches its target exits on the trailing stop
       (if use_trail) or at the final close.
 
@@ -194,11 +224,11 @@ def _run_legs(window: list, entry: float, offset: float,
     The trailing stop is NOT applied on the fill bar: that bar's low is what
     filled the entry, so it cannot also be a post-peak decline. Stop checking
     starts on the next bar. (Daily bars can't sequence intra-bar moves.)
-
-    Returns per-leg exits + totals for 2 contracts (100 shares each).
     """
-    legs = [{"target": t1, "open": True, "exit": 0.0, "reason": "", "label": "TP1"},
-            {"target": t2, "open": True, "exit": 0.0, "reason": "", "label": "TP2"}]
+    legs = [{"target": t1, "open": True, "exit": 0.0, "reason": "",
+             "label": "TP1", "ct": max(0, leg1_ct)},
+            {"target": t2, "open": True, "exit": 0.0, "reason": "",
+             "label": "TP2", "ct": max(0, leg2_ct)}]
 
     peak     = window[0]["high"] if window else entry
     exit_idx = 0
@@ -242,16 +272,20 @@ def _run_legs(window: list, entry: float, offset: float,
                 leg["open"]   = False
                 exit_idx      = len(window) - 1
 
-    cost   = entry * 2 * 100.0                       # 2 contracts x 100 shares
-    proceeds = sum(l["exit"] for l in legs) * 100.0  # each leg = 1 contract
+    cost     = entry * 100.0 * sum(l["ct"] for l in legs)
+    proceeds = sum(l["exit"] * 100.0 * l["ct"] for l in legs)
     pnl_usd  = round(proceeds - cost, 2)
     pnl_pct  = round((proceeds - cost) / cost * 100.0, 1) if cost > 0 else 0.0
 
     return {
         "leg1_exit":   round(legs[0]["exit"], 2),
         "leg1_reason": legs[0]["reason"],
+        "leg1_ct":     legs[0]["ct"],
         "leg2_exit":   round(legs[1]["exit"], 2),
         "leg2_reason": legs[1]["reason"],
+        "leg2_ct":     legs[1]["ct"],
+        "contracts":   sum(l["ct"] for l in legs),
+        "capital":     round(cost, 2),
         "pnl_usd":     pnl_usd,
         "pnl_pct":     pnl_pct,
         "exit_idx":    exit_idx,
@@ -261,7 +295,9 @@ def _run_legs(window: list, entry: float, offset: float,
 def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
                    alert_epoch=None) -> dict:
     """
-    Simulate a 2-CONTRACT position against the option's real price path:
+    Simulate a SIZED position against the option's real price path:
+    (min MIN_CONTRACTS, scaled toward TARGET_CAPITAL so cheap and expensive
+     contracts deploy comparable money — dollar P/L becomes comparable)
 
       Entry — limit at entry_price (20% below the flow's trade price). On the
               ALERT DAY the limit is checked only against intraday bars AFTER
@@ -290,7 +326,8 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
            "leg1_exit": None, "leg1_reason": "", "leg2_exit": None, "leg2_reason": "",
            "pnl_usd_trail": None, "pnl_pct_trail": None,
            "pnl_usd_notrail": None, "pnl_pct_notrail": None,
-           "trail_cost_usd": None}
+           "trail_cost_usd": None,
+           "contracts": 0, "capital": 0.0, "leg1_ct": 0, "leg2_ct": 0}
 
     entry  = float(result.get("entry_price") or 0)
     offset = float(result.get("trail_offset") or 0)
@@ -364,9 +401,18 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
 
     window = path[fill_idx:]
 
+    # ── Size the position (min N contracts, scale toward target capital) ──
+    n_ct, leg1_ct, leg2_ct, capital = _size_position(entry)
+    out["contracts"] = n_ct
+    out["capital"]   = capital
+    out["leg1_ct"]   = leg1_ct
+    out["leg2_ct"]   = leg2_ct
+
     # ── Run both scenarios ──
-    with_trail = _run_legs(window, entry, offset, t1, t2, use_trail=True)
-    no_trail   = _run_legs(window, entry, offset, t1, t2, use_trail=False)
+    with_trail = _run_legs(window, entry, offset, t1, t2, use_trail=True,
+                           leg1_ct=leg1_ct, leg2_ct=leg2_ct)
+    no_trail   = _run_legs(window, entry, offset, t1, t2, use_trail=False,
+                           leg1_ct=leg1_ct, leg2_ct=leg2_ct)
 
     out["leg1_exit"]   = with_trail["leg1_exit"]
     out["leg1_reason"] = with_trail["leg1_reason"]
@@ -382,7 +428,8 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
 
     # Headline P/L = the WITH-trail scenario (what your rules actually do)
     out["pnl_pct"]          = with_trail["pnl_pct"]
-    out["pnl_per_contract"] = round(with_trail["pnl_usd"] / 2.0, 2)
+    out["pnl_per_contract"] = (round(with_trail["pnl_usd"] / n_ct, 2)
+                               if n_ct else 0.0)
     out["exit_price"]       = round((with_trail["leg1_exit"] + with_trail["leg2_exit"]) / 2.0, 2)
     _reasons = {with_trail["leg1_reason"], with_trail["leg2_reason"]}
     out["exit_reason"] = " + ".join(sorted(_reasons))
@@ -698,8 +745,11 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
         _p    = a.get("pnl") or {}
         if _p.get("pnl_usd_trail") is not None:
             _sign = "🟢" if _p["pnl_usd_trail"] >= 0 else "🔴"
+            _ct  = _p.get("contracts", 2)
+            _cap = _p.get("capital", 0)
             pnl_s = (f" | {_sign} ${_p['pnl_usd_trail']:+,.0f} "
-                     f"({_p['pnl_pct_trail']:+.0f}%)")
+                     f"({_p['pnl_pct_trail']:+.0f}%) "
+                     f"[{_ct}ct/${_cap:,.0f}]")
             _l1 = _p.get("leg1_reason", "")
             _l2 = _p.get("leg2_reason", "")
             if _l1 or _l2:

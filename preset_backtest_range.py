@@ -69,9 +69,11 @@ _COLUMNS = [
     ("Leg2 Exit",     lambda a: (a.get("pnl") or {}).get("leg2_exit")
                                 if (a.get("pnl") or {}).get("leg2_exit") is not None else ""),
     ("Leg2 Reason",   lambda a: (a.get("pnl") or {}).get("leg2_reason") or ""),
-    ("P/L $ (2ct)",   lambda a: (a.get("pnl") or {}).get("pnl_usd_trail")
+    ("Contracts",     lambda a: (a.get("pnl") or {}).get("contracts") or ""),
+    ("Capital $",     lambda a: (a.get("pnl") or {}).get("capital") or ""),
+    ("P/L $",         lambda a: (a.get("pnl") or {}).get("pnl_usd_trail")
                                 if (a.get("pnl") or {}).get("pnl_usd_trail") is not None else ""),
-    ("P/L % (2ct)",   lambda a: (a.get("pnl") or {}).get("pnl_pct_trail")
+    ("P/L %",         lambda a: (a.get("pnl") or {}).get("pnl_pct_trail")
                                 if (a.get("pnl") or {}).get("pnl_pct_trail") is not None else ""),
     ("P/L $ NO trail",lambda a: (a.get("pnl") or {}).get("pnl_usd_notrail")
                                 if (a.get("pnl") or {}).get("pnl_usd_notrail") is not None else ""),
@@ -145,7 +147,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
     summary.title = "Summary"
     summary.append(["Date", "Alerts", "Total Premium", "Preset Events",
                     "Filled", "Wins", "Losses", "Win Rate %", "Avg P/L %",
-                    "P/L $ (2ct)", "P/L $ NO trail", "Trail Cost $",
+                    "P/L $", "P/L $ NO trail", "Trail Cost $",
                     "Avg MFE %", "Avg MAE %", "T1 Hit", "T1 %", "T2 Hit", "T2 %",
                     "Rolled", "Roll Edge $", "Note"])
     for c in range(1, 22):
@@ -236,7 +238,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
             ws.append([fn(a) for _, fn in _COLUMNS])
 
         # Reasonable column widths
-        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15, 10, 10, 11, 12, 10, 10, 10, 10, 16, 12, 12, 12, 12, 12]
+        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15, 10, 10, 11, 12, 10, 10, 10, 10, 16, 12, 12, 12, 12, 12, 10, 11]
         for idx, w in enumerate(widths, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
         ws.freeze_panes = "A2"
