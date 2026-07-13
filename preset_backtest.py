@@ -596,9 +596,13 @@ def collect_day(date: str) -> dict:
                 result = bp.process_preset(fill, alert_name)
                 if result:
                     # If a roll applies, the trade we'd ACTUALLY take is the
-                    # rolled contract — so simulate THAT, not the original.
+                    # rolled contract — so simulate THAT. But also simulate the
+                    # ORIGINAL so the two can be compared: was rolling worth it?
                     _roll = result.get("roll") or {}
-                    if _roll.get("available") and _roll.get("entry", 0) > 0 and _roll.get("occ"):
+                    _rolled_ok = (_roll.get("available") and
+                                  _roll.get("entry", 0) > 0 and _roll.get("occ"))
+
+                    if _rolled_ok:
                         sim_symbol = f"O:{_roll['occ']}"
                         sim_params = {
                             "expiry":       _roll["expiry"],
@@ -622,6 +626,22 @@ def collect_day(date: str) -> dict:
                         except Exception as _pe:
                             print(f"[PRESET_BT] P/L sim error {ticker}: {_pe}")
                             result["pnl"] = {}
+
+                        # Counterfactual: what the ORIGINAL contract would have done
+                        if _rolled_ok:
+                            try:
+                                result["pnl_orig"] = simulate_trade(
+                                    result, symbol, date,
+                                    alert_epoch=inner.get("timestamp"))
+                            except Exception as _oe:
+                                print(f"[PRESET_BT] orig sim error {ticker}: {_oe}")
+                                result["pnl_orig"] = {}
+                            # Positive = rolling MADE money vs staying put
+                            _rp = (result.get("pnl") or {}).get("pnl_usd_trail")
+                            _op = (result.get("pnl_orig") or {}).get("pnl_usd_trail")
+                            if _rp is not None and _op is not None:
+                                result["roll_edge_usd"] = round(_rp - _op, 2)
+
                     alerts_fired.append(result)
 
     except Exception as e:
@@ -694,8 +714,24 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
             pnl_s = ""
         _r    = a.get("roll") or {}
         if a.get("traded") == "rolled":
-            # We traded the ROLLED contract, not the one in the alert
-            roll_s = f" | 🔁TRADED {_r['strike']}C {_r['expiry']} @ ${_r['price']:.2f}"
+            # We traded the ROLLED contract — show it, and compare against
+            # what the original expiry would have done.
+            roll_s = (f"\n     🔁 ROLLED → {_r['strike']}C {_r['expiry']} "
+                      f"@ ${_r['price']:.2f} (orig {a['strike']}"
+                      f"{'C' if a['direction']=='call' else 'P'} {a['expiry']})")
+            _o = a.get("pnl_orig") or {}
+            _op = _o.get("pnl_usd_trail")
+            _edge = a.get("roll_edge_usd")
+            if _op is not None:
+                _osign = "🟢" if _op >= 0 else "🔴"
+                roll_s += (f"\n     ↳ original would be: {_osign} ${_op:+,.0f}")
+                if _o.get("mfe_pct") is not None:
+                    roll_s += f" (peak {_o['mfe_pct']:+.0f}%)"
+                if _edge is not None:
+                    _v = "ROLL WON" if _edge > 0 else ("ROLL LOST" if _edge < 0 else "TIE")
+                    roll_s += f"  →  {_v} ${_edge:+,.0f}"
+            elif _o.get("exit_reason"):
+                roll_s += f"\n     ↳ original: ({_o['exit_reason']})"
         elif _r.get("expiry"):
             roll_s = f" | 🔁{_r['expiry']} (no quote — traded original)"
         else:
@@ -712,6 +748,19 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
             f"{bp._fmt_prem(a['premium'])} | {a['contracts']:,}x | "
             f"@ {a.get('time_str','')} | {play}{ema_s}{early}{pnl_s}{roll_s}"
         )
+    # ── Roll vs original tally ──
+    _edges = [a.get("roll_edge_usd") for a in alerts_fired
+              if a.get("roll_edge_usd") is not None]
+    if _edges:
+        _net  = sum(_edges)
+        _wins = sum(1 for e in _edges if e > 0)
+        summary += ["",
+                    f"━━━ ROLL vs ORIGINAL ({len(_edges)} rolled) ━━━",
+                    f"Rolling was better on {_wins}/{len(_edges)} | "
+                    f"net ${_net:+,.0f}",
+                    ("✅ Rolling ADDED value" if _net > 0 else
+                     "❌ Rolling COST money" if _net < 0 else "Neutral")]
+
     send_telegram("\n".join(summary), bot_token, chat_id)
 
     # Detail — full alert card each
