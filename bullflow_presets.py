@@ -94,6 +94,123 @@ SUPPRESS_EARLY = os.environ.get("BULLFLOW_PRESET_SUPPRESS_EARLY", "false").lower
 # gamma/theta cliff into Friday).
 ROLL_SUGGEST = os.environ.get("BULLFLOW_PRESET_ROLL_SUGGEST", "true").lower() not in ("false","0","no","off")
 
+# ── 30M EMA trend filter ──
+# Grenade Trade is a FADE: take the put only when 30M 5EMA is ABOVE 12EMA
+# (i.e. fading strength), and the call only when 5EMA is BELOW 12EMA.
+# Every other preset type is a FOLLOW: call needs 5EMA above 12EMA,
+# put needs 5EMA below 12EMA.
+EMA_FILTER    = os.environ.get("BULLFLOW_PRESET_EMA_FILTER", "true").lower() not in ("false","0","no","off")
+EMA_FAST      = int(os.environ.get("BULLFLOW_PRESET_EMA_FAST", "5"))
+EMA_SLOW      = int(os.environ.get("BULLFLOW_PRESET_EMA_SLOW", "12"))
+
+_EMA_CACHE: dict = {}   # ticker_date_epochbucket → (ema_fast, ema_slow)
+
+
+def _ema(closes: list, period: int) -> float:
+    """Standard EMA. Returns 0.0 if not enough data."""
+    if len(closes) < period:
+        return 0.0
+    k = 2.0 / (period + 1)
+    e = sum(closes[:period]) / period
+    for c in closes[period:]:
+        e = c * k + e * (1 - k)
+    return e
+
+
+def _ema_30m(ticker: str, as_of_epoch) -> tuple:
+    """
+    30-minute EMA(fast) and EMA(slow) on the UNDERLYING, computed from bars
+    at or before as_of_epoch — so it reflects what the chart looked like at
+    the moment the alert fired (works identically live and in backtest).
+
+    Built from Tradier 15-min bars aggregated in pairs. Needs ~7 calendar days
+    of history so the slow EMA has enough warmup.
+
+    Returns (ema_fast, ema_slow) or (0.0, 0.0) if unavailable.
+    """
+    token = os.environ.get("TRADIER_TOKEN", "")
+    if not token or not ticker or not as_of_epoch:
+        return (0.0, 0.0)
+    try:
+        ae = float(as_of_epoch)
+    except Exception:
+        return (0.0, 0.0)
+
+    as_of_dt = datetime.fromtimestamp(ae, ET)
+    end_d    = as_of_dt.strftime("%Y-%m-%d")
+    start_d  = (as_of_dt - timedelta(days=10)).strftime("%Y-%m-%d")
+
+    # Cache per ticker + 30-min bucket (EMAs don't change within a bar)
+    ckey = f"{ticker}_{int(ae // 1800)}"
+    if ckey in _EMA_CACHE:
+        return _EMA_CACHE[ckey]
+
+    bars15 = []
+    try:
+        r = requests.get(
+            "https://api.tradier.com/v1/markets/timesales",
+            params={"symbol": ticker.upper(), "interval": "15min",
+                    "start": f"{start_d} 09:30", "end": f"{end_d} 16:00",
+                    "session_filter": "open"},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = ((r.json().get("series") or {}).get("data"))
+            if isinstance(data, dict):
+                data = [data]
+            for b in (data or []):
+                ts = b.get("timestamp")
+                close = b.get("close")
+                if ts is None or not close:
+                    continue
+                if float(ts) <= ae:          # only bars up to the alert
+                    bars15.append((float(ts), float(close)))
+            bars15.sort(key=lambda x: x[0])
+    except Exception as e:
+        print(f"[PRESET] EMA fetch error {ticker}: {e}")
+        _EMA_CACHE[ckey] = (0.0, 0.0)
+        return (0.0, 0.0)
+
+    # Aggregate 15-min → 30-min (close of each pair)
+    closes30 = [bars15[i + 1][1] for i in range(0, len(bars15) - 1, 2)]
+    if len(closes30) < EMA_SLOW + 1:
+        _EMA_CACHE[ckey] = (0.0, 0.0)
+        return (0.0, 0.0)
+
+    out = (_ema(closes30, EMA_FAST), _ema(closes30, EMA_SLOW))
+    _EMA_CACHE[ckey] = out
+    return out
+
+
+def _ema_filter_passes(ticker: str, direction: str, is_reversal: bool,
+                       as_of_epoch) -> tuple:
+    """
+    Apply the 30M EMA rule. Returns (passes, ema_fast, ema_slow, note).
+
+      Grenade (reversal / fade):  put needs fast ABOVE slow
+                                  call needs fast BELOW slow
+      All others (follow):        call needs fast ABOVE slow
+                                  put needs fast BELOW slow
+
+    If EMA data is unavailable, the trade is ALLOWED (fail-open) and flagged,
+    so a data outage never silently kills every alert.
+    """
+    fast, slow = _ema_30m(ticker, as_of_epoch)
+    if fast <= 0 or slow <= 0:
+        return (True, 0.0, 0.0, "EMA unavailable")
+
+    fast_above = fast > slow
+    if is_reversal:
+        want_above = (direction == "put")     # fade the trend
+    else:
+        want_above = (direction == "call")    # follow the trend
+
+    passes = (fast_above == want_above)
+    note = (f"30M {EMA_FAST}EMA {'>' if fast_above else '<'} {EMA_SLOW}EMA "
+            f"({fast:.2f} vs {slow:.2f})")
+    return (passes, fast, slow, note)
+
 
 def _expiry_to_date(expiry: str):
     """'07/18/26' → date(2026, 7, 18). None on failure."""
@@ -394,6 +511,26 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
     is_reversal = str(filter_name).strip().lower() in REVERSAL_TYPES
     playbook    = "reversal" if is_reversal else "follow"
 
+    # ── 30M EMA trend gate ──
+    # Grenade fades the 30M trend; every other type follows it.
+    ema_note, ema_fast, ema_slow = "", 0.0, 0.0
+    if EMA_FILTER:
+        _epoch = alert.get("timestamp")
+        if not _epoch and alert_date and alert_hour is not None:
+            # Rebuild an epoch from the parsed date+hour if the raw one is absent
+            try:
+                _h = int(alert_hour); _m = int(round((alert_hour - _h) * 60))
+                _epoch = datetime(alert_date.year, alert_date.month, alert_date.day,
+                                  _h, _m, tzinfo=ET).timestamp()
+            except Exception:
+                _epoch = None
+        _ok, ema_fast, ema_slow, ema_note = _ema_filter_passes(
+            ticker, direction, is_reversal, _epoch)
+        if not _ok:
+            print(f"[PRESET] {filter_name} {ticker} {direction}: EMA filter FAILED "
+                  f"({ema_note}) — skipping")
+            return None
+
     print(f"[PRESET] 🎯 {filter_name}: {ticker} {strike}{'C' if direction=='call' else 'P'} "
           f"{expiry} | {_fmt_prem(premium)} | {dte}d | {moneyness} | {contracts} contracts "
           f"| 30M {playbook}{' | EARLY' if is_early else ''}")
@@ -422,6 +559,9 @@ def process_preset(alert: dict, filter_name: str) -> dict | None:
         "alert_date":   alert_date.strftime("%Y-%m-%d") if alert_date else "",
         "is_early":     is_early,
         "playbook":     playbook,
+        "ema_fast":     round(ema_fast, 2),
+        "ema_slow":     round(ema_slow, 2),
+        "ema_note":     ema_note,
         "roll":         roll,
     }
 
@@ -474,6 +614,9 @@ def build_preset_alert(result: dict) -> str:
         lines.append("🔄 PLAY: watch 30M for TREND REVERSAL")
     else:
         lines.append("➡️ PLAY: watch 30M for TREND CONTINUATION")
+    _en = result.get("ema_note", "")
+    if _en and _en != "EMA unavailable":
+        lines.append(f"✅ {_en}")
     if is_early:
         _cut_h = int(EARLY_CUTOFF_HOUR)
         _cut_m = int(round((EARLY_CUTOFF_HOUR - _cut_h) * 60))

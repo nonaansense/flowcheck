@@ -1159,6 +1159,19 @@ def handle_command(text: str, from_chat_id: str):
             if not _prr_ok:
                 send_reply(_prr_msg, from_chat_id)
 
+    elif cmd in ("preset_sweep", "sweep", "presetsweep"):
+        _sw = [a.strip() for a in args if a.strip()]
+        if len(_sw) < 2:
+            send_reply('Usage: /preset_sweep YYYY-MM-DD YYYY-MM-DD\ne.g. /preset_sweep 2026-06-01 2026-06-30\nTests a grid of TP1/TP2/trail settings on real fills. Max 31 days.',
+                       from_chat_id)
+        else:
+            from preset_sweep import start_sweep as _sw_start
+            import os as _swos
+            _sw_bot = _swos.environ.get("TELEGRAM_BOT_TOKEN","")
+            _sw_ok, _sw_msg = _sw_start(_sw[0], _sw[1], _sw_bot, from_chat_id)
+            if not _sw_ok:
+                send_reply(_sw_msg, from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2501,6 +2514,7 @@ def handle_help(reply_chat_id: str):
         "/swing - top 5 swing plays from full-day flow + chart story",
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",
         "/preset_backtest_range YYYY-MM-DD YYYY-MM-DD — month backtest to Excel (tab per date)",
+        "/preset_sweep YYYY-MM-DD YYYY-MM-DD — test TP1/TP2/trail combos, ranked",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",
