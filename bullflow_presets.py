@@ -135,22 +135,59 @@ def _norm_epoch(v) -> float:
     return e
 
 
+def _polygon_30m_closes(ticker: str, start_d: str, end_d: str, ae: float) -> list:
+    """
+    30-minute closes from Polygon aggregates — used when Tradier's intraday
+    window doesn't reach back far enough (it only holds a few weeks, so any
+    older backtest date returns nothing).
+
+    Polygon: /v2/aggs/ticker/{T}/range/30/minute/{from}/{to}
+    Returns closes at or before `ae` (epoch seconds), oldest first. [] on failure.
+    """
+    key = os.environ.get("POLYGON_API_KEY", "")
+    if not key:
+        return []
+    try:
+        r = requests.get(
+            f"https://api.polygon.io/v2/aggs/ticker/{ticker.upper()}"
+            f"/range/30/minute/{start_d}/{end_d}",
+            params={"adjusted": "true", "sort": "asc", "limit": 50000,
+                    "apiKey": key},
+            timeout=12,
+        )
+        if r.status_code != 200:
+            print(f"[EMA] {ticker}: Polygon HTTP {r.status_code} — {r.text[:120]}")
+            return []
+        out = []
+        for b in (r.json().get("results") or []):
+            # Polygon 't' is epoch MILLISECONDS at the bar's START
+            t_ms, c = b.get("t"), b.get("c")
+            if t_ms is None or c is None:
+                continue
+            # Include the bar only if it CLOSED at or before the alert
+            if (float(t_ms) / 1000.0) + 1800 <= ae:
+                out.append(float(c))
+        return out
+    except Exception as e:
+        print(f"[EMA] {ticker}: Polygon error {e}")
+        return []
+
+
 def _ema_30m(ticker: str, as_of_epoch) -> tuple:
     """
     30-minute EMA(fast) and EMA(slow) on the UNDERLYING, computed from bars
     at or before as_of_epoch — so it reflects what the chart looked like at
     the moment the alert fired (works identically live and in backtest).
 
-    Built from Tradier 15-min bars aggregated in pairs. Needs ~10 calendar
-    days of history so the slow EMA has enough warmup.
+    Source order:
+      1. Tradier 15-min timesales (aggregated in pairs) — good for LIVE and
+         recent dates, but Tradier's intraday history is only a few weeks deep.
+      2. Polygon 30-min aggregates — years of history, so this is what makes
+         the filter work on older BACKTEST dates.
 
     Returns (ema_fast, ema_slow). (0.0, 0.0) means UNAVAILABLE — and the
     reason is always logged, so this can never fail silently.
     """
-    token = os.environ.get("TRADIER_TOKEN", "")
-    if not token:
-        print(f"[EMA] {ticker}: no TRADIER_TOKEN")
-        return (0.0, 0.0)
     if not ticker:
         return (0.0, 0.0)
 
@@ -166,57 +203,71 @@ def _ema_30m(ticker: str, as_of_epoch) -> tuple:
         return (0.0, 0.0)
 
     end_d   = as_of_dt.strftime("%Y-%m-%d")
-    start_d = (as_of_dt - timedelta(days=10)).strftime("%Y-%m-%d")
+    start_d = (as_of_dt - timedelta(days=15)).strftime("%Y-%m-%d")
 
     ckey = f"{ticker}_{int(ae // 1800)}"
     if ckey in _EMA_CACHE:
         return _EMA_CACHE[ckey]
 
-    bars15, raw_n = [], 0
-    try:
-        r = requests.get(
-            "https://api.tradier.com/v1/markets/timesales",
-            params={"symbol": ticker.upper(), "interval": "15min",
-                    "start": f"{start_d} 09:30", "end": f"{end_d} 16:00",
-                    "session_filter": "open"},
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            print(f"[EMA] {ticker}: Tradier HTTP {r.status_code} — {r.text[:120]}")
-            _EMA_CACHE[ckey] = (0.0, 0.0)
-            return (0.0, 0.0)
+    need     = EMA_SLOW + 1
+    closes30 = []
+    src      = ""
 
-        data = ((r.json().get("series") or {}).get("data"))
-        if isinstance(data, dict):
-            data = [data]
-        raw_n = len(data or [])
-        for b in (data or []):
-            ts, close = b.get("timestamp"), b.get("close")
-            if ts is None or not close:
-                continue
-            if float(ts) <= ae:
-                bars15.append((float(ts), float(close)))
-        bars15.sort(key=lambda x: x[0])
-    except Exception as e:
-        print(f"[EMA] {ticker}: fetch error {e}")
-        _EMA_CACHE[ckey] = (0.0, 0.0)
-        return (0.0, 0.0)
+    # ── Source 1: Tradier 15-min → 30-min ──
+    token = os.environ.get("TRADIER_TOKEN", "")
+    if token:
+        bars15, raw_n = [], 0
+        try:
+            r = requests.get(
+                "https://api.tradier.com/v1/markets/timesales",
+                params={"symbol": ticker.upper(), "interval": "15min",
+                        "start": f"{start_d} 09:30", "end": f"{end_d} 16:00",
+                        "session_filter": "open"},
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = ((r.json().get("series") or {}).get("data"))
+                if isinstance(data, dict):
+                    data = [data]
+                raw_n = len(data or [])
+                for b in (data or []):
+                    ts, close = b.get("timestamp"), b.get("close")
+                    if ts is None or not close:
+                        continue
+                    if float(ts) <= ae:
+                        bars15.append((float(ts), float(close)))
+                bars15.sort(key=lambda x: x[0])
+            else:
+                print(f"[EMA] {ticker}: Tradier HTTP {r.status_code}")
+        except Exception as e:
+            print(f"[EMA] {ticker}: Tradier error {e}")
 
-    closes30 = [bars15[i + 1][1] for i in range(0, len(bars15) - 1, 2)]
-    need = EMA_SLOW + 1
+        cand = [bars15[i + 1][1] for i in range(0, len(bars15) - 1, 2)]
+        if len(cand) >= need:
+            closes30, src = cand, "tradier"
+        else:
+            print(f"[EMA] {ticker} @ {end_d}: Tradier thin "
+                  f"({raw_n} 15m bars → {len(cand)} 30m closes, need {need}) "
+                  f"— trying Polygon")
+
+    # ── Source 2: Polygon 30-min aggregates (deep history) ──
+    if not closes30:
+        cand = _polygon_30m_closes(ticker, start_d, end_d, ae)
+        if len(cand) >= need:
+            closes30, src = cand, "polygon"
+
     if len(closes30) < need:
-        print(f"[EMA] {ticker} @ {end_d}: NOT ENOUGH DATA — "
-              f"Tradier returned {raw_n} 15m bars, {len(bars15)} before alert, "
-              f"{len(closes30)} 30m closes (need {need}). "
-              f"Range {start_d}→{end_d}. Filter will FAIL OPEN.")
+        print(f"[EMA] {ticker} @ {end_d}: NO DATA from Tradier OR Polygon "
+              f"(need {need} 30m closes). Filter will "
+              f"{'SKIP the trade' if EMA_REQUIRE else 'FAIL OPEN'}.")
         _EMA_CACHE[ckey] = (0.0, 0.0)
         return (0.0, 0.0)
 
     out = (_ema(closes30, EMA_FAST), _ema(closes30, EMA_SLOW))
     print(f"[EMA] {ticker} @ {as_of_dt.strftime('%Y-%m-%d %H:%M')}: "
           f"{EMA_FAST}EMA={out[0]:.2f} {EMA_SLOW}EMA={out[1]:.2f} "
-          f"({len(closes30)} 30m bars)")
+          f"({len(closes30)} 30m bars via {src})")
     _EMA_CACHE[ckey] = out
     return out
 

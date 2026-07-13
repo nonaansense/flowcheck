@@ -1200,10 +1200,15 @@ def handle_command(text: str, from_chat_id: str):
                         f"Grenade: {'PUT' if _f > _s else 'CALL'} would be TAKEN\n"
                         f"Others:  {'CALL' if _f > _s else 'PUT'} would be TAKEN")
             else:
+                import os as _eos
+                _has_poly = bool(_eos.environ.get("POLYGON_API_KEY",""))
                 _msg = (f"❌ EMA unavailable: {_et_tick} @ {_et_date} {_et_time} ET\n\n"
-                        f"Tradier returned no usable 15min history for that date.\n"
-                        f"Check Railway logs for the [EMA] line with the exact bar counts.\n\n"
-                        f"Likely: Tradier intraday history doesn't reach back that far.")
+                        f"Tradier: no intraday history that far back (expected).\n"
+                        f"Polygon: {'tried, also no data' if _has_poly else 'POLYGON_API_KEY NOT SET'}\n\n"
+                        + ("Set POLYGON_API_KEY in Railway — Polygon has years of\n"
+                           "30min history and is the fallback for backtest dates."
+                           if not _has_poly else
+                           "Check Railway logs for the [EMA] line with exact counts."))
             send_reply(_msg, from_chat_id)
 
     elif cmd in ("help", "start"):

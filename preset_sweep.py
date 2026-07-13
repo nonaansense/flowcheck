@@ -38,38 +38,58 @@ def _pcts(env_name: str, default: str) -> list:
 
 
 def _grid() -> tuple:
-    tp1s   = _pcts("SWEEP_TP1_PCTS",   "0.50,0.75,1.01,1.25,1.50")
-    tp2s   = _pcts("SWEEP_TP2_PCTS",   "1.00,1.50,2.01,2.50")
-    trails = _pcts("SWEEP_TRAIL_PCTS", "0.30,0.40,0.50,0.60,0.75")
-    return tp1s, tp2s, trails
+    entries = _pcts("SWEEP_ENTRY_PCTS", "0.00,0.10,0.15,0.20,0.25,0.30,0.40")
+    tp1s    = _pcts("SWEEP_TP1_PCTS",   "0.50,0.75,1.01,1.25,1.50")
+    tp2s    = _pcts("SWEEP_TP2_PCTS",   "1.00,1.50,2.01,2.50")
+    trails  = _pcts("SWEEP_TRAIL_PCTS", "0.30,0.40,0.50,0.60,0.75")
+    return entries, tp1s, tp2s, trails
 
 
-def _score_combo(trades: list, tp1_pct: float, tp2_pct: float,
+def _score_combo(trades: list, entry_pct: float, tp1_pct: float, tp2_pct: float,
                  trail_pct: float) -> dict:
     """
-    Re-simulate every collected trade with one parameter combination.
-    `trades` are dicts of {entry, flow_price, window} — the price path is
-    already fetched, so this is pure arithmetic.
+    Re-simulate every ALERT with one parameter combination.
 
-    Scored against the ENTIRE pooled trade set (all dates in the range), and
-    also broken out per-day so a combo that only wins because of one outlier
-    day can be spotted.
+    Crucially, the entry discount is applied HERE — so a deeper discount
+    produces a better entry price but fewer fills. `trades` carry the FULL
+    option path from the alert onward, not a pre-filtered post-fill window.
+
+    A never-filled alert contributes $0 and is counted as a miss. The metric
+    that makes discounts comparable is **P/L per ALERT** (total ÷ all alerts),
+    which prices in the trades you didn't get.
     """
     from preset_backtest import _run_legs
     import bullflow_presets as bp
 
     total_usd = 0.0
-    pcts, wins, t1_hits, t2_hits = [], 0, 0, 0
+    pcts, wins, t1_hits, t2_hits, fills = [], 0, 0, 0, 0
     by_day: dict = {}
+    n_alerts = len(trades)
 
     for t in trades:
-        entry  = t["entry"]
-        window = t["window"]
-        if entry <= 0 or not window:
+        flow = t["flow_price"]
+        path = t["path"]
+        if flow <= 0 or not path:
             continue
+
+        entry = bp._round_up_tenth(flow * (1 - entry_pct))
+        if entry <= 0:
+            continue
+
+        # Where would THIS entry have filled?
+        fill_idx = None
+        for i, b in enumerate(path):
+            if b["low"] > 0 and b["low"] <= entry:
+                fill_idx = i
+                break
+        if fill_idx is None:
+            continue          # never filled at this discount — a miss
+
+        fills += 1
+        window = path[fill_idx:]
         t1 = bp._floor_cent(entry * (1 + tp1_pct))
         t2 = bp._floor_cent(entry * (1 + tp2_pct))
-        offset = round(t["flow_price"] * trail_pct, 2)
+        offset = round(flow * trail_pct, 2)
         if offset <= 0:
             continue
 
@@ -88,16 +108,21 @@ def _score_combo(trades: list, tp1_pct: float, tp2_pct: float,
     day_vals   = list(by_day.values())
     green_days = sum(1 for v in day_vals if v > 0)
     best_day   = max(day_vals) if day_vals else 0.0
-    # How much of the total came from the single best day? A combo whose edge
-    # is one lucky day is fragile, however good the headline number looks.
     concentration = round(best_day / total_usd * 100, 1) if total_usd > 0 else 0.0
 
     return {
+        "entry_pct": round(entry_pct * 100, 0),
         "tp1_pct":   round(tp1_pct * 100, 0),
         "tp2_pct":   round(tp2_pct * 100, 0),
         "trail_pct": round(trail_pct * 100, 0),
+        "alerts":    n_alerts,
+        "fills":     fills,
+        "fill_rate": round(fills / n_alerts * 100, 1) if n_alerts else 0.0,
         "trades":    n,
         "total_usd": round(total_usd, 2),
+        # THE comparable metric across discounts — prices in the missed trades
+        "usd_per_alert": round(total_usd / n_alerts, 2) if n_alerts else 0.0,
+        "usd_per_fill":  round(total_usd / n, 2) if n else 0.0,
         "avg_pct":   round(sum(pcts) / n, 1) if n else 0.0,
         "win_rate":  round(wins / n * 100, 1) if n else 0.0,
         "t1_rate":   round(t1_hits / n * 100, 1) if n else 0.0,
@@ -130,9 +155,8 @@ def _collect_trades(days: list, send, bot, chat) -> list:
             continue
 
         for a in day.get("alerts", []):
-            entry = float(a.get("entry_price") or 0)
-            flow  = float(a.get("price") or 0)
-            if entry <= 0 or flow <= 0:
+            flow = float(a.get("price") or 0)
+            if flow <= 0:
                 continue
             occ = (f"O:{a['ticker']}"
                    f"{_occ_tail(a)}")
@@ -164,25 +188,18 @@ def _collect_trades(days: list, send, bot, chat) -> list:
             if not path:
                 continue
 
-            # Fill index (same rule as the sim)
-            fill_idx = None
-            for j, b in enumerate(path):
-                if b["low"] > 0 and b["low"] <= entry:
-                    fill_idx = j
-                    break
-            if fill_idx is None:
-                continue   # never filled — contributes nothing to any combo
-
+            # Store the FULL path from the alert. The entry discount is applied
+            # per-combo in _score_combo, so a deeper discount can legitimately
+            # miss the fill — which is exactly what we're trying to measure.
             trades.append({
                 "date":       date,
                 "ticker":     a["ticker"],
-                "entry":      entry,
                 "flow_price": flow,
-                "window":     path[fill_idx:],
+                "path":       path,
             })
 
         if i % 5 == 0 and i < len(days):
-            send(f"… {i}/{len(days)} days streamed ({len(trades)} filled trades)",
+            send(f"… {i}/{len(days)} days streamed ({len(trades)} alerts with data)",
                  bot, chat)
 
     return trades
@@ -199,71 +216,87 @@ def _occ_tail(a: dict) -> str:
         return ""
 
 
-def _build_workbook(rows: list, trades: list, start: str, end: str) -> str:
+def _build_workbook(rows: list, disc_rows: list, trades: list,
+                    start: str, end: str) -> str:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
 
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Sweep"
-    hdr = ["TP1 %", "TP2 %", "Trail %", "Trades", "Total P/L $",
-           "Avg P/L %", "Win Rate %", "TP1 Hit %", "TP2 Hit %",
-           "Days", "Green Days", "Green Day %", "Best Day $", "Worst Day $",
-           "Best-Day Concentration %"]
-    ws.append(hdr)
-    hf, hfill, ctr = (Font(bold=True, color="FFFFFF"),
-                      PatternFill("solid", fgColor="1F3864"),
-                      Alignment(horizontal="center"))
-    for c in range(1, len(hdr) + 1):
-        cell = ws.cell(row=1, column=c)
-        cell.font = hf; cell.fill = hfill; cell.alignment = ctr
+    hf    = Font(bold=True, color="FFFFFF")
+    hfill = PatternFill("solid", fgColor="1F3864")
+    ctr   = Alignment(horizontal="center")
 
-    ranked = sorted(rows, key=lambda x: -x["total_usd"])
-    for r in ranked:
-        ws.append([r["tp1_pct"], r["tp2_pct"], r["trail_pct"], r["trades"],
-                   r["total_usd"], r["avg_pct"], r["win_rate"],
-                   r["t1_rate"], r["t2_rate"],
-                   r["days"], r["green_days"], r["green_day_pct"],
-                   r["best_day_usd"], r["worst_day_usd"], r["concentration"]])
-
-    # Highlight the best row
-    if rows:
-        for c in range(1, len(hdr) + 1):
-            ws.cell(row=2, column=c).font = Font(bold=True)
-    for col, w in zip("ABCDEFGHIJKLMNO", (8, 8, 9, 8, 13, 11, 11, 11, 11, 7, 11, 12, 12, 12, 22)):
-        ws.column_dimensions[col].width = w
-    ws.freeze_panes = "A2"
-
-    # Per-day P/L for the top 3 combos — is the edge consistent or one lucky day?
-    if ranked:
-        ws_d = wb.create_sheet("Top3 Daily")
-        top3 = ranked[:3]
-        ws_d.append(["Date"] + [f"TP1 {r['tp1_pct']:.0f}/TP2 {r['tp2_pct']:.0f}/TR {r['trail_pct']:.0f}"
-                                for r in top3])
-        for c in range(1, len(top3) + 2):
-            cell = ws_d.cell(row=1, column=c)
+    def _hdr(ws, cols):
+        ws.append(cols)
+        for c in range(1, len(cols) + 1):
+            cell = ws.cell(row=1, column=c)
             cell.font = hf; cell.fill = hfill; cell.alignment = ctr
+        ws.freeze_panes = "A2"
+
+    # ── Tab 1: Entry Discount (the direct answer) ──
+    ws_d = wb.active
+    ws_d.title = "Entry Discount"
+    _hdr(ws_d, ["Entry Disc %", "Alerts", "Fills", "Fill Rate %",
+                "$ per ALERT", "$ per FILL", "Total P/L $", "Avg P/L %",
+                "Win Rate %", "TP1 Hit %", "TP2 Hit %"])
+    for r in sorted(disc_rows, key=lambda x: x["entry_pct"]):
+        ws_d.append([r["entry_pct"], r["alerts"], r["fills"], r["fill_rate"],
+                     r["usd_per_alert"], r["usd_per_fill"], r["total_usd"],
+                     r["avg_pct"], r["win_rate"], r["t1_rate"], r["t2_rate"]])
+    # Bold the winner on $/alert
+    if disc_rows:
+        best_e = max(disc_rows, key=lambda x: x["usd_per_alert"])["entry_pct"]
+        for i, r in enumerate(sorted(disc_rows, key=lambda x: x["entry_pct"]), start=2):
+            if r["entry_pct"] == best_e:
+                for c in range(1, 12):
+                    ws_d.cell(row=i, column=c).font = Font(bold=True)
+    for col, w in zip("ABCDEFGHIJK", (12, 8, 7, 11, 12, 11, 12, 10, 11, 11, 11)):
+        ws_d.column_dimensions[col].width = w
+
+    # ── Tab 2: Full grid, ranked by $/alert ──
+    ws = wb.create_sheet("Full Grid")
+    _hdr(ws, ["Entry %", "TP1 %", "TP2 %", "Trail %", "Alerts", "Fills",
+              "Fill Rate %", "$ per ALERT", "Total P/L $", "Avg P/L %",
+              "Win Rate %", "TP1 Hit %", "TP2 Hit %", "Days", "Green Days",
+              "Green Day %", "Best Day $", "Worst Day $", "Best-Day Conc %"])
+    ranked = sorted(rows, key=lambda x: -x["usd_per_alert"])
+    for r in ranked:
+        ws.append([r["entry_pct"], r["tp1_pct"], r["tp2_pct"], r["trail_pct"],
+                   r["alerts"], r["fills"], r["fill_rate"], r["usd_per_alert"],
+                   r["total_usd"], r["avg_pct"], r["win_rate"], r["t1_rate"],
+                   r["t2_rate"], r["days"], r["green_days"], r["green_day_pct"],
+                   r["best_day_usd"], r["worst_day_usd"], r["concentration"]])
+    if ranked:
+        for c in range(1, 20):
+            ws.cell(row=2, column=c).font = Font(bold=True)
+    for col, w in zip("ABCDEFGHIJKLMNOPQRS",
+                      (8, 7, 7, 8, 7, 6, 10, 11, 12, 10, 10, 10, 10, 6, 10, 11, 11, 11, 14)):
+        ws.column_dimensions[col].width = w
+
+    # ── Tab 3: Top-3 daily (fragility check) ──
+    if ranked:
+        ws3 = wb.create_sheet("Top3 Daily")
+        top3 = ranked[:3]
+        _hdr(ws3, ["Date"] + [f"E{r['entry_pct']:.0f}/T1 {r['tp1_pct']:.0f}/"
+                              f"T2 {r['tp2_pct']:.0f}/TR {r['trail_pct']:.0f}"
+                              for r in top3])
         all_dates = sorted({d for r in top3 for d in r["by_day"]})
         for d in all_dates:
-            ws_d.append([d] + [r["by_day"].get(d, 0.0) for r in top3])
-        ws_d.append([])
-        ws_d.append(["TOTAL"] + [r["total_usd"] for r in top3])
+            ws3.append([d] + [r["by_day"].get(d, 0.0) for r in top3])
+        ws3.append([])
+        ws3.append(["TOTAL"] + [r["total_usd"] for r in top3])
         for c in range(1, len(top3) + 2):
-            ws_d.cell(row=ws_d.max_row, column=c).font = Font(bold=True)
-        for col, w in zip("ABCD", (12, 24, 24, 24)):
-            ws_d.column_dimensions[col].width = w
-        ws_d.freeze_panes = "A2"
+            ws3.cell(row=ws3.max_row, column=c).font = Font(bold=True)
+        for col, w in zip("ABCD", (12, 26, 26, 26)):
+            ws3.column_dimensions[col].width = w
 
-    # Trades tab: the fills the sweep ran on
-    ws2 = wb.create_sheet("Trades")
-    ws2.append(["Date", "Ticker", "Entry", "Flow Price", "Bars"])
-    for c in range(1, 6):
-        cell = ws2.cell(row=1, column=c)
-        cell.font = hf; cell.fill = hfill; cell.alignment = ctr
+    # ── Tab 4: the alerts the sweep ran on ──
+    ws4 = wb.create_sheet("Alerts")
+    _hdr(ws4, ["Date", "Ticker", "Flow Price", "Bars"])
     for t in trades:
-        ws2.append([t["date"], t["ticker"], t["entry"], t["flow_price"], len(t["window"])])
-    for col, w in zip("ABCDE", (12, 9, 9, 11, 7)):
-        ws2.column_dimensions[col].width = w
+        ws4.append([t["date"], t["ticker"], t["flow_price"], len(t["path"])])
+    for col, w in zip("ABCD", (12, 9, 11, 7)):
+        ws4.column_dimensions[col].width = w
 
     os.makedirs("/tmp", exist_ok=True)
     path = f"/tmp/preset_sweep_{start}_to_{end}.xlsx"
@@ -280,12 +313,13 @@ def _run_sweep_thread(start: str, end: str, bot: str, chat: str):
         send_telegram(f"No weekdays in {start} → {end}.", bot, chat)
         return
 
-    tp1s, tp2s, trails = _grid()
-    combos = len(tp1s) * len(tp2s) * len(trails)
+    entries, tp1s, tp2s, trails = _grid()
+    combos = len(entries) * len(tp1s) * len(tp2s) * len(trails)
 
     send_telegram(
         f"🧪 Parameter sweep: {start} → {end}\n"
-        f"{len(days)} trading days | {combos} combinations\n"
+        f"{len(days)} trading days | up to {combos} combinations\n"
+        f"Entry disc: {[f'{int(p*100)}%' for p in entries]}\n"
         f"TP1: {[f'{int(p*100)}%' for p in tp1s]}\n"
         f"TP2: {[f'{int(p*100)}%' for p in tp2s]}\n"
         f"Trail: {[f'{int(p*100)}%' for p in trails]}\n"
@@ -294,59 +328,83 @@ def _run_sweep_thread(start: str, end: str, bot: str, chat: str):
 
     trades = _collect_trades(days, send_telegram, bot, chat)
     if not trades:
-        send_telegram("No filled trades in that range — nothing to sweep.", bot, chat)
+        send_telegram("No alerts with option data in that range — nothing to sweep.",
+                      bot, chat)
         return
 
-    send_telegram(f"📊 {len(trades)} filled trades collected. Scoring {combos} combos…",
-                  bot, chat)
+    send_telegram(f"📊 {len(trades)} alerts collected. Scoring…", bot, chat)
 
     rows = []
-    for t1 in tp1s:
-        for t2 in tp2s:
-            if t2 <= t1:
-                continue          # TP2 must be beyond TP1
-            for tr in trails:
-                rows.append(_score_combo(trades, t1, t2, tr))
+    for e in entries:
+        for t1 in tp1s:
+            for t2 in tp2s:
+                if t2 <= t1:
+                    continue
+                for tr in trails:
+                    rows.append(_score_combo(trades, e, t1, t2, tr))
 
     if not rows:
         send_telegram("No valid combinations (TP2 must exceed TP1).", bot, chat)
         return
 
-    best = max(rows, key=lambda x: x["total_usd"])
-    cur  = next((r for r in rows
-                 if r["tp1_pct"] == 101 and r["tp2_pct"] == 201 and r["trail_pct"] == 75),
-                None)
+    # ── Entry-discount isolation: hold TP/trail at the CURRENT live settings
+    #    and vary only the discount, so the comparison is apples-to-apples. ──
+    import bullflow_presets as bp
+    cur_t1 = bp.TARGET1_PCT
+    cur_t2 = bp.TARGET2_PCT
+    cur_tr = bp.TRAIL_OFFSET_PCT
+    disc_rows = [_score_combo(trades, e, cur_t1, cur_t2, cur_tr) for e in entries]
 
-    msg = [f"🧪 Sweep complete: {start} → {end}",
-           f"{len(trades)} filled trades | {len(rows)} combos",
-           "",
-           f"🥇 BEST: TP1 {best['tp1_pct']:.0f}% / TP2 {best['tp2_pct']:.0f}% / "
-           f"Trail {best['trail_pct']:.0f}%",
-           f"   ${best['total_usd']:+,.0f} | {best['win_rate']:.0f}% win | "
-           f"TP1 hit {best['t1_rate']:.0f}% | TP2 hit {best['t2_rate']:.0f}%"]
+    best      = max(rows, key=lambda x: x["usd_per_alert"])
+    best_disc = max(disc_rows, key=lambda x: x["usd_per_alert"])
+    cur = next((r for r in disc_rows
+                if abs(r["entry_pct"] - bp.ENTRY_DISCOUNT_PCT * 100) < 0.5), None)
+
+    # Discount comparison table — the direct answer to "is 20% worth it?"
+    lines = [f"🧪 Sweep complete: {start} → {end}",
+             f"{len(trades)} alerts | {len(rows)} combos",
+             "",
+             "━━━ ENTRY DISCOUNT (TP/trail at your live settings) ━━━",
+             "Disc │ Fill% │ $/alert │ $/fill │ Total $"]
+    for r in sorted(disc_rows, key=lambda x: x["entry_pct"]):
+        mark = " ←you" if cur and r["entry_pct"] == cur["entry_pct"] else ""
+        star = " ⭐" if r["entry_pct"] == best_disc["entry_pct"] else ""
+        lines.append(f"{r['entry_pct']:>3.0f}% │ {r['fill_rate']:>4.0f}% │ "
+                     f"${r['usd_per_alert']:>+7,.0f} │ ${r['usd_per_fill']:>+6,.0f} │ "
+                     f"${r['total_usd']:>+8,.0f}{mark}{star}")
+
+    lines += ["",
+              f"⭐ Best discount: {best_disc['entry_pct']:.0f}% "
+              f"(${best_disc['usd_per_alert']:+,.0f}/alert, "
+              f"{best_disc['fill_rate']:.0f}% fill)"]
     if cur:
-        msg += ["",
-                f"📍 YOUR CURRENT (101/201/75): ${cur['total_usd']:+,.0f} | "
-                f"{cur['win_rate']:.0f}% win | TP2 hit {cur['t2_rate']:.0f}%",
-                f"   Delta vs best: ${best['total_usd'] - cur['total_usd']:+,.0f}"]
-    msg += ["",
-            f"   Consistency: green on {best['green_days']}/{best['days']} days "
-            f"({best['green_day_pct']:.0f}%)",
-            f"   Best day ${best['best_day_usd']:+,.0f} = {best['concentration']:.0f}% of total",
-            "",
-            "⚠️ If one day is most of the total, the edge is fragile.",
-            "Full grid + Top3 daily breakdown in the Excel."]
-    send_telegram("\n".join(msg), bot, chat)
+        delta = best_disc["usd_per_alert"] - cur["usd_per_alert"]
+        lines.append(f"   vs your {cur['entry_pct']:.0f}%: "
+                     f"${delta:+,.0f} per alert")
+
+    lines += ["",
+              "━━━ BEST OVERALL COMBO ━━━",
+              f"🥇 Entry {best['entry_pct']:.0f}% / TP1 {best['tp1_pct']:.0f}% / "
+              f"TP2 {best['tp2_pct']:.0f}% / Trail {best['trail_pct']:.0f}%",
+              f"   ${best['usd_per_alert']:+,.0f}/alert | ${best['total_usd']:+,.0f} total | "
+              f"{best['fill_rate']:.0f}% fill | {best['win_rate']:.0f}% win",
+              f"   Green {best['green_days']}/{best['days']} days | "
+              f"best day = {best['concentration']:.0f}% of total",
+              "",
+              "⚠️ Ranked by $/ALERT — this prices in the trades a deeper",
+              "discount never fills. Total $ alone would flatter shallow entries.",
+              "Full grid + Discount tab in the Excel."]
+    send_telegram("\n".join(lines), bot, chat)
 
     try:
-        path = _build_workbook(rows, trades, start, end)
+        path = _build_workbook(rows, disc_rows, trades, start, end)
     except Exception as e:
         send_telegram(f"❌ Excel build error: {e}", bot, chat)
         return
 
     send_telegram_document(path, bot, chat,
-                           caption=f"Parameter sweep {start} → {end}: "
-                                   f"{len(rows)} combos over {len(trades)} trades.")
+                           caption=f"Sweep {start} → {end}: {len(rows)} combos, "
+                                   f"{len(trades)} alerts.")
     try:
         os.remove(path)
     except Exception:
