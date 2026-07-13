@@ -50,12 +50,17 @@ def _score_combo(trades: list, tp1_pct: float, tp2_pct: float,
     Re-simulate every collected trade with one parameter combination.
     `trades` are dicts of {entry, flow_price, window} — the price path is
     already fetched, so this is pure arithmetic.
+
+    Scored against the ENTIRE pooled trade set (all dates in the range), and
+    also broken out per-day so a combo that only wins because of one outlier
+    day can be spotted.
     """
     from preset_backtest import _run_legs
     import bullflow_presets as bp
 
     total_usd = 0.0
     pcts, wins, t1_hits, t2_hits = [], 0, 0, 0
+    by_day: dict = {}
 
     for t in trades:
         entry  = t["entry"]
@@ -71,6 +76,7 @@ def _score_combo(trades: list, tp1_pct: float, tp2_pct: float,
         res = _run_legs(window, entry, offset, t1, t2, use_trail=True)
         total_usd += res["pnl_usd"]
         pcts.append(res["pnl_pct"])
+        by_day[t["date"]] = round(by_day.get(t["date"], 0.0) + res["pnl_usd"], 2)
         if res["pnl_usd"] > 0:
             wins += 1
         if res["leg1_reason"] == "TP1":
@@ -79,6 +85,13 @@ def _score_combo(trades: list, tp1_pct: float, tp2_pct: float,
             t2_hits += 1
 
     n = len(pcts)
+    day_vals   = list(by_day.values())
+    green_days = sum(1 for v in day_vals if v > 0)
+    best_day   = max(day_vals) if day_vals else 0.0
+    # How much of the total came from the single best day? A combo whose edge
+    # is one lucky day is fragile, however good the headline number looks.
+    concentration = round(best_day / total_usd * 100, 1) if total_usd > 0 else 0.0
+
     return {
         "tp1_pct":   round(tp1_pct * 100, 0),
         "tp2_pct":   round(tp2_pct * 100, 0),
@@ -89,6 +102,13 @@ def _score_combo(trades: list, tp1_pct: float, tp2_pct: float,
         "win_rate":  round(wins / n * 100, 1) if n else 0.0,
         "t1_rate":   round(t1_hits / n * 100, 1) if n else 0.0,
         "t2_rate":   round(t2_hits / n * 100, 1) if n else 0.0,
+        "days":          len(day_vals),
+        "green_days":    green_days,
+        "green_day_pct": round(green_days / len(day_vals) * 100, 1) if day_vals else 0.0,
+        "best_day_usd":  round(best_day, 2),
+        "worst_day_usd": round(min(day_vals), 2) if day_vals else 0.0,
+        "concentration": concentration,
+        "by_day":        by_day,
     }
 
 
@@ -187,7 +207,9 @@ def _build_workbook(rows: list, trades: list, start: str, end: str) -> str:
     ws = wb.active
     ws.title = "Sweep"
     hdr = ["TP1 %", "TP2 %", "Trail %", "Trades", "Total P/L $",
-           "Avg P/L %", "Win Rate %", "TP1 Hit %", "TP2 Hit %"]
+           "Avg P/L %", "Win Rate %", "TP1 Hit %", "TP2 Hit %",
+           "Days", "Green Days", "Green Day %", "Best Day $", "Worst Day $",
+           "Best-Day Concentration %"]
     ws.append(hdr)
     hf, hfill, ctr = (Font(bold=True, color="FFFFFF"),
                       PatternFill("solid", fgColor="1F3864"),
@@ -196,20 +218,43 @@ def _build_workbook(rows: list, trades: list, start: str, end: str) -> str:
         cell = ws.cell(row=1, column=c)
         cell.font = hf; cell.fill = hfill; cell.alignment = ctr
 
-    for r in sorted(rows, key=lambda x: -x["total_usd"]):
+    ranked = sorted(rows, key=lambda x: -x["total_usd"])
+    for r in ranked:
         ws.append([r["tp1_pct"], r["tp2_pct"], r["trail_pct"], r["trades"],
                    r["total_usd"], r["avg_pct"], r["win_rate"],
-                   r["t1_rate"], r["t2_rate"]])
+                   r["t1_rate"], r["t2_rate"],
+                   r["days"], r["green_days"], r["green_day_pct"],
+                   r["best_day_usd"], r["worst_day_usd"], r["concentration"]])
 
     # Highlight the best row
     if rows:
         for c in range(1, len(hdr) + 1):
             ws.cell(row=2, column=c).font = Font(bold=True)
-    for col, w in zip("ABCDEFGHI", (8, 8, 9, 8, 13, 11, 11, 11, 11)):
+    for col, w in zip("ABCDEFGHIJKLMNO", (8, 8, 9, 8, 13, 11, 11, 11, 11, 7, 11, 12, 12, 12, 22)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
 
-    # Second tab: the trades the sweep ran on
+    # Per-day P/L for the top 3 combos — is the edge consistent or one lucky day?
+    if ranked:
+        ws_d = wb.create_sheet("Top3 Daily")
+        top3 = ranked[:3]
+        ws_d.append(["Date"] + [f"TP1 {r['tp1_pct']:.0f}/TP2 {r['tp2_pct']:.0f}/TR {r['trail_pct']:.0f}"
+                                for r in top3])
+        for c in range(1, len(top3) + 2):
+            cell = ws_d.cell(row=1, column=c)
+            cell.font = hf; cell.fill = hfill; cell.alignment = ctr
+        all_dates = sorted({d for r in top3 for d in r["by_day"]})
+        for d in all_dates:
+            ws_d.append([d] + [r["by_day"].get(d, 0.0) for r in top3])
+        ws_d.append([])
+        ws_d.append(["TOTAL"] + [r["total_usd"] for r in top3])
+        for c in range(1, len(top3) + 2):
+            ws_d.cell(row=ws_d.max_row, column=c).font = Font(bold=True)
+        for col, w in zip("ABCD", (12, 24, 24, 24)):
+            ws_d.column_dimensions[col].width = w
+        ws_d.freeze_panes = "A2"
+
+    # Trades tab: the fills the sweep ran on
     ws2 = wb.create_sheet("Trades")
     ws2.append(["Date", "Ticker", "Entry", "Flow Price", "Bars"])
     for c in range(1, 6):
@@ -284,7 +329,13 @@ def _run_sweep_thread(start: str, end: str, bot: str, chat: str):
                 f"📍 YOUR CURRENT (101/201/75): ${cur['total_usd']:+,.0f} | "
                 f"{cur['win_rate']:.0f}% win | TP2 hit {cur['t2_rate']:.0f}%",
                 f"   Delta vs best: ${best['total_usd'] - cur['total_usd']:+,.0f}"]
-    msg += ["", "Full grid in the Excel — ranked by total P/L."]
+    msg += ["",
+            f"   Consistency: green on {best['green_days']}/{best['days']} days "
+            f"({best['green_day_pct']:.0f}%)",
+            f"   Best day ${best['best_day_usd']:+,.0f} = {best['concentration']:.0f}% of total",
+            "",
+            "⚠️ If one day is most of the total, the edge is fragile.",
+            "Full grid + Top3 daily breakdown in the Excel."]
     send_telegram("\n".join(msg), bot, chat)
 
     try:
