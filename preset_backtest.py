@@ -327,7 +327,8 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
            "pnl_usd_trail": None, "pnl_pct_trail": None,
            "pnl_usd_notrail": None, "pnl_pct_notrail": None,
            "trail_cost_usd": None,
-           "contracts": 0, "capital": 0.0, "leg1_ct": 0, "leg2_ct": 0}
+           "contracts": 0, "capital": 0.0, "leg1_ct": 0, "leg2_ct": 0,
+           "intraday_bars": 0, "daily_bars": 0, "resolution": ""}
 
     entry  = float(result.get("entry_price") or 0)
     offset = float(result.get("trail_offset") or 0)
@@ -369,6 +370,12 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
     path.extend(_fetch_option_daily(occ_symbol, daily_start, exp_iso))
 
     out["bars"] = len(path)
+    # How much of this trade's path is coarse DAILY data? Daily bars can't
+    # sequence intra-bar moves, so fills, stops and targets on them are
+    # approximations. A trade that is 100% daily is weak evidence.
+    out["intraday_bars"] = len(day0_intraday)
+    out["daily_bars"]    = len(path) - len(day0_intraday)
+    out["resolution"]    = ("intraday+daily" if day0_intraday else "daily only")
     if not path:
         out["exit_reason"] = "no option data"
         return out
@@ -798,6 +805,28 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
             f"{bp._fmt_prem(a['premium'])} | {a['contracts']:,}x | "
             f"@ {a.get('time_str','')} | {play}{ema_s}{early}{pnl_s}{roll_s}"
         )
+    # ── Data-quality warning ──
+    # Daily bars can't sequence intra-bar moves. On a day with high $8 / low $2
+    # we can't know whether the target filled before the stop triggered — the
+    # sim assumes targets fill first, which flatters the results. The more of
+    # the path that is daily-only, the softer these numbers are.
+    _res = [(a.get("pnl") or {}) for a in alerts_fired]
+    _res = [p for p in _res if p.get("entry_filled")]
+    if _res:
+        _daily_only = sum(1 for p in _res if p.get("resolution") == "daily only")
+        _tot_i = sum(p.get("intraday_bars", 0) for p in _res)
+        _tot_d = sum(p.get("daily_bars", 0) for p in _res)
+        _all   = _tot_i + _tot_d
+        _pct_d = round(_tot_d / _all * 100, 0) if _all else 100
+        summary += ["",
+                    f"━━━ DATA RESOLUTION ━━━",
+                    f"{_daily_only}/{len(_res)} trades used DAILY bars only",
+                    f"{_pct_d:.0f}% of all bars are daily"]
+        if _pct_d >= 50:
+            summary += ["⚠️ Mostly DAILY bars — fills, stops and targets are",
+                        "   approximations. Intra-bar sequence is unknown, and the",
+                        "   sim assumes targets fill before stops (optimistic)."]
+
     # ── Roll vs original tally ──
     _edges = [a.get("roll_edge_usd") for a in alerts_fired
               if a.get("roll_edge_usd") is not None]

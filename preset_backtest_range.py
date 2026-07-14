@@ -112,6 +112,9 @@ _COLUMNS = [
     ("Days Held",     lambda a: (a.get("pnl") or {}).get("days_held") or ""),
     ("Fill Time",     lambda a: (a.get("pnl") or {}).get("fill_time") or ""),
     ("Fill Source",   lambda a: (a.get("pnl") or {}).get("fill_source") or ""),
+    ("Resolution",    lambda a: (a.get("pnl") or {}).get("resolution") or ""),
+    ("Intraday Bars", lambda a: (a.get("pnl") or {}).get("intraday_bars") or 0),
+    ("Daily Bars",    lambda a: (a.get("pnl") or {}).get("daily_bars") or 0),
     ("Target 1",      lambda a: a.get("target1") or ""),
     ("Target 2",      lambda a: a.get("target2") or ""),
     ("T1 Hit",        lambda a: "YES" if (a.get("pnl") or {}).get("t1_hit") else
@@ -238,7 +241,7 @@ def _build_workbook(day_results: list, start: str, end: str) -> str:
             ws.append([fn(a) for _, fn in _COLUMNS])
 
         # Reasonable column widths
-        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15, 10, 10, 11, 12, 10, 10, 10, 10, 16, 12, 12, 12, 12, 12, 10, 11]
+        widths = [11, 22, 8, 10, 9, 10, 6, 10, 14, 10, 11, 9, 12, 13, 16, 7, 11, 20, 12, 11, 11, 11, 11, 13, 13, 15, 15, 13, 12, 11, 11, 13, 13, 10, 10, 11, 20, 10, 10, 8, 8, 13, 15, 10, 10, 11, 12, 10, 10, 10, 10, 16, 12, 12, 12, 12, 12, 10, 11, 15, 12, 11]
         for idx, w in enumerate(widths, start=1):
             ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = w
         ws.freeze_panes = "A2"

@@ -1301,6 +1301,77 @@ def handle_command(text: str, from_chat_id: str):
                 _lines.append("❌ EMA unavailable — see the probe results above.")
             send_reply("\n".join(_lines), from_chat_id)
 
+    elif cmd in ("opt_test", "opttest", "optcheck"):
+        _oa = [a.strip() for a in args if a.strip()]
+        if len(_oa) < 2:
+            send_reply('Usage: /opt_test OCC YYYY-MM-DD\ne.g. /opt_test NVDA260522C00220000 2026-05-11\nProbes Tradier + Massive for INTRADAY option bars on that date.\nThis decides whether the backtest can use intraday or is stuck on daily.',
+                       from_chat_id)
+        else:
+            import requests as _oreq, os as _oos
+            _osym = _oa[0].upper().replace("O:", "")
+            _odate = _oa[1]
+            _ol = [f"🔬 Option intraday probe", f"{_osym} @ {_odate}", ""]
+
+            # ── Tradier timesales (options) ──
+            _otok = _oos.environ.get("TRADIER_TOKEN", "")
+            if not _otok:
+                _ol.append("TRADIER: no token")
+            else:
+                try:
+                    _or = _oreq.get(
+                        "https://api.tradier.com/v1/markets/timesales",
+                        params={"symbol": _osym, "interval": "15min",
+                                "start": f"{_odate} 09:30", "end": f"{_odate} 16:00",
+                                "session_filter": "open"},
+                        headers={"Authorization": f"Bearer {_otok}",
+                                 "Accept": "application/json"}, timeout=15)
+                    if _or.status_code == 200:
+                        _od = ((_or.json().get("series") or {}).get("data")) or []
+                        if isinstance(_od, dict):
+                            _od = [_od]
+                        _ol.append(f"TRADIER: HTTP 200 — {len(_od)} 15min bars")
+                        if not _od:
+                            _ol.append("  (empty — history too shallow for this date)")
+                    else:
+                        _ol.append(f"TRADIER: HTTP {_or.status_code} — {_or.text[:70]}")
+                except Exception as _oe:
+                    _ol.append(f"TRADIER: error {_oe}")
+
+            # ── Massive option aggregates ──
+            import bullflow_presets as _obp
+            _okey = _obp._massive_key()
+            if not _okey:
+                _ol.append("MASSIVE: no key set")
+            else:
+                _obase = _oos.environ.get("MASSIVE_BASE_URL", "https://api.massive.com")
+                _ourl = (f"{_obase}/v2/aggs/ticker/O:{_osym}"
+                         f"/range/30/minute/{_odate}/{_odate}")
+                try:
+                    _omr = _oreq.get(_ourl, params={"adjusted": "true", "sort": "asc",
+                                                    "limit": 5000, "apiKey": _okey},
+                                     timeout=15)
+                    _omj = {}
+                    try:
+                        _omj = _omr.json()
+                    except Exception:
+                        pass
+                    _ores = _omj.get("results") or []
+                    _ol.append(f"MASSIVE: HTTP {_omr.status_code} — "
+                               f"{len(_ores)} 30min bars")
+                    if _omj.get("status"):
+                        _ol.append(f"  status={_omj['status']}")
+                    if _omj.get("error"):
+                        _ol.append(f"  error: {str(_omj['error'])[:110]}")
+                    if _omr.status_code in (401, 403):
+                        _ol.append("  → options data NOT on your plan")
+                except Exception as _oe2:
+                    _ol.append(f"MASSIVE: error {_oe2}")
+
+            _ol += ["",
+                    "If BOTH are empty, the backtest can only use DAILY bars",
+                    "after the alert day — fills/stops/targets are approximations."]
+            send_reply("\n".join(_ol), from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2645,6 +2716,7 @@ def handle_help(reply_chat_id: str):
         "/preset_backtest_range YYYY-MM-DD YYYY-MM-DD — month backtest to Excel (tab per date)",
         "/preset_sweep YYYY-MM-DD YYYY-MM-DD — test TP1/TP2/trail combos, ranked",
         "/ema_test TICKER YYYY-MM-DD [HH:MM] — diagnose 30M EMA data availability",
+        "/opt_test OCC YYYY-MM-DD — check if option INTRADAY bars exist (backtest quality)",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",
