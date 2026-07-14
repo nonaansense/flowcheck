@@ -1372,6 +1372,24 @@ def handle_command(text: str, from_chat_id: str):
                     "after the alert day — fills/stops/targets are approximations."]
             send_reply("\n".join(_ol), from_chat_id)
 
+    elif cmd in ("massive_keys", "keys", "ratelimit"):
+        import bullflow_presets as _mbp, os as _mos
+        _mk = _mbp._massive_keys()
+        _lim = int(_mos.environ.get("MASSIVE_CALLS_PER_MIN", "5"))
+        if not _mk:
+            send_reply("❌ No Massive keys configured.\n\nSet MASSIVE_API_KEYS=key1,key2 "
+                       "(or MASSIVE_API_KEY + MASSIVE_API_KEY_2) in Railway.",
+                       from_chat_id)
+        else:
+            _ml = [f"🔑 Massive keys: {len(_mk)}",
+                   f"Rate limit: {_lim}/min each = {len(_mk)*_lim}/min total", ""]
+            for _i, _k in enumerate(_mk, 1):
+                _used = len(_mbp._MASSIVE_CALLS.get(_k, []))
+                _ml.append(f"  {_i}. …{_k[-6:]}  ({_used}/{_lim} used this minute)")
+            _ml += ["", f"A month backtest (~50 contracts) takes roughly "
+                        f"{max(1, 50 // (len(_mk)*_lim))} min of pacing."]
+            send_reply("\n".join(_ml), from_chat_id)
+
     elif cmd in ("help", "start"):
         handle_help(from_chat_id)
         send_keyboard(from_chat_id)
@@ -2717,6 +2735,7 @@ def handle_help(reply_chat_id: str):
         "/preset_sweep YYYY-MM-DD YYYY-MM-DD — test TP1/TP2/trail combos, ranked",
         "/ema_test TICKER YYYY-MM-DD [HH:MM] — diagnose 30M EMA data availability",
         "/opt_test OCC YYYY-MM-DD — check if option INTRADAY bars exist (backtest quality)",
+        "/massive_keys — how many Massive keys are active + rate headroom",
         "/kb — show keyboard  |  /stop — hide keyboard",
         "/help — this message",
         "",

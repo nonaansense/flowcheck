@@ -68,6 +68,15 @@ _OPT_HIST_CACHE:   dict = {}   # occ_start_end → [daily option bars]
 PNL_ENABLED = os.environ.get("BULLFLOW_BACKTEST_PNL", "true").lower() not in ("false","0","no","off")
 
 
+def _norm_epoch_bt(v) -> float:
+    """Bullflow may send epoch in seconds or ms. Normalize to seconds."""
+    try:
+        e = float(v)
+    except Exception:
+        return 0.0
+    return e / 1000.0 if e > 1e11 else e
+
+
 def _expiry_to_iso(expiry: str) -> str:
     """'07/18/26' → '2026-07-18'. Returns '' on failure."""
     try:
@@ -84,51 +93,73 @@ _OPT_INTRADAY_CACHE: dict = {}   # occ_date → [{ts, high, low, close}] sorted
 INTRADAY_FILL = os.environ.get("BULLFLOW_BACKTEST_INTRADAY_FILL", "true").lower() not in ("false","0","no","off")
 
 
-def _fetch_option_intraday(occ_symbol: str, date_str: str) -> list:
+def _fetch_option_intraday(occ_symbol: str, start_date: str, end_date: str = None) -> list:
     """
-    15-min intraday bars for an OPTION contract on one date via Tradier
-    /markets/timesales. Returns [{"ts","high","low","close"}] sorted by time.
-    Cached per contract+date. [] on failure.
+    30-minute intraday bars for an OPTION contract, across the WHOLE trade
+    window (alert date → expiry), from Massive (ex-Polygon) aggregates.
+
+    This is the fix for the daily-bar problem. On a daily bar with high $8 and
+    low $2 we cannot know whether the target filled before the stop triggered —
+    the sim had to guess (and guessed optimistically). With 30-min bars the
+    sequence is nearly always resolved, so fills, stops and targets are real
+    rather than approximations.
+
+    Tradier does NOT serve option timesales (returns "symbol not found"), so
+    Massive is the only source. Free tier carries it; rate-limited to 5/min.
+
+    Returns [{"ts","high","low","close"}] sorted ascending. [] on failure.
     """
+    import bullflow_presets as _bp
     sym = str(occ_symbol or "").replace("O:", "").strip().upper()
-    if not sym or not date_str:
+    if not sym or not start_date:
         return []
-    key = f"{sym}_{date_str}"
+    end_date = end_date or start_date
+    key = f"{sym}_{start_date}_{end_date}"
     if key in _OPT_INTRADAY_CACHE:
         return _OPT_INTRADAY_CACHE[key]
 
     out = []
-    token = os.environ.get("TRADIER_TOKEN", "")
-    if token:
-        try:
-            r = requests.get(
-                "https://api.tradier.com/v1/markets/timesales",
-                params={"symbol": sym, "interval": "15min",
-                        "start": f"{date_str} 09:30", "end": f"{date_str} 16:00",
-                        "session_filter": "open"},
-                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                timeout=10,
-            )
-            if r.status_code == 200:
-                data = ((r.json().get("series") or {}).get("data"))
-                if isinstance(data, dict):
-                    data = [data]
-                for b in (data or []):
+    if _bp._massive_keys():
+        base = os.environ.get("MASSIVE_BASE_URL", "https://api.massive.com")
+        url  = (f"{base}/v2/aggs/ticker/O:{sym}"
+                f"/range/30/minute/{start_date}/{end_date}")
+        for attempt in range(2):
+            try:
+                mkey = _bp._massive_acquire()      # rotates across all keys
+                if not mkey:
+                    break
+                r = requests.get(url, params={"adjusted": "true", "sort": "asc",
+                                              "limit": 50000, "apiKey": mkey},
+                                 timeout=20)
+                if r.status_code == 429:
+                    print(f"[PRESET_BT] Massive 429 on {sym} — backing off 20s")
+                    time.sleep(20)
+                    continue
+                if r.status_code != 200:
+                    print(f"[PRESET_BT] Massive option HTTP {r.status_code} "
+                          f"for {sym}: {r.text[:100]}")
+                    break
+                for b in (r.json().get("results") or []):
+                    t_ms = b.get("t")
+                    if t_ms is None:
+                        continue
                     try:
-                        ts = b.get("timestamp")
-                        if ts is None:
-                            continue
+                        # 't' is epoch MILLISECONDS at the bar's START.
+                        # Use the bar's CLOSE time so nothing is credited before
+                        # it actually happened.
                         out.append({
-                            "ts":    float(ts),
-                            "high":  float(b.get("high", 0) or 0),
-                            "low":   float(b.get("low", 0) or 0),
-                            "close": float(b.get("close", 0) or 0),
+                            "ts":    (float(t_ms) / 1000.0) + 1800,
+                            "high":  float(b.get("h", 0) or 0),
+                            "low":   float(b.get("l", 0) or 0),
+                            "close": float(b.get("c", 0) or 0),
                         })
                     except Exception:
                         continue
                 out.sort(key=lambda x: x["ts"])
-        except Exception as e:
-            print(f"[PRESET_BT] Tradier option timesales error {sym}: {e}")
+                break
+            except Exception as e:
+                print(f"[PRESET_BT] Massive option error {sym}: {e}")
+                break
 
     _OPT_INTRADAY_CACHE[key] = out
     return out
@@ -343,39 +374,39 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
         out["exit_reason"] = "bad expiry"
         return out
 
-    # ── Build the bar path: post-alert intraday (day 0) + daily (day 1..expiry) ──
+    # ── Build the bar path ──
+    # Prefer 30-MIN bars for the ENTIRE trade (alert → expiry). That resolves
+    # the intra-bar sequencing problem: on a daily bar we can't know whether a
+    # target filled before the stop triggered, so the sim had to assume (and
+    # assumed optimistically). Only fall back to daily if Massive has nothing.
     path = []
-    day0_intraday = []
     used_intraday = False
+    n_intraday    = 0
 
-    if INTRADAY_FILL and alert_epoch:
-        raw = _fetch_option_intraday(occ_symbol, alert_date)
-        try:
-            ae = float(alert_epoch)
-            day0_intraday = [b for b in raw if b["ts"] >= ae]
-        except Exception:
-            day0_intraday = []
-        if day0_intraday:
-            used_intraday = True
-            path.extend(day0_intraday)
+    if INTRADAY_FILL:
+        intra = _fetch_option_intraday(occ_symbol, alert_date, exp_iso)
+        if intra:
+            if alert_epoch:
+                try:
+                    ae = _norm_epoch_bt(alert_epoch)
+                    intra = [b for b in intra if b["ts"] >= ae]
+                except Exception:
+                    pass
+            if intra:
+                path = list(intra)
+                used_intraday = True
+                n_intraday    = len(intra)
 
-    daily_start = alert_date
-    if used_intraday:
-        try:
-            d0 = datetime.strptime(alert_date, "%Y-%m-%d").date()
-            daily_start = (d0 + timedelta(days=1)).strftime("%Y-%m-%d")
-        except Exception:
-            daily_start = alert_date
+    if not path:
+        # Daily fallback — coarse. Fills/stops/targets become approximations.
+        path = _fetch_option_daily(occ_symbol, alert_date, exp_iso)
 
-    path.extend(_fetch_option_daily(occ_symbol, daily_start, exp_iso))
+    day0_intraday = path if used_intraday else []
 
     out["bars"] = len(path)
-    # How much of this trade's path is coarse DAILY data? Daily bars can't
-    # sequence intra-bar moves, so fills, stops and targets on them are
-    # approximations. A trade that is 100% daily is weak evidence.
-    out["intraday_bars"] = len(day0_intraday)
-    out["daily_bars"]    = len(path) - len(day0_intraday)
-    out["resolution"]    = ("intraday+daily" if day0_intraday else "daily only")
+    out["intraday_bars"] = n_intraday
+    out["daily_bars"]    = 0 if used_intraday else len(path)
+    out["resolution"]    = ("30min intraday" if used_intraday else "daily only")
     if not path:
         out["exit_reason"] = "no option data"
         return out
@@ -397,7 +428,7 @@ def simulate_trade(result: dict, occ_symbol: str, alert_date: str,
     out["target2"]      = t2
 
     if used_intraday and fill_idx < len(day0_intraday):
-        out["fill_source"] = "intraday (post-alert)"
+        out["fill_source"] = "30min (post-alert)"
         try:
             out["fill_time"] = datetime.fromtimestamp(
                 day0_intraday[fill_idx]["ts"], ET).strftime("%-I:%M %p")
@@ -814,18 +845,14 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
     _res = [p for p in _res if p.get("entry_filled")]
     if _res:
         _daily_only = sum(1 for p in _res if p.get("resolution") == "daily only")
-        _tot_i = sum(p.get("intraday_bars", 0) for p in _res)
-        _tot_d = sum(p.get("daily_bars", 0) for p in _res)
-        _all   = _tot_i + _tot_d
-        _pct_d = round(_tot_d / _all * 100, 0) if _all else 100
+        _intra      = len(_res) - _daily_only
         summary += ["",
                     f"━━━ DATA RESOLUTION ━━━",
-                    f"{_daily_only}/{len(_res)} trades used DAILY bars only",
-                    f"{_pct_d:.0f}% of all bars are daily"]
-        if _pct_d >= 50:
-            summary += ["⚠️ Mostly DAILY bars — fills, stops and targets are",
-                        "   approximations. Intra-bar sequence is unknown, and the",
-                        "   sim assumes targets fill before stops (optimistic)."]
+                    f"{_intra}/{len(_res)} trades on 30-MIN bars ✅"]
+        if _daily_only:
+            summary += [f"{_daily_only}/{len(_res)} fell back to DAILY bars ⚠️",
+                        "   (daily can't sequence intra-bar moves — those trades",
+                        "    assume targets fill before stops = optimistic)"]
 
     # ── Roll vs original tally ──
     _edges = [a.get("roll_edge_usd") for a in alerts_fired

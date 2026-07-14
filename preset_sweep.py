@@ -177,27 +177,23 @@ def _collect_trades(days: list, send, bot, chat) -> list:
             if not exp_iso:
                 continue
 
-            # Rebuild the same bar path the single-day backtest uses
-            path, day0, used_intraday = [], [], False
+            # Same bar path as the single-day backtest: 30-min bars across the
+            # WHOLE trade, daily only as a fallback.
+            from preset_backtest import _norm_epoch_bt
+            path  = []
             epoch = a.get("timestamp")
-            if INTRADAY_FILL and epoch:
-                raw = _fetch_option_intraday(occ, date)
-                try:
-                    ae = float(epoch)
-                    day0 = [b for b in raw if b["ts"] >= ae]
-                except Exception:
-                    day0 = []
-                if day0:
-                    used_intraday = True
-                    path.extend(day0)
-            start = date
-            if used_intraday:
-                try:
-                    d0 = datetime.strptime(date, "%Y-%m-%d").date()
-                    start = (d0 + timedelta(days=1)).strftime("%Y-%m-%d")
-                except Exception:
-                    start = date
-            path.extend(_fetch_option_daily(occ, start, exp_iso))
+            if INTRADAY_FILL:
+                intra = _fetch_option_intraday(occ, date, exp_iso)
+                if intra and epoch:
+                    try:
+                        ae = _norm_epoch_bt(epoch)
+                        intra = [b for b in intra if b["ts"] >= ae]
+                    except Exception:
+                        pass
+                if intra:
+                    path = list(intra)
+            if not path:
+                path = _fetch_option_daily(occ, date, exp_iso)
             if not path:
                 continue
 

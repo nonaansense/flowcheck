@@ -139,35 +139,70 @@ def _norm_epoch(v) -> float:
     return e
 
 
-_MASSIVE_CALLS: list = []   # epoch times of recent calls (free tier: 5/min)
+_MASSIVE_CALLS: dict = {}   # api_key → [epoch times of recent calls]
+
+
+def _massive_keys() -> list:
+    """
+    All configured Massive keys, in priority order. Each free key allows
+    5 calls/min, so N keys give N x the throughput.
+
+      MASSIVE_API_KEYS = key1,key2       (comma-separated — preferred)
+      or MASSIVE_API_KEY / MASSIVE_API_KEY_2 / MASSIVE_API_KEY_3
+      or POLYGON_API_KEY (legacy)
+    """
+    raw = os.environ.get("MASSIVE_API_KEYS", "").strip()
+    if raw:
+        keys = [k.strip() for k in raw.split(",") if k.strip()]
+    else:
+        keys = []
+        for name in ("MASSIVE_API_KEY", "MASSIVE_API_KEY_2",
+                     "MASSIVE_API_KEY_3", "POLYGON_API_KEY"):
+            v = os.environ.get(name, "").strip()
+            if v and v not in keys:
+                keys.append(v)
+    return keys
 
 
 def _massive_key() -> str:
-    """Massive (formerly Polygon.io). Legacy POLYGON_API_KEY still works."""
-    return (os.environ.get("MASSIVE_API_KEY", "") or
-            os.environ.get("POLYGON_API_KEY", ""))
+    """First configured key (used for presence checks / probes)."""
+    ks = _massive_keys()
+    return ks[0] if ks else ""
 
 
-def _massive_throttle():
+def _massive_acquire() -> str:
     """
-    Free tier allows 5 requests/minute. Block until a slot is free rather than
-    eating 429s — a backtest can afford the wait, and a silent rate-limit
-    failure would just fail the EMA open again.
+    Reserve a rate-limit slot and return the key to use.
+
+    Picks whichever key has capacity right now. Only blocks when EVERY key is
+    saturated — so 2 keys = 10 calls/min, 3 keys = 15, and so on. Blocking is
+    deliberate: a silent 429 would just fail the fetch and quietly degrade the
+    backtest back to daily bars.
     """
+    keys = _massive_keys()
+    if not keys:
+        return ""
     limit = int(os.environ.get("MASSIVE_CALLS_PER_MIN", "5"))
-    now = time.time()
-    # Drop calls older than 60s
-    while _MASSIVE_CALLS and now - _MASSIVE_CALLS[0] > 60:
-        _MASSIVE_CALLS.pop(0)
-    if len(_MASSIVE_CALLS) >= limit:
-        wait = 61 - (now - _MASSIVE_CALLS[0])
+
+    for _ in range(120):          # safety bound on the wait loop
+        now = time.time()
+        earliest = None
+        for k in keys:
+            calls = _MASSIVE_CALLS.setdefault(k, [])
+            while calls and now - calls[0] > 60:
+                calls.pop(0)
+            if len(calls) < limit:
+                calls.append(now)
+                return k
+            if earliest is None or calls[0] < earliest:
+                earliest = calls[0]
+
+        wait = 61 - (now - earliest) if earliest else 1
         if wait > 0:
-            print(f"[EMA] Massive rate limit ({limit}/min) — waiting {wait:.0f}s")
-            time.sleep(wait)
-            now = time.time()
-            while _MASSIVE_CALLS and now - _MASSIVE_CALLS[0] > 60:
-                _MASSIVE_CALLS.pop(0)
-    _MASSIVE_CALLS.append(time.time())
+            print(f"[MASSIVE] all {len(keys)} key(s) at {limit}/min "
+                  f"({len(keys)*limit}/min total) — waiting {wait:.0f}s")
+            time.sleep(min(wait, 62))
+    return keys[0]
 
 
 def _massive_30m_closes(ticker: str, start_d: str, end_d: str, ae: float) -> list:
@@ -181,18 +216,20 @@ def _massive_30m_closes(ticker: str, start_d: str, end_d: str, ae: float) -> lis
     Endpoint: /v2/aggs/ticker/{T}/range/30/minute/{from}/{to}
     Returns closes for bars that CLOSED at or before `ae` (epoch seconds).
     """
-    key = _massive_key()
-    if not key:
+    if not _massive_keys():
         return []
 
     base = os.environ.get("MASSIVE_BASE_URL", "https://api.massive.com")
     url  = (f"{base}/v2/aggs/ticker/{ticker.upper()}"
             f"/range/30/minute/{start_d}/{end_d}")
-    params = {"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": key}
 
     for attempt in range(2):
         try:
-            _massive_throttle()
+            key = _massive_acquire()          # rotates across all keys
+            if not key:
+                return []
+            params = {"adjusted": "true", "sort": "asc",
+                      "limit": 50000, "apiKey": key}
             r = requests.get(url, params=params, timeout=15)
             if r.status_code == 429:
                 print(f"[EMA] {ticker}: Massive 429 — backing off 20s")
