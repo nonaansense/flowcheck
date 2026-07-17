@@ -1,33 +1,44 @@
 """
-targeted_strikes_tracker.py — Same strike/expiry stacking detector.
+targeted_strikes_tracker.py — Consecutive same strike/expiry stacking detector.
 
-Monitors the Targeted_Strikes_Expiry Bullflow filter. Tracks fills of a
-single direction (calls OR puts, tracked independently) on a ticker for
-ONE specific strike + expiry combo, accumulated over the trading day.
-Other flow — different strike, different expiry, or the opposite side —
-doesn't break the count; only fills matching that exact
-(ticker, strike, expiry, direction) key are counted.
+Monitors the Targeted_Strikes_Expiry Bullflow filter. Tracks a CONSECUTIVE
+run ("sequence") of fills on ONE specific strike + expiry, per ticker and
+direction, over the trading day.
 
-Example:
-  GOOGL 370C 7/17/26   <- call #1
-  GOOGL 370C 7/17/26   <- call #2
-  AAPL  200P 7/24/26   <- unrelated, ignored for this key
-  GOOGL 370C 7/17/26   <- call #3
-  GOOGL 365P 7/17/26   <- different strike/side, ignored
-  GOOGL 370C 7/17/26   <- call #4 -> ALERT FIRES
+The streak is per (ticker, direction). Walking that ticker's same-direction
+flow in arrival order:
+  • Same strike/expiry as the current streak  -> streak += 1
+  • Different strike/expiry (same ticker+dir)  -> streak BREAKS; a fresh
+        streak of 1 starts on the new contract (count resets to 0 then 1)
+  • Opposite direction, or a different ticker   -> IGNORED (doesn't touch
+        this ticker+direction's streak at all)
 
-Fires once at TARGETED_STRIKES_THRESHOLD, then again on every additional
-matching fill after that ("ADD-ON"), so conviction stacking further stays
-visible instead of going silent after the first hit.
+So calls and puts each keep their own independent streak per ticker, and
+ONLY a same-direction fill at a different strike/expiry resets it. A put
+printing in the middle of a call streak, or an unrelated ticker's flow,
+does not break the run.
+
+Example (tracking GOOGL calls):
+  GOOGL 370C 7/17  -> streak = 1
+  GOOGL 370C 7/17  -> streak = 2
+  AAPL  200P 7/24  -> ignored (different ticker)
+  GOOGL 370C 7/17  -> streak = 3
+  GOOGL 365P 7/17  -> ignored (put; call streak untouched)
+  GOOGL 370C 7/17  -> streak = 4  -> ALERT FIRES
+  GOOGL 375C 7/17  -> BREAKS: call streak resets, now 375C streak = 1
+  GOOGL 370C 7/17  -> back on 370C, but streak restarts at 1 (run was broken)
+
+Fires once when the streak reaches TARGETED_STRIKES_THRESHOLD, then again
+on every additional consecutive same-contract fill ("ADD-ON").
 
 Alerts whose triggering fill lands before TARGETED_STRIKES_EARLY_CUTOFF
-(10:25am ET by default) are tagged EARLY SESSION in the message.
+(10:25am ET default) are tagged EARLY SESSION.
 
-State resets each trading day (ET calendar date), per ticker+strike+expiry+direction.
+State resets each trading day (ET calendar date).
 
 Config env vars:
   TARGETED_STRIKES_FILTER_NAME    = Targeted_Strikes_Expiry
-  TARGETED_STRIKES_THRESHOLD      = 4        same strike/expiry fills needed
+  TARGETED_STRIKES_THRESHOLD      = 4        consecutive same strike/expiry fills
   TARGETED_STRIKES_EARLY_CUTOFF   = 10:25    HH:MM ET, flags early-session alerts
 """
 import os, time
@@ -41,7 +52,14 @@ THRESHOLD         = int(os.environ.get("TARGETED_STRIKES_THRESHOLD", "4"))
 EARLY_CUTOFF_STR  = os.environ.get("TARGETED_STRIKES_EARLY_CUTOFF", "10:25")
 STORAGE_KEY       = "targeted_strikes_history"
 
-_TARGETED: dict = {}   # ticker_strike_expiry_direction → {"fills": [...], "day": "YYYY-MM-DD", "last_alerted_count": 0}
+# State is one ACTIVE STREAK per ticker+direction:
+#   "TICKER_direction" -> {
+#       "day": "YYYY-MM-DD",
+#       "strike": str, "expiry": str,      # the contract the current run is on
+#       "fills": [...],                    # the consecutive fills in this run
+#       "last_alerted_count": int,         # highest count already alerted for THIS run
+#   }
+_TARGETED: dict = {}
 _loaded:   bool = False
 
 
@@ -83,8 +101,8 @@ def _fmt_prem(p: float) -> str:
     return f"${p/1_000_000:.1f}M" if p >= 1_000_000 else f"${p/1_000:.0f}K"
 
 
-def _key(ticker: str, strike: str, expiry: str, direction: str) -> str:
-    return f"{ticker.upper()}_{strike}_{expiry}_{direction}"
+def _dir_key(ticker: str, direction: str) -> str:
+    return f"{ticker.upper()}_{direction}"
 
 
 def _is_early(dt: datetime) -> bool:
@@ -94,9 +112,13 @@ def _is_early(dt: datetime) -> bool:
 
 def process_targeted_strikes(alert: dict, filter_name: str) -> dict | None:
     """
-    Track same strike+expiry+direction fills on a ticker for the current
-    trading day. Fires when the count crosses THRESHOLD, then re-fires as
-    an add-on on every subsequent matching fill.
+    Track a CONSECUTIVE run of same strike+expiry fills per ticker+direction
+    for the current trading day. A same-direction fill at a different
+    strike/expiry breaks the run and starts a new one. Opposite-direction
+    fills and other tickers are ignored (handled by their own keys).
+
+    Fires when the run reaches THRESHOLD, then re-fires as an add-on on each
+    additional consecutive same-contract fill.
     """
     if filter_name != TARGETED_FILTER:
         return None
@@ -127,43 +149,58 @@ def process_targeted_strikes(alert: dict, filter_name: str) -> dict | None:
         except Exception:
             stock_px = 0
 
-    key = _key(ticker, strike, expiry, direction)
-
-    # Reset state on a new trading day
-    if key not in _TARGETED or _TARGETED[key].get("day") != today:
-        _TARGETED[key] = {"fills": [], "day": today, "last_alerted_count": 0,
-                          "ticker": ticker, "strike": strike, "expiry": expiry,
-                          "direction": direction}
-
+    key = _dir_key(ticker, direction)
     fill = {
         "strike": strike, "expiry": expiry, "price": price,
         "premium": premium, "sweep": is_sweep, "dte": dte,
         "stock_px": stock_px, "time": time_str, "ts": time.time(),
         "early": _is_early(now_et),
     }
-    _TARGETED[key]["fills"].append(fill)
+
+    streak = _TARGETED.get(key)
+    same_contract = (streak is not None
+                     and streak.get("day") == today
+                     and streak.get("strike") == strike
+                     and streak.get("expiry") == expiry)
+
+    if same_contract:
+        # Continue the current run.
+        streak["fills"].append(fill)
+    else:
+        # New day, first-ever fill for this ticker+dir, OR a same-direction
+        # fill at a DIFFERENT strike/expiry -> the previous run (if any) is
+        # broken. Start a fresh run of 1 on this contract.
+        streak = {
+            "day": today,
+            "strike": strike,
+            "expiry": expiry,
+            "fills": [fill],
+            "last_alerted_count": 0,
+        }
+        _TARGETED[key] = streak
+
     _save()
 
-    fills        = _TARGETED[key]["fills"]
-    count        = len(fills)
-    last_alerted = _TARGETED[key]["last_alerted_count"]
+    count        = len(streak["fills"])
+    last_alerted = streak["last_alerted_count"]
 
-    print(f"[TARGETED] {key}: {count} {direction}s on this strike/expiry today "
-          f"(need {THRESHOLD})")
+    print(f"[TARGETED] {ticker} {direction} {strike}/{expiry}: "
+          f"consecutive run = {count} (need {THRESHOLD})")
 
     if count < THRESHOLD or count <= last_alerted:
         return None
 
-    _TARGETED[key]["last_alerted_count"] = count
+    streak["last_alerted_count"] = count
     _save()
 
+    fills      = streak["fills"]
     total_prem = sum(f["premium"] for f in fills)
     is_addon   = last_alerted > 0
     early      = fill["early"]   # early-session status of the TRIGGERING fill
 
-    print(f"[TARGETED] 🎯 {'Add-on' if is_addon else 'Threshold crossed'}: "
+    print(f"[TARGETED] 🎯 {'Add-on' if is_addon else 'Run threshold crossed'}: "
           f"{ticker} {strike}{'C' if direction == 'call' else 'P'} {expiry} — "
-          f"{count}x{' EARLY SESSION' if early else ''}")
+          f"{count}x consecutive{' EARLY SESSION' if early else ''}")
 
     return {
         "ticker":     ticker,
@@ -195,7 +232,7 @@ def build_targeted_strikes_alert(result: dict) -> str:
     emoji   = "📈" if direction == "call" else "📉"
     dir_cap = direction.upper()
     header  = f"🎯 TARGETED STRIKE{' (ADD-ON)' if is_addon else ''}: ${ticker}"
-    subhead = f"━━━ {emoji} {n}x {dir_cap} STACKED ON {strike}{otype} {expiry} ━━━"
+    subhead = f"━━━ {emoji} {n}x {dir_cap} IN A ROW ON {strike}{otype} {expiry} ━━━"
 
     def _gap_str(secs: float) -> str:
         secs = max(0, secs)
@@ -226,7 +263,7 @@ def build_targeted_strikes_alert(result: dict) -> str:
         header,
         subhead,
         "",
-        f"All {direction} fills on this strike/expiry today ({n}, need {threshold}):",
+        f"Consecutive {direction} fills on this strike/expiry ({n} in a row, need {threshold}):",
     ] + fill_lines + [
         "",
         f"💵 Combined premium: {_fmt_prem(total_prem)}",

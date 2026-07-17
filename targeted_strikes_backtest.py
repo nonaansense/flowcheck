@@ -156,22 +156,36 @@ def _stream_one_day(date: str, api_key: str) -> tuple[list, int, int, dict]:
             time_str = est_str[11:19] if len(est_str) >= 19 else datetime.now(ET).strftime("%-I:%M:%S %p")
             early    = _is_early_str(est_str)
 
-            key = f"{ticker}_{strike}_{expiry}_{direction}"
-            if key not in bt_state:
-                bt_state[key] = {"fills": [], "last_alerted_count": 0}
-
-            bt_state[key]["fills"].append({
+            key = f"{ticker}_{direction}"   # streak is per ticker+direction
+            fill = {
                 "strike": strike, "expiry": expiry, "price": price,
                 "premium": premium, "sweep": is_sweep, "dte": parsed["dte"],
                 "stock_px": stock_px, "time": time_str, "ts": event_ts, "early": early,
-            })
+            }
 
-            fills        = bt_state[key]["fills"]
+            streak = bt_state.get(key)
+            same_contract = (streak is not None
+                             and streak.get("strike") == strike
+                             and streak.get("expiry") == expiry)
+
+            if same_contract:
+                # Continue the current consecutive run.
+                streak["fills"].append(fill)
+            else:
+                # First fill for this ticker+dir, OR a same-direction fill at a
+                # DIFFERENT strike/expiry -> previous run breaks; start fresh.
+                # (Opposite direction / other tickers live under their own key,
+                #  so they never reach here and never break this streak.)
+                streak = {"strike": strike, "expiry": expiry,
+                          "fills": [fill], "last_alerted_count": 0}
+                bt_state[key] = streak
+
+            fills        = streak["fills"]
             count        = len(fills)
-            last_alerted = bt_state[key]["last_alerted_count"]
+            last_alerted = streak["last_alerted_count"]
 
             if count >= THRESHOLD and count > last_alerted:
-                bt_state[key]["last_alerted_count"] = count
+                streak["last_alerted_count"] = count
                 alerts_fired.append({
                     "ticker":     ticker,
                     "strike":     strike,
