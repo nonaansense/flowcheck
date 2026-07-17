@@ -196,7 +196,7 @@ def process_targeted_strikes(alert: dict, filter_name: str) -> dict | None:
     fills      = streak["fills"]
     total_prem = sum(f["premium"] for f in fills)
     is_addon   = last_alerted > 0
-    early      = fill["early"]   # early-session status of the TRIGGERING fill
+    early      = any(f.get("early") for f in fills)   # ANY fill in the run before cutoff
 
     print(f"[TARGETED] 🎯 {'Add-on' if is_addon else 'Run threshold crossed'}: "
           f"{ticker} {strike}{'C' if direction == 'call' else 'P'} {expiry} — "
@@ -273,7 +273,7 @@ def build_targeted_strikes_alert(result: dict) -> str:
         lines.append(span_line)
 
     if early:
-        lines.append("⏰ EARLY SESSION — triggering fill before 10:25am ET")
+        lines.append("⏰ EARLY SESSION — one or more fills before 10:25am ET")
 
     last_stock_px = fills[-1].get("stock_px", 0) if fills else 0
     if last_stock_px:

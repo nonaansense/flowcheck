@@ -195,7 +195,7 @@ def _stream_one_day(date: str, api_key: str) -> tuple[list, int, int, dict]:
                     "count":      count,
                     "total_prem": sum(f["premium"] for f in fills),
                     "is_addon":   last_alerted > 0,
-                    "early":      early,
+                    "early":      any(f.get("early") for f in fills),
                     "date":       date,
                     "time":       time_str,
                 })
