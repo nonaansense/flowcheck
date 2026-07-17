@@ -11,6 +11,7 @@ Alert types:
   bm_auto     — Big money auto-conviction (same contract 2+ days, no retail needed)
   double      — Double confirmation escalation (tape + conviction both fired)
   cluster     — Ticker cluster (multi-contract sweep on same ticker)
+  targeted_strikes — Targeted strikes (4+ calls or puts of same strike/expiry in sequence)
   straddle    — Straddle/strangle detection (balanced call + put flow)
   darkpool    — Dark pool print alerts
   sector      — Sector cluster (4+ tickers same sector same direction)
@@ -25,7 +26,7 @@ STORAGE_KEY   = "alert_toggles"
 ALL_TYPES = [
     "trade", "tape", "conviction", "bm_auto", "double",
     "cluster", "straddle", "darkpool", "sector", "expiry",
-    "reminder", "priceaction", "eod", "spx_block", "pair_flow", "repeat_calls", "technical", "swing", "bullflow_preset",
+    "reminder", "priceaction", "eod", "spx_block", "pair_flow", "repeat_calls", "targeted_strikes", "technical", "swing", "bullflow_preset",
     "top_setups", "trailing_stop", "gex_monitor", "exit_signals",
     "premarket_summary", "premarket_gap", "position_check",
     "daily_pnl", "weekly_report", "theta_calendar", "spy_gex_snapshot",
@@ -47,6 +48,7 @@ LABELS = {
     "spx_block":   "🔄 SPX block trade repeat alerts (SPX plays channel)",
     "pair_flow":   "🔥 Pair flow rapid accumulation (3+ calls or puts in 5min)",
     "repeat_calls": "🔁 Repeat flow activity ratio (calls + optional puts)",
+    "targeted_strikes": "🎯 Targeted strikes (N+ same strike/expiry in sequence, default 4)",
     "technical":    "📡 Technical confirmation (STRONG multi-TF + GEX aligned)",
     "swing":        "🎯 3:45pm top-5 swing play ranking",
     "bullflow_preset": "🔔 Bullflow pre-defined alerts (Sweep/Repeater/Grenade etc.)",

@@ -943,6 +943,62 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     except Exception as _rce:
         print(f"[REPEAT] Error: {_rce}")
 
+    # ── Targeted strikes (same strike/expiry stacking) detector ──
+    try:
+        from targeted_strikes_tracker import process_targeted_strikes, build_targeted_strikes_alert
+        _ts_sym  = alert_data.get("symbol","")
+        _ts_occ  = None
+        try:
+            import re as _ts_re
+            _ts_m = _ts_re.search(r'O:([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)', _ts_sym)
+            if _ts_m:
+                _ts_stk = int(_ts_m.group(6)) / 1000.0
+                _ts_occ = {
+                    "ticker":      _ts_m.group(1),
+                    "option_type": "call" if _ts_m.group(5) == "C" else "put",
+                    "strike":      str(int(_ts_stk)) if _ts_stk == int(_ts_stk) else f"{_ts_stk:.1f}",
+                    "expiry":      f"{_ts_m.group(3)}/{_ts_m.group(4)}/{_ts_m.group(2)}",
+                }
+                from datetime import datetime as _ts_dt, timezone as _ts_tz
+                try:
+                    _ts_exp_dt = _ts_dt(int(f"20{_ts_m.group(2)}"), int(_ts_m.group(3)),
+                                        int(_ts_m.group(4)), tzinfo=_ts_tz.utc)
+                    _ts_occ["dte"] = max(0, (_ts_exp_dt - _ts_dt.now(_ts_tz.utc)).days)
+                except Exception:
+                    _ts_occ["dte"] = 0
+        except Exception: pass
+
+        _ts_parsed = {
+            "ticker":       (_ts_occ["ticker"]       if _ts_occ else _ts_sym.split(":")[0][:10]),
+            "option_type":  (_ts_occ["option_type"]  if _ts_occ else "call"),
+            "strike":       (_ts_occ["strike"]        if _ts_occ else ""),
+            "expiry":       (_ts_occ["expiry"]        if _ts_occ else ""),
+            "dte":          (_ts_occ["dte"]           if _ts_occ else 0),
+            "option_price": float(alert_data.get("averageFillPrice") or
+                                  alert_data.get("tradePrice")        or 0),
+            "premium":      float(alert_data.get("alertPremium") or 0),
+            "is_sweep":     str(alert_data.get("alertFillType","")).upper() in ("FULL_ASK","AA"),
+            "stock_price":  float(alert_data.get("stockPrice") or 0),
+            "timestamp":    alert_data.get("timestamp"),
+            "est_timestamp": alert_data.get("estTimestamp", ""),
+        }
+        _ts_result = process_targeted_strikes(_ts_parsed, alert_name)
+        if _ts_result:
+            if not _alert_on("targeted_strikes"):
+                print(f"[TOGGLES] targeted_strikes disabled — Telegram suppressed, state updated")
+            else:
+                _ts_bot  = os.environ.get("TELEGRAM_BOT_TOKEN","")
+                _ts_chat = (os.environ.get("TELEGRAM_TRADE_CHAT_ID","") or
+                            os.environ.get("TELEGRAM_CHAT_ID",""))
+                if _ts_bot and _ts_chat:
+                    from sms import send_telegram as _sms_ts
+                    _sms_ts(build_targeted_strikes_alert(_ts_result), _ts_bot, _ts_chat)
+                    print(f"[TARGETED] ✅ Alert sent: {_ts_result['ticker']} "
+                          f"{_ts_result['strike']}{'C' if _ts_result['direction']=='call' else 'P'} "
+                          f"{_ts_result['expiry']} count={_ts_result['count']}")
+    except Exception as _tse:
+        print(f"[TARGETED] Error: {_tse}")
+
     # ── Pair flow rapid accumulation detector ────
     try:
         from pair_flow_tracker import process_pair_flow, build_pair_alert

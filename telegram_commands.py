@@ -1151,6 +1151,48 @@ def handle_command(text: str, from_chat_id: str):
                 send_reply(f"Invalid date: {_rbt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
                            from_chat_id)
 
+    elif cmd in ("targeted_backtest", "targetedbt", "backtest_targeted"):
+        _tbt_date = args[0].strip() if args else ""
+        if not _tbt_date:
+            send_reply('Usage: /targeted_backtest YYYY-MM-DD [detail]  e.g. 2026-05-27\nStreams full day at 60x speed (~6 min). Summary sent on completion; add "detail" for full breakdowns.',
+                       from_chat_id)
+        else:
+            from targeted_strikes_backtest import start_backtest as _tbt_start
+            import os as _tbtos
+            _tbt_bot    = _tbtos.environ.get("TELEGRAM_BOT_TOKEN","")
+            _tbt_detail = len(args) > 1 and args[1].lower() in ("detail","detailed","full","d")
+            _tbt_ok     = _tbt_start(_tbt_date, _tbt_bot, from_chat_id, detail=_tbt_detail)
+            if _tbt_ok:
+                _tthresh = _tbtos.environ.get("TARGETED_STRIKES_THRESHOLD","4")
+                _tfilt   = _tbtos.environ.get("TARGETED_STRIKES_FILTER_NAME","Targeted_Strikes_Expiry")
+                _tcutoff = _tbtos.environ.get("TARGETED_STRIKES_EARLY_CUTOFF","10:25")
+                _tmode   = " + detailed alerts" if _tbt_detail else " (summary only)"
+                _tmsg    = (f"Targeted strikes backtest started: {_tbt_date}\n"
+                            f"Filter: {_tfilt}\n"
+                            f"Threshold: {_tthresh}x same strike/expiry  |  Early cutoff: {_tcutoff} ET\n"
+                            f"Speed: 60x | Results in ~6 minutes{_tmode}.")
+                send_reply(_tmsg, from_chat_id)
+            else:
+                send_reply(f"Invalid date: {_tbt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
+                           from_chat_id)
+
+    elif cmd in ("targeted_backtest_range", "targetedbtrange", "backtest_targeted_range"):
+        if len(args) < 2:
+            send_reply('Usage: /targeted_backtest_range YYYY-MM-DD YYYY-MM-DD  e.g. 2026-06-01 2026-06-30\nStreams each weekday at 60x speed. Sends a summary + an .xlsx with one row per alert. Max 31 days.',
+                       from_chat_id)
+        else:
+            from targeted_strikes_backtest import start_backtest_range as _tbtr_start
+            import os as _tbtros
+            _tbtr_bot    = _tbtros.environ.get("TELEGRAM_BOT_TOKEN","")
+            _tbtr_detail = len(args) > 2 and args[2].lower() in ("detail","detailed","full","d")
+            _tbtr_ok     = _tbtr_start(args[0].strip(), args[1].strip(), _tbtr_bot, from_chat_id, detail=_tbtr_detail)
+            if _tbtr_ok:
+                send_reply(f"Targeted strikes range backtest started: {args[0].strip()} → {args[1].strip()}\n"
+                           f"Speed: 60x | Skips weekends | Results (summary + .xlsx) when complete.",
+                           from_chat_id)
+            else:
+                send_reply(f"Invalid date range — format: YYYY-MM-DD YYYY-MM-DD", from_chat_id)
+
     elif cmd in ("preset_backtest", "presetbt", "backtest_preset"):
         _pbt_date = args[0].strip() if args else ""
         if not _pbt_date:
@@ -2729,6 +2771,8 @@ def handle_help(reply_chat_id: str):
         "/pair_backtest YYYY-MM-DD — backtest pair flow (summary only by default)",
         "/pair_backtest YYYY-MM-DD detail — include full alert breakdowns",
         "/repeat_backtest YYYY-MM-DD [detail] — backtest repeat call activity",
+        "/targeted_backtest YYYY-MM-DD [detail] — backtest targeted strike/expiry stacking",
+        "/targeted_backtest_range YYYY-MM-DD YYYY-MM-DD [detail] — same, over a date range (.xlsx)",
         "/swing - top 5 swing plays from full-day flow + chart story",
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",
         "/preset_backtest_range YYYY-MM-DD YYYY-MM-DD — month backtest to Excel (tab per date)",
