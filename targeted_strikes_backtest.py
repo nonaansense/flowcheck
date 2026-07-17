@@ -258,9 +258,17 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
         emoji  = "📈" if a["direction"] == "call" else "📉"
         otype  = "C" if a["direction"] == "call" else "P"
         early_s = " ⏰EARLY" if a["early"] else ""
+        fills   = a.get("fills", [])
+        # time the run first crossed THRESHOLD = the THRESHOLD-th fill's time
+        cross_time = fills[THRESHOLD - 1]["time"] if len(fills) >= THRESHOLD else a["time"]
+        latest_time = a["time"]
+        if a["count"] > THRESHOLD:
+            time_str = f"crossed {THRESHOLD}x @ {cross_time}, latest @ {latest_time}"
+        else:
+            time_str = f"@ {cross_time}"
         summary.append(
             f"{emoji} ${a['ticker']} {a['strike']}{otype} {a['expiry']}  "
-            f"{a['count']}x  {_fmt_prem(a['total_prem'])}  @ {a['time']}{early_s}"
+            f"{a['count']}x  {_fmt_prem(a['total_prem'])}  {time_str}{early_s}"
         )
     send_telegram("\n".join(summary), bot_token, chat_id)
 
@@ -289,16 +297,20 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
     header_fill = PatternFill("solid", fgColor="1F3864")
     center      = Alignment(horizontal="center")
 
-    cols = ["Date", "Time", "Ticker", "Direction", "Strike", "Expiry",
-            "Count", "Add-On", "Early Session", "Combined Premium"]
+    from openpyxl.utils import get_column_letter
+
+    cols = ["Date", f"Crossed {THRESHOLD}x Time", "Fill Time", "Ticker", "Direction",
+            "Strike", "Expiry", "Count", "Add-On", "Early Session", "Combined Premium"]
     ws.append(cols)
     for c in range(1, len(cols) + 1):
         cell = ws.cell(row=1, column=c)
         cell.font = header_font; cell.fill = header_fill; cell.alignment = center
 
     for a in sorted(all_alerts, key=lambda x: (x["date"], x["time"])):
+        fills = a.get("fills", [])
+        cross_time = fills[THRESHOLD - 1]["time"] if len(fills) >= THRESHOLD else a["time"]
         ws.append([
-            a["date"], a["time"], a["ticker"], a["direction"].upper(),
+            a["date"], cross_time, a["time"], a["ticker"], a["direction"].upper(),
             a["strike"], a["expiry"], a["count"],
             "YES" if a["is_addon"] else "",
             "YES" if a["early"] else "",
@@ -306,7 +318,7 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
         ])
 
     for i, col in enumerate(cols, 1):
-        ws.column_dimensions[chr(64 + i)].width = max(12, len(col) + 2)
+        ws.column_dimensions[get_column_letter(i)].width = max(12, len(col) + 2)
 
     path = f"/tmp/targeted_strikes_{start_date}_to_{end_date}.xlsx"
     wb.save(path)
@@ -378,9 +390,15 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
         emoji  = "📈" if a["direction"] == "call" else "📉"
         otype  = "C" if a["direction"] == "call" else "P"
         early_s = " ⏰" if a["early"] else ""
+        fills   = a.get("fills", [])
+        cross_time = fills[THRESHOLD - 1]["time"] if len(fills) >= THRESHOLD else a["time"]
+        if a["count"] > THRESHOLD:
+            time_str = f"{THRESHOLD}x@{cross_time} → {a['count']}x@{a['time']}"
+        else:
+            time_str = f"@{cross_time}"
         summary.append(
             f"{a['date']} {emoji} ${a['ticker']} {a['strike']}{otype} {a['expiry']}  "
-            f"{a['count']}x  {_fmt_prem(a['total_prem'])}{early_s}"
+            f"{a['count']}x  {_fmt_prem(a['total_prem'])}  {time_str}{early_s}"
         )
     if len(latest_per_key) > 40:
         summary.append(f"... and {len(latest_per_key) - 40} more — see attached workbook")
