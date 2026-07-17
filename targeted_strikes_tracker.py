@@ -50,6 +50,10 @@ ET = ZoneInfo("America/New_York")
 TARGETED_FILTER   = os.environ.get("TARGETED_STRIKES_FILTER_NAME", "Targeted_Strikes_Expiry")
 THRESHOLD         = int(os.environ.get("TARGETED_STRIKES_THRESHOLD", "4"))
 EARLY_CUTOFF_STR  = os.environ.get("TARGETED_STRIKES_EARLY_CUTOFF", "10:25")
+# When true, fills before the cutoff are dropped entirely — not counted, not
+# stored — so no run can be built from pre-cutoff flow. Default false: count
+# them and just tag the alert ⏰EARLY.
+SKIP_EARLY        = os.environ.get("TARGETED_STRIKES_SKIP_EARLY", "false").lower() in ("true","1","yes","on")
 STORAGE_KEY       = "targeted_strikes_history"
 
 # State is one ACTIVE STREAK per ticker+direction:
@@ -142,12 +146,25 @@ def process_targeted_strikes(alert: dict, filter_name: str) -> dict | None:
     if not ticker or not strike or not expiry:
         return None
 
+    if SKIP_EARLY and _is_early(now_et):
+        print(f"[TARGETED] Skipping pre-cutoff fill (SKIP_EARLY on): "
+              f"{ticker} {strike}/{expiry} {direction} @ {time_str}")
+        return None
+
     if not stock_px:
+        # Payload had no stock price. Try Tradier first (matches the preset
+        # alerts' source), then fall back to the Finnhub/Tiingo fetcher.
         try:
-            from fetcher import fetch_price
-            stock_px = fetch_price(ticker) or 0
+            from bullflow_presets import _fetch_tradier_price
+            stock_px = _fetch_tradier_price(ticker) or 0
         except Exception:
             stock_px = 0
+        if not stock_px:
+            try:
+                from fetcher import fetch_price
+                stock_px = fetch_price(ticker) or 0
+            except Exception:
+                stock_px = 0
 
     key = _dir_key(ticker, direction)
     fill = {
@@ -277,7 +294,7 @@ def build_targeted_strikes_alert(result: dict) -> str:
 
     last_stock_px = fills[-1].get("stock_px", 0) if fills else 0
     if last_stock_px:
-        lines.append(f"🟢 Stock @ ${last_stock_px:.2f} at time of last flow")
+        lines.append(f"🟢 Stock @ ${last_stock_px:.2f} at alert time")
 
     lines += [
         "",

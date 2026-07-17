@@ -30,6 +30,7 @@ MAX_RANGE_DAYS = 31   # matches preset_backtest_range.py — a full month of cal
 TARGETED_FILTER  = os.environ.get("TARGETED_STRIKES_FILTER_NAME", "Targeted_Strikes_Expiry")
 THRESHOLD        = int(os.environ.get("TARGETED_STRIKES_THRESHOLD", "4"))
 EARLY_CUTOFF_STR = os.environ.get("TARGETED_STRIKES_EARLY_CUTOFF", "10:25")
+SKIP_EARLY       = os.environ.get("TARGETED_STRIKES_SKIP_EARLY", "false").lower() in ("true","1","yes","on")
 
 
 def _early_cutoff():
@@ -155,6 +156,9 @@ def _stream_one_day(date: str, api_key: str) -> tuple[list, int, int, dict]:
             est_str  = str(inner.get("estTimestamp", ""))
             time_str = est_str[11:19] if len(est_str) >= 19 else datetime.now(ET).strftime("%-I:%M:%S %p")
             early    = _is_early_str(est_str)
+
+            if SKIP_EARLY and early:
+                continue   # drop pre-cutoff fill entirely — not counted, not stored
 
             key = f"{ticker}_{direction}"   # streak is per ticker+direction
             fill = {
