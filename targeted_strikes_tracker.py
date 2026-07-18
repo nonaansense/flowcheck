@@ -235,6 +235,15 @@ def process_targeted_strikes(alert: dict, filter_name: str) -> dict | None:
           f"{ticker} {strike}{'C' if direction == 'call' else 'P'} {expiry} — "
           f"{count}x consecutive{' EARLY SESSION' if early else ''}")
 
+    # Ticker's whole-day call/put premium at this moment, for context.
+    tkr_flow = None
+    try:
+        from ticker_premium_tracker import get_snapshot, mark_alerted
+        mark_alerted(ticker)
+        tkr_flow = get_snapshot(ticker)
+    except Exception as e:
+        print(f"[TARGETED] ticker premium snapshot error: {e}")
+
     return {
         "ticker":     ticker,
         "strike":     strike,
@@ -246,6 +255,7 @@ def process_targeted_strikes(alert: dict, filter_name: str) -> dict | None:
         "is_addon":   is_addon,
         "early":      early,
         "threshold":  THRESHOLD,
+        "tkr_flow":   tkr_flow,
     }
 
 
@@ -307,6 +317,15 @@ def build_targeted_strikes_alert(result: dict) -> str:
 
     if early:
         lines.append("⏰ EARLY SESSION — one or more fills before 10:25am ET")
+
+    # Ticker's whole-day call/put premium context (all strikes/expiries).
+    tkr_flow = result.get("tkr_flow")
+    if tkr_flow:
+        try:
+            from ticker_premium_tracker import format_snapshot
+            lines += format_snapshot(tkr_flow, f"${ticker} targeted flow today")
+        except Exception:
+            pass
 
     last_stock_px = fills[-1].get("stock_px", 0) if fills else 0
     if last_stock_px:

@@ -84,6 +84,18 @@ def _fmt_prem(p: float) -> str:
     return f"${p/1_000_000:.1f}M" if p >= 1_000_000 else f"${p/1_000:.0f}K"
 
 
+def _tkr_prem_str(snap: dict) -> str:
+    """Compact 'C $1.2M (68%) / P $560K (32%)' for a ticker premium snapshot."""
+    if not snap:
+        return ""
+    c, p = float(snap.get("call", 0)), float(snap.get("put", 0))
+    tot = c + p
+    if tot <= 0:
+        return ""
+    return (f"C {_fmt_prem(c)} ({c/tot*100:.0f}%) / "
+            f"P {_fmt_prem(p)} ({p/tot*100:.0f}%)")
+
+
 def _pct_str(v: float) -> str:
     return f"{v:+.0f}%"
 
@@ -349,6 +361,8 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
     event_count      = 0
     targeted_events  = 0
     seen_names:      dict = {}
+    tkr_prem:        dict = {}   # ticker → running call/put premium (whole day)
+    tkr_prem_330:    dict = {}   # ticker → call/put premium as of 15:30 ET
 
     resp = requests.get(url, stream=True, timeout=660,
                         headers={"Accept": "text/event-stream",
@@ -421,6 +435,22 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
             time_str = est_str[11:19] if len(est_str) >= 19 else datetime.now(ET).strftime("%-I:%M:%S %p")
             early    = _is_early_str(est_str)
 
+            # Per-ticker call/put premium — EVERY Targeted_Strikes_Expiry fill
+            # for this ticker (all strikes/expiries the filter surfaces).
+            # Deliberately placed BEFORE the SKIP_EARLY drop: the cutoff exists
+            # to shape run detection, not to shrink this context measure, and
+            # the live path tallies every fill too. Also snapshot as of 15:30 ET.
+            if premium > 0:
+                _row = tkr_prem.setdefault(ticker, {"call": 0.0, "put": 0.0,
+                                                     "call_n": 0, "put_n": 0})
+                _row[direction] += premium
+                _row[f"{direction}_n"] += 1
+                if len(est_str) >= 16 and est_str[11:16] < "15:30":
+                    _r330 = tkr_prem_330.setdefault(ticker, {"call": 0.0, "put": 0.0,
+                                                              "call_n": 0, "put_n": 0})
+                    _r330[direction] += premium
+                    _r330[f"{direction}_n"] += 1
+
             if SKIP_EARLY and early:
                 continue   # drop pre-cutoff fill entirely — not counted, not stored
 
@@ -460,6 +490,8 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
 
             if count >= THRESHOLD and count > last_alerted and not gated:
                 streak["last_alerted_count"] = count
+                _snap = dict(tkr_prem.get(ticker,
+                             {"call": 0.0, "put": 0.0, "call_n": 0, "put_n": 0}))
                 alerts_fired.append({
                     "ticker":     ticker,
                     "strike":     strike,
@@ -472,7 +504,15 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
                     "early":      any(f.get("early") for f in fills),
                     "date":       date,
                     "time":       time_str,
+                    "tkr_at_alert": _snap,
                 })
+
+    # Attach the ticker's 15:30 ET call/put premium to every alert, so each
+    # alert can be read as "how it looked at fire time" vs "how the day stood
+    # at 3:30". Falls back to the whole-day tally if no pre-15:30 flow.
+    for a in alerts_fired:
+        a["tkr_at_330"] = dict(tkr_prem_330.get(
+            a["ticker"], {"call": 0.0, "put": 0.0, "call_n": 0, "put_n": 0}))
 
     return alerts_fired, event_count, targeted_events, seen_names
 
@@ -565,6 +605,12 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
                 f"      exp ${pr['at_expiry']:.2f} ({pr['expiry_pct']:+.0f}%) "
                 f"| life min ${pr['min']:.2f} ({pr['max_draw_pct']:+.0f}%)"
             )
+        _ta = _tkr_prem_str(a.get("tkr_at_alert"))
+        _t3 = _tkr_prem_str(a.get("tkr_at_330"))
+        if _ta:
+            summary.append(f"   📊 {a['ticker']} @alert: {_ta}")
+        if _t3:
+            summary.append(f"   📊 {a['ticker']} @3:30:  {_t3}")
     summary += _build_performance_summary(list(latest_per_key.values()))
     send_telegram("\n".join(summary), bot_token, chat_id)
 
@@ -598,7 +644,9 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
     cols = ["Date", f"Crossed {THRESHOLD}x Time", "Fill Time", "Ticker", "Direction",
             "Strike", "Expiry", "Count", "Add-On", "Early Session", "Combined Premium",
             "Entry", "Min", "Max", "At Expiry", "Max Gain %", "Max Draw %", "Expiry %",
-            "Pre-Peak Min", "Pre-Peak DD %", "Pricing Note"]
+            "Pre-Peak Min", "Pre-Peak DD %", "Pricing Note",
+            "Tkr Call Prem @Alert", "Tkr Put Prem @Alert", "Tkr Call% @Alert",
+            "Tkr Call Prem @3:30", "Tkr Put Prem @3:30", "Tkr Call% @3:30"]
     ws.append(cols)
     for c in range(1, len(cols) + 1):
         cell = ws.cell(row=1, column=c)
@@ -608,6 +656,8 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
         fills = a.get("fills", [])
         cross_time = (fills[THRESHOLD - 1].get("time") or a["time"]) if len(fills) >= THRESHOLD else a["time"]
         pr = a.get("pricing") or {}
+        _ta = a.get("tkr_at_alert") or {}
+        _t3 = a.get("tkr_at_330") or {}
         ws.append([
             a["date"], cross_time, a["time"], a["ticker"], a["direction"].upper(),
             a["strike"], a["expiry"], a["count"],
@@ -626,6 +676,12 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
             (a.get("pricing_note") or "")
             if pr or a.get("pricing_note") is not None
             else "not priced (add-on row)",
+            round(_ta.get("call", 0), 2), round(_ta.get("put", 0), 2),
+            round(_ta["call"] / (_ta["call"] + _ta["put"]) * 100, 1)
+            if (_ta.get("call", 0) + _ta.get("put", 0)) else "",
+            round(_t3.get("call", 0), 2), round(_t3.get("put", 0), 2),
+            round(_t3["call"] / (_t3["call"] + _t3["put"]) * 100, 1)
+            if (_t3.get("call", 0) + _t3.get("put", 0)) else "",
         ])
 
     for i, col in enumerate(cols, 1):

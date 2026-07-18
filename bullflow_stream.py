@@ -943,6 +943,21 @@ def _handle_bullflow_alert(alert_data: dict, process_fn, send_sms_fn=None, alert
     except Exception as _rce:
         print(f"[REPEAT] Error: {_rce}")
 
+    # ── Per-ticker call/put premium tally (Targeted_Strikes_Expiry only) ──
+    try:
+        from targeted_strikes_tracker import TARGETED_FILTER as _tp_filter
+        if alert_name == _tp_filter:
+            from ticker_premium_tracker import record_flow as _tp_record
+            import re as _tp_re
+            _tp_sym = alert_data.get("symbol", "")
+            _tp_m = _tp_re.search(r'O:([A-Z]+)\d{6}([CP])\d+', str(_tp_sym))
+            if _tp_m:
+                _tp_record(_tp_m.group(1),
+                           "call" if _tp_m.group(2) == "C" else "put",
+                           float(alert_data.get("alertPremium") or 0))
+    except Exception as _tpe:
+        print(f"[TKRPREM] record error: {_tpe}")
+
     # ── Targeted strikes (same strike/expiry stacking) detector ──
     try:
         from targeted_strikes_tracker import process_targeted_strikes, build_targeted_strikes_alert

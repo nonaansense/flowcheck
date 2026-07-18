@@ -427,6 +427,22 @@ async def startup():
                           day_of_week="mon-fri", hour=15, minute=45,
                           timezone="America/New_York", id="swing_scan_345")
 
+        # Daily call/put premium update for alerted tickers — 3:30 PM ET
+        def _run_ticker_premium_update():
+            try:
+                from alert_toggles import is_enabled as _tp_on
+                if not _tp_on("targeted_strikes"):
+                    print("[TKRPREM] targeted_strikes disabled — 3:30pm update suppressed")
+                    return
+                from ticker_premium_tracker import send_daily_update
+                send_daily_update(send_sms)
+            except Exception as _tpe:
+                print(f"[TKRPREM] Scheduler error: {_tpe}")
+        scheduler.add_job(_run_ticker_premium_update, "cron",
+                          day_of_week="mon-fri", hour=15, minute=30,
+                          timezone="America/New_York", id="ticker_premium_330",
+                          max_instances=1, coalesce=True)
+
         scheduler.add_job(lambda: run_technical_scan(send_sms),
                           "cron", day_of_week="mon-fri", hour="10-15", minute="*/10", id="technical_scan")
 
