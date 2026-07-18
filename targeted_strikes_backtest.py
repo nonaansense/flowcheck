@@ -219,18 +219,23 @@ def _enrich_alert_pricing(alert: dict) -> None:
     rate limiting already handled there).
     """
     alert["pricing"] = None
+    alert["pricing_note"] = ""
     fills = alert.get("fills", [])
     if not fills:
+        alert["pricing_note"] = "no fills"
         return
     trigger = fills[-1]                       # the most-recent flow (fired the alert)
     occ         = trigger.get("occ", "")
     expiry_iso  = trigger.get("expiry_iso", "")
     entry_price = float(trigger.get("price", 0) or 0)
     if not occ or not expiry_iso or entry_price <= 0:
+        alert["pricing_note"] = ("no OCC symbol" if not occ else
+                                 "no expiry" if not expiry_iso else "no entry price")
         return
 
     start_iso = alert.get("date", "")         # fire day (YYYY-MM-DD)
     if not start_iso:
+        alert["pricing_note"] = "no alert date"
         return
 
     try:
@@ -238,17 +243,37 @@ def _enrich_alert_pricing(alert: dict) -> None:
         bars = _fetch_option_intraday(occ, start_iso, expiry_iso)
     except Exception as e:
         print(f"[TARGETED_BT] pricing fetch error {occ}: {e}")
+        alert["pricing_note"] = f"fetch error: {type(e).__name__}"
         return
     if not bars:
+        alert["pricing_note"] = "no Massive bars for contract"
         return
 
-    # Only consider bars at/after the alert's fire timestamp.
-    fire_ts = float(trigger.get("ts", 0) or 0)
-    life = [b for b in bars if b.get("ts", 0) >= fire_ts] or bars
+    # Bullflow sends epoch in seconds OR milliseconds; Massive bar ts is in
+    # seconds. Normalize before comparing, or the filter silently drops every
+    # bar and falls back to the full series (including pre-alert bars).
+    try:
+        from bullflow_presets import _norm_epoch
+        fire_ts = _norm_epoch(trigger.get("ts", 0))
+    except Exception:
+        fire_ts = float(trigger.get("ts", 0) or 0)
+        if fire_ts > 1e11:
+            fire_ts /= 1000.0
+
+    after = [b for b in bars if b.get("ts", 0) >= fire_ts]
+    if after:
+        life = after
+    else:
+        # No bars at/after the alert (e.g. fired in the last 30 min of expiry
+        # day). Fall back to the full series but flag it — the stats then
+        # cover the contract's whole day, not just post-alert.
+        life = bars
+        alert["pricing_note"] = "no post-alert bars; stats cover full window"
 
     highs = [b["high"] for b in life if b.get("high")]
     lows  = [b["low"]  for b in life if b.get("low")]
     if not highs or not lows:
+        alert["pricing_note"] = "bars had no high/low"
         return
 
     max_px = max(highs)
@@ -573,7 +598,7 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
     cols = ["Date", f"Crossed {THRESHOLD}x Time", "Fill Time", "Ticker", "Direction",
             "Strike", "Expiry", "Count", "Add-On", "Early Session", "Combined Premium",
             "Entry", "Min", "Max", "At Expiry", "Max Gain %", "Max Draw %", "Expiry %",
-            "Pre-Peak Min", "Pre-Peak DD %"]
+            "Pre-Peak Min", "Pre-Peak DD %", "Pricing Note"]
     ws.append(cols)
     for c in range(1, len(cols) + 1):
         cell = ws.cell(row=1, column=c)
@@ -598,6 +623,9 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
             round(pr["expiry_pct"], 1)   if pr else "",
             round(pr["pre_peak_min"], 2)      if pr else "",
             round(pr["pre_peak_draw_pct"], 1) if pr else "",
+            (a.get("pricing_note") or "")
+            if pr or a.get("pricing_note") is not None
+            else "not priced (add-on row)",
         ])
 
     for i, col in enumerate(cols, 1):
