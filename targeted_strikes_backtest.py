@@ -84,6 +84,202 @@ def _fmt_prem(p: float) -> str:
     return f"${p/1_000_000:.1f}M" if p >= 1_000_000 else f"${p/1_000:.0f}K"
 
 
+def _pct_str(v: float) -> str:
+    return f"{v:+.0f}%"
+
+
+def _median(vals: list) -> float:
+    if not vals:
+        return 0.0
+    s = sorted(vals)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
+def _build_performance_summary(alerts: list) -> list:
+    """
+    Aggregate performance across every alert that has pricing data.
+
+    Two win definitions, because they answer different questions:
+      • Win @ expiry  — return at expiration > 0 (held to the end)
+      • Win @ peak    — max gain reached TARGET% at any point before expiry
+                        (closer to how you'd actually trade it)
+
+    TARGETED_STRIKES_WIN_TARGET (default 50) sets the peak target %.
+
+    Returns a list of text lines, or [] if no alert had pricing.
+    """
+    priced = [a for a in alerts if a.get("pricing")]
+    if not priced:
+        return []
+
+    target = float(os.environ.get("TARGETED_STRIKES_WIN_TARGET", "50"))
+
+    exp_rets   = [a["pricing"]["expiry_pct"]        for a in priced]
+    max_gains  = [a["pricing"]["max_gain_pct"]      for a in priced]
+    pre_dds    = [a["pricing"]["pre_peak_draw_pct"] for a in priced]
+    life_dds   = [a["pricing"]["max_draw_pct"]      for a in priced]
+
+    n = len(priced)
+    wins_exp    = sum(1 for r in exp_rets  if r > 0)
+    wins_peak   = sum(1 for g in max_gains if g >= target)
+    losses_exp  = n - wins_exp
+    losses_peak = n - wins_peak
+
+    avg = lambda xs: (sum(xs) / len(xs)) if xs else 0.0
+
+    # Split average return by outcome — a 40% win rate with huge winners is a
+    # very different system than 40% with small ones.
+    win_rets  = [r for r in exp_rets if r > 0]
+    lose_rets = [r for r in exp_rets if r <= 0]
+
+    lines = [
+        "",
+        "━━━━━━ 📊 OVERALL PERFORMANCE ━━━━━━",
+        f"Alerts with pricing: {n}",
+        "",
+        f"🎯 Win @ peak (≥{target:.0f}%): {wins_peak}/{n} "
+        f"({100*wins_peak/n:.0f}%)  |  Lose: {losses_peak} ({100*losses_peak/n:.0f}%)",
+        f"🏁 Win @ expiry:        {wins_exp}/{n} "
+        f"({100*wins_exp/n:.0f}%)  |  Lose: {losses_exp} ({100*losses_exp/n:.0f}%)",
+        "",
+        f"📈 Avg max gain:        {_pct_str(avg(max_gains))}  "
+        f"(median {_pct_str(_median(max_gains))})",
+        f"📉 Avg pre-peak DD:     {_pct_str(avg(pre_dds))}  "
+        f"(median {_pct_str(_median(pre_dds))})",
+        f"💀 Avg full-life DD:    {_pct_str(avg(life_dds))}  "
+        f"(median {_pct_str(_median(life_dds))})",
+        f"🏁 Avg return @ expiry: {_pct_str(avg(exp_rets))}  "
+        f"(median {_pct_str(_median(exp_rets))})",
+    ]
+
+    if win_rets:
+        lines.append(f"   └ avg winner @ exp: {_pct_str(avg(win_rets))} "
+                     f"(best {_pct_str(max(exp_rets))})")
+    if lose_rets:
+        lines.append(f"   └ avg loser  @ exp: {_pct_str(avg(lose_rets))} "
+                     f"(worst {_pct_str(min(exp_rets))})")
+
+    # Best / worst — useful for eyeballing outliers.
+    best  = max(priced, key=lambda a: a["pricing"]["max_gain_pct"])
+    worst = min(priced, key=lambda a: a["pricing"]["expiry_pct"])
+    bo = "C" if best["direction"] == "call" else "P"
+    wo = "C" if worst["direction"] == "call" else "P"
+    lines += [
+        "",
+        f"🥇 Best runup:  ${best['ticker']} {best['strike']}{bo} "
+        f"{_pct_str(best['pricing']['max_gain_pct'])}",
+        f"🥉 Worst @ exp: ${worst['ticker']} {worst['strike']}{wo} "
+        f"{_pct_str(worst['pricing']['expiry_pct'])}",
+    ]
+
+    # Split by direction — calls and puts often behave very differently.
+    calls = [a for a in priced if a["direction"] == "call"]
+    puts  = [a for a in priced if a["direction"] == "put"]
+    if calls and puts:
+        cw = sum(1 for a in calls if a["pricing"]["max_gain_pct"] >= target)
+        pw = sum(1 for a in puts  if a["pricing"]["max_gain_pct"] >= target)
+        lines += [
+            "",
+            f"📈 Calls: {len(calls)} alerts, {cw} hit +{target:.0f}% "
+            f"({100*cw/len(calls):.0f}%), avg max "
+            f"{_pct_str(avg([a['pricing']['max_gain_pct'] for a in calls]))}",
+            f"📉 Puts:  {len(puts)} alerts, {pw} hit +{target:.0f}% "
+            f"({100*pw/len(puts):.0f}%), avg max "
+            f"{_pct_str(avg([a['pricing']['max_gain_pct'] for a in puts]))}",
+        ]
+
+    # Early-session split — does pre-cutoff flow perform differently?
+    early_a = [a for a in priced if a.get("early")]
+    late_a  = [a for a in priced if not a.get("early")]
+    if early_a and late_a:
+        ew = sum(1 for a in early_a if a["pricing"]["max_gain_pct"] >= target)
+        lw = sum(1 for a in late_a  if a["pricing"]["max_gain_pct"] >= target)
+        lines += [
+            "",
+            f"⏰ Early-session: {len(early_a)} alerts, {ew} hit +{target:.0f}% "
+            f"({100*ew/len(early_a):.0f}%)",
+            f"🕐 Regular:       {len(late_a)} alerts, {lw} hit +{target:.0f}% "
+            f"({100*lw/len(late_a):.0f}%)",
+        ]
+
+    return lines
+
+
+def _enrich_alert_pricing(alert: dict) -> None:
+    """
+    Enrich one fired alert with option-price stats over the life of the trade,
+    from Massive 30-minute bars: entry (price on the triggering/most-recent
+    flow), min low, max high, price at expiration, and the % moves from entry.
+
+    Mutates the alert dict in place, adding an "pricing" sub-dict. Silent on
+    failure (leaves pricing=None) so a data gap never breaks the backtest.
+
+    Reuses preset_backtest._fetch_option_intraday (Massive, key rotation +
+    rate limiting already handled there).
+    """
+    alert["pricing"] = None
+    fills = alert.get("fills", [])
+    if not fills:
+        return
+    trigger = fills[-1]                       # the most-recent flow (fired the alert)
+    occ         = trigger.get("occ", "")
+    expiry_iso  = trigger.get("expiry_iso", "")
+    entry_price = float(trigger.get("price", 0) or 0)
+    if not occ or not expiry_iso or entry_price <= 0:
+        return
+
+    start_iso = alert.get("date", "")         # fire day (YYYY-MM-DD)
+    if not start_iso:
+        return
+
+    try:
+        from preset_backtest import _fetch_option_intraday
+        bars = _fetch_option_intraday(occ, start_iso, expiry_iso)
+    except Exception as e:
+        print(f"[TARGETED_BT] pricing fetch error {occ}: {e}")
+        return
+    if not bars:
+        return
+
+    # Only consider bars at/after the alert's fire timestamp.
+    fire_ts = float(trigger.get("ts", 0) or 0)
+    life = [b for b in bars if b.get("ts", 0) >= fire_ts] or bars
+
+    highs = [b["high"] for b in life if b.get("high")]
+    lows  = [b["low"]  for b in life if b.get("low")]
+    if not highs or not lows:
+        return
+
+    max_px = max(highs)
+    min_px = min(lows)
+    exp_px = life[-1]["close"]                # close of the last bar (expiry day)
+
+    # Pre-peak drawdown: the lowest low BEFORE the max high was reached. This
+    # is the heat you'd actually have taken before the runup — unlike the
+    # full-life min, which for OTM options is usually ~$0 from expiry decay.
+    peak_idx = max(range(len(life)),
+                   key=lambda i: life[i].get("high", 0) or 0)
+    pre_peak = [b["low"] for b in life[:peak_idx + 1] if b.get("low")]
+    pre_peak_min = min(pre_peak) if pre_peak else min_px
+
+    def pct(a, b):
+        return ((a - b) / b * 100.0) if b else 0.0
+
+    alert["pricing"] = {
+        "entry":       entry_price,
+        "min":         min_px,
+        "max":         max_px,
+        "at_expiry":   exp_px,
+        "pre_peak_min":     pre_peak_min,
+        "pre_peak_draw_pct": pct(pre_peak_min, entry_price),
+        "max_gain_pct":  pct(max_px, entry_price),
+        "max_draw_pct":  pct(min_px, entry_price),
+        "expiry_pct":    pct(exp_px, entry_price),
+        "bars":        len(life),
+    }
+
+
 def _stream_one_day(date: str, api_key: str, max_attempts: int = 4) -> tuple[list, int, int, dict]:
     """
     Streams a single day and returns (alerts_fired, event_count,
@@ -184,6 +380,17 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
             is_sweep  = str(inner.get("alertFillType", "")).upper() in ("FULL_ASK", "AA")
             stock_px  = float(inner.get("stockPrice") or 0)
 
+            # Normalized OCC symbol (e.g. GOOGL260717C00370000) + ISO expiry,
+            # used later to pull 30M option bars from Massive for pricing.
+            occ_norm = ""
+            expiry_iso = ""
+            _mm = re.search(r'O:([A-Z]+\d{6}[CP]\d+)', str(symbol))
+            if _mm:
+                occ_norm = _mm.group(1)
+                _e = re.search(r'[A-Z]+(\d{2})(\d{2})(\d{2})[CP]', occ_norm)
+                if _e:
+                    expiry_iso = f"20{_e.group(1)}-{_e.group(2)}-{_e.group(3)}"
+
             event_ts = float(inner.get("timestamp") or time.time())
             est_str  = str(inner.get("estTimestamp", ""))
             time_str = est_str[11:19] if len(est_str) >= 19 else datetime.now(ET).strftime("%-I:%M:%S %p")
@@ -197,6 +404,7 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
                 "strike": strike, "expiry": expiry, "price": price,
                 "premium": premium, "sweep": is_sweep, "dte": parsed["dte"],
                 "stock_px": stock_px, "time": time_str, "ts": event_ts, "early": early,
+                "occ": occ_norm, "expiry_iso": expiry_iso,
             }
 
             streak = bt_state.get(key)
@@ -293,6 +501,11 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
         latest_per_key[f"{a['ticker']}_{a['strike']}_{a['expiry']}_{a['direction']}"] = a
     early_count = sum(1 for a in alerts_fired if a["early"])
 
+    # Enrich each displayed strike with option pricing from Massive 30M bars.
+    if os.environ.get("TARGETED_STRIKES_PRICING", "true").lower() in ("true","1","yes","on"):
+        for a in latest_per_key.values():
+            _enrich_alert_pricing(a)
+
     summary = [
         f"🎯 Targeted Strikes Backtest: {date}",
         f"━━━ {len(latest_per_key)} strikes crossed {THRESHOLD}x "
@@ -306,7 +519,7 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
         early_s = " ⏰EARLY" if a["early"] else ""
         fills   = a.get("fills", [])
         # time the run first crossed THRESHOLD = the THRESHOLD-th fill's time
-        cross_time = fills[THRESHOLD - 1]["time"] if len(fills) >= THRESHOLD else a["time"]
+        cross_time = (fills[THRESHOLD - 1].get("time") or a["time"]) if len(fills) >= THRESHOLD else a["time"]
         latest_time = a["time"]
         if a["count"] > THRESHOLD:
             time_str = f"crossed {THRESHOLD}x @ {cross_time}, latest @ {latest_time}"
@@ -316,6 +529,18 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
             f"{emoji} ${a['ticker']} {a['strike']}{otype} {a['expiry']}  "
             f"{a['count']}x  {_fmt_prem(a['total_prem'])}  {time_str}{early_s}"
         )
+        pr = a.get("pricing")
+        if pr:
+            summary.append(
+                f"   💵 entry ${pr['entry']:.2f} → max ${pr['max']:.2f} "
+                f"({pr['max_gain_pct']:+.0f}%) | pre-peak dd ${pr['pre_peak_min']:.2f} "
+                f"({pr['pre_peak_draw_pct']:+.0f}%)"
+            )
+            summary.append(
+                f"      exp ${pr['at_expiry']:.2f} ({pr['expiry_pct']:+.0f}%) "
+                f"| life min ${pr['min']:.2f} ({pr['max_draw_pct']:+.0f}%)"
+            )
+    summary += _build_performance_summary(list(latest_per_key.values()))
     send_telegram("\n".join(summary), bot_token, chat_id)
 
     if detail:
@@ -346,7 +571,9 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
     from openpyxl.utils import get_column_letter
 
     cols = ["Date", f"Crossed {THRESHOLD}x Time", "Fill Time", "Ticker", "Direction",
-            "Strike", "Expiry", "Count", "Add-On", "Early Session", "Combined Premium"]
+            "Strike", "Expiry", "Count", "Add-On", "Early Session", "Combined Premium",
+            "Entry", "Min", "Max", "At Expiry", "Max Gain %", "Max Draw %", "Expiry %",
+            "Pre-Peak Min", "Pre-Peak DD %"]
     ws.append(cols)
     for c in range(1, len(cols) + 1):
         cell = ws.cell(row=1, column=c)
@@ -354,13 +581,23 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
 
     for a in sorted(all_alerts, key=lambda x: (x["date"], x["time"])):
         fills = a.get("fills", [])
-        cross_time = fills[THRESHOLD - 1]["time"] if len(fills) >= THRESHOLD else a["time"]
+        cross_time = (fills[THRESHOLD - 1].get("time") or a["time"]) if len(fills) >= THRESHOLD else a["time"]
+        pr = a.get("pricing") or {}
         ws.append([
             a["date"], cross_time, a["time"], a["ticker"], a["direction"].upper(),
             a["strike"], a["expiry"], a["count"],
             "YES" if a["is_addon"] else "",
             "YES" if a["early"] else "",
             round(a["total_prem"], 2),
+            round(pr["entry"], 2)      if pr else "",
+            round(pr["min"], 2)        if pr else "",
+            round(pr["max"], 2)        if pr else "",
+            round(pr["at_expiry"], 2)  if pr else "",
+            round(pr["max_gain_pct"], 1) if pr else "",
+            round(pr["max_draw_pct"], 1) if pr else "",
+            round(pr["expiry_pct"], 1)   if pr else "",
+            round(pr["pre_peak_min"], 2)      if pr else "",
+            round(pr["pre_peak_draw_pct"], 1) if pr else "",
         ])
 
     for i, col in enumerate(cols, 1):
@@ -419,6 +656,12 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
     for a in all_alerts:
         latest_per_key[f"{a['date']}_{a['ticker']}_{a['strike']}_{a['expiry']}_{a['direction']}"] = a
     early_count = sum(1 for a in all_alerts if a["early"])
+
+    # Enrich the deduped strikes with Massive pricing. These are the same dict
+    # objects that live in all_alerts, so the workbook picks up pricing too.
+    if os.environ.get("TARGETED_STRIKES_PRICING", "true").lower() in ("true","1","yes","on"):
+        for a in latest_per_key.values():
+            _enrich_alert_pricing(a)
     by_ticker: dict = {}
     for a in latest_per_key.values():
         by_ticker[a["ticker"]] = by_ticker.get(a["ticker"], 0) + 1
@@ -437,7 +680,7 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
         otype  = "C" if a["direction"] == "call" else "P"
         early_s = " ⏰" if a["early"] else ""
         fills   = a.get("fills", [])
-        cross_time = fills[THRESHOLD - 1]["time"] if len(fills) >= THRESHOLD else a["time"]
+        cross_time = (fills[THRESHOLD - 1].get("time") or a["time"]) if len(fills) >= THRESHOLD else a["time"]
         if a["count"] > THRESHOLD:
             time_str = f"{THRESHOLD}x@{cross_time} → {a['count']}x@{a['time']}"
         else:
@@ -448,6 +691,8 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
         )
     if len(latest_per_key) > 40:
         summary.append(f"... and {len(latest_per_key) - 40} more — see attached workbook")
+
+    summary += _build_performance_summary(list(latest_per_key.values()))
 
     send_telegram("\n".join(summary), bot_token, chat_id)
 
