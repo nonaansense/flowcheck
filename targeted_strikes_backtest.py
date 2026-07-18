@@ -31,6 +31,7 @@ TARGETED_FILTER  = os.environ.get("TARGETED_STRIKES_FILTER_NAME", "Targeted_Stri
 THRESHOLD        = int(os.environ.get("TARGETED_STRIKES_THRESHOLD", "4"))
 EARLY_CUTOFF_STR = os.environ.get("TARGETED_STRIKES_EARLY_CUTOFF", "10:25")
 SKIP_EARLY       = os.environ.get("TARGETED_STRIKES_SKIP_EARLY", "false").lower() in ("true","1","yes","on")
+GATE_UNTIL_CUTOFF = os.environ.get("TARGETED_STRIKES_GATE_UNTIL_CUTOFF", "false").lower() in ("true","1","yes","on")
 
 
 def _early_cutoff():
@@ -188,7 +189,12 @@ def _stream_one_day(date: str, api_key: str) -> tuple[list, int, int, dict]:
             count        = len(fills)
             last_alerted = streak["last_alerted_count"]
 
-            if count >= THRESHOLD and count > last_alerted:
+            # GATE_UNTIL_CUTOFF: hold the alert while the triggering fill is
+            # pre-cutoff (early=True); don't advance last_alerted so a later
+            # at/after-cutoff fill fires with the full accumulated count.
+            gated = GATE_UNTIL_CUTOFF and early
+
+            if count >= THRESHOLD and count > last_alerted and not gated:
                 streak["last_alerted_count"] = count
                 alerts_fired.append({
                     "ticker":     ticker,

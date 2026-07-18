@@ -54,6 +54,12 @@ EARLY_CUTOFF_STR  = os.environ.get("TARGETED_STRIKES_EARLY_CUTOFF", "10:25")
 # stored — so no run can be built from pre-cutoff flow. Default false: count
 # them and just tag the alert ⏰EARLY.
 SKIP_EARLY        = os.environ.get("TARGETED_STRIKES_SKIP_EARLY", "false").lower() in ("true","1","yes","on")
+# When true, pre-cutoff fills STILL COUNT toward the run, but an alert is held
+# back until the fill that crosses/extends the threshold lands at or after the
+# cutoff. A run that completes entirely before the cutoff stays silent until
+# (and unless) another matching fill arrives post-cutoff. Independent of
+# SKIP_EARLY (if SKIP_EARLY is on, pre-cutoff fills are gone, so this is moot).
+GATE_UNTIL_CUTOFF = os.environ.get("TARGETED_STRIKES_GATE_UNTIL_CUTOFF", "false").lower() in ("true","1","yes","on")
 STORAGE_KEY       = "targeted_strikes_history"
 
 # State is one ACTIVE STREAK per ticker+direction:
@@ -205,6 +211,16 @@ def process_targeted_strikes(alert: dict, filter_name: str) -> dict | None:
           f"consecutive run = {count} (need {THRESHOLD})")
 
     if count < THRESHOLD or count <= last_alerted:
+        return None
+
+    # GATE_UNTIL_CUTOFF: the run has reached/extended the threshold, but if the
+    # triggering fill is still before the cutoff, hold the alert. Do NOT advance
+    # last_alerted_count — so the first matching fill AT/AFTER the cutoff will
+    # fire, showing the full accumulated count.
+    if GATE_UNTIL_CUTOFF and fill.get("early"):
+        print(f"[TARGETED] Holding alert (GATE_UNTIL_CUTOFF): {ticker} "
+              f"{strike}/{expiry} {direction} run={count}, triggering fill "
+              f"before cutoff {EARLY_CUTOFF_STR}")
         return None
 
     streak["last_alerted_count"] = count
