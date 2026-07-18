@@ -92,8 +92,8 @@ def _tkr_prem_str(snap: dict) -> str:
     tot = c + p
     if tot <= 0:
         return ""
-    return (f"C {_fmt_prem(c)} ({c/tot*100:.0f}%) / "
-            f"P {_fmt_prem(p)} ({p/tot*100:.0f}%)")
+    return (f"P {_fmt_prem(p)} ({p/tot*100:.0f}%) / "
+            f"C {_fmt_prem(c)} ({c/tot*100:.0f}%)")
 
 
 def _pct_str(v: float) -> str:
@@ -645,8 +645,8 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
             "Strike", "Expiry", "Count", "Add-On", "Early Session", "Combined Premium",
             "Entry", "Min", "Max", "At Expiry", "Max Gain %", "Max Draw %", "Expiry %",
             "Pre-Peak Min", "Pre-Peak DD %", "Pricing Note",
-            "Tkr Call Prem @Alert", "Tkr Put Prem @Alert", "Tkr Call% @Alert",
-            "Tkr Call Prem @3:30", "Tkr Put Prem @3:30", "Tkr Call% @3:30"]
+            "Tkr Put Prem @Alert", "Tkr Call Prem @Alert", "Tkr Put% @Alert",
+            "Tkr Put Prem @3:30", "Tkr Call Prem @3:30", "Tkr Put% @3:30"]
     ws.append(cols)
     for c in range(1, len(cols) + 1):
         cell = ws.cell(row=1, column=c)
@@ -676,11 +676,11 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
             (a.get("pricing_note") or "")
             if pr or a.get("pricing_note") is not None
             else "not priced (add-on row)",
-            round(_ta.get("call", 0), 2), round(_ta.get("put", 0), 2),
-            round(_ta["call"] / (_ta["call"] + _ta["put"]) * 100, 1)
+            round(_ta.get("put", 0), 2), round(_ta.get("call", 0), 2),
+            round(_ta["put"] / (_ta["call"] + _ta["put"]) * 100, 1)
             if (_ta.get("call", 0) + _ta.get("put", 0)) else "",
-            round(_t3.get("call", 0), 2), round(_t3.get("put", 0), 2),
-            round(_t3["call"] / (_t3["call"] + _t3["put"]) * 100, 1)
+            round(_t3.get("put", 0), 2), round(_t3.get("call", 0), 2),
+            round(_t3["put"] / (_t3["call"] + _t3["put"]) * 100, 1)
             if (_t3.get("call", 0) + _t3.get("put", 0)) else "",
         ])
 

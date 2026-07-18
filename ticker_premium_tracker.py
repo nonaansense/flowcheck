@@ -153,8 +153,8 @@ def format_snapshot(snap: dict, label: str = "Ticker flow today") -> list:
            "🔴 put-heavy"  if snap["put_pct"]  >= 60 else "⚪ balanced"
     return [
         f"📊 {label}: {lean} ({ratio_s})",
-        f"   calls {fmt_prem(snap['call'])} ({snap['call_pct']:.0f}%, {snap['call_n']} prints) | "
-        f"puts {fmt_prem(snap['put'])} ({snap['put_pct']:.0f}%, {snap['put_n']} prints)",
+        f"   puts {fmt_prem(snap['put'])} ({snap['put_pct']:.0f}%, {snap['put_n']} prints) | "
+        f"calls {fmt_prem(snap['call'])} ({snap['call_pct']:.0f}%, {snap['call_n']} prints)",
     ]
 
 
@@ -171,7 +171,7 @@ def build_daily_update(bot_token: str = "", chat_id: str = "") -> str:
     now_s = datetime.now(ET).strftime("%-I:%M %p")
     lines = [
         f"📊 DAILY PREMIUM UPDATE — {now_s} ET",
-        "━━━ Targeted_Strikes_Expiry call vs put premium, full day ━━━",
+        "━━━ Targeted_Strikes_Expiry put vs call premium, full day ━━━",
         "",
     ]
     rows = []
@@ -187,8 +187,8 @@ def build_daily_update(bot_token: str = "", chat_id: str = "") -> str:
     for t, s in rows:
         lean = "🟢" if s["call_pct"] >= 60 else "🔴" if s["put_pct"] >= 60 else "⚪"
         lines.append(
-            f"{lean} ${t}  C {fmt_prem(s['call'])} ({s['call_pct']:.0f}%) / "
-            f"P {fmt_prem(s['put'])} ({s['put_pct']:.0f}%)  "
+            f"{lean} ${t}  P {fmt_prem(s['put'])} ({s['put_pct']:.0f}%) / "
+            f"C {fmt_prem(s['call'])} ({s['call_pct']:.0f}%)  "
             f"tot {fmt_prem(s['total'])}"
         )
     return "\n".join(lines)
