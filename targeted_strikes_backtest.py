@@ -84,15 +84,46 @@ def _fmt_prem(p: float) -> str:
     return f"${p/1_000_000:.1f}M" if p >= 1_000_000 else f"${p/1_000:.0f}K"
 
 
-def _stream_one_day(date: str, api_key: str) -> tuple[list, int, int, dict]:
+def _stream_one_day(date: str, api_key: str, max_attempts: int = 4) -> tuple[list, int, int, dict]:
     """
     Streams a single day and returns (alerts_fired, event_count,
     targeted_events, seen_names). Isolated state — never touches
     production _TARGETED.
+
+    Bullflow's backtest SSE endpoint replays a finite day and does NOT
+    support resume-from-offset, so if the connection drops mid-stream we
+    restart the whole day from scratch (state reset each attempt) rather
+    than reconnecting — this avoids double-counting. Retries up to
+    max_attempts times on premature drops / transient network errors.
     """
     url = _build_url(api_key, date)
+    last_err = None
 
-    bt_state:        dict = {}   # ticker_strike_expiry_direction → {"fills": [...], "last_alerted_count": 0}
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _stream_one_day_once(url, date)
+        except (requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.HTTPError) as e:
+            last_err = e
+            if attempt < max_attempts:
+                wait = 15 * attempt   # 15s, 30s, 45s backoff
+                print(f"[TARGETED_BT] Stream dropped on attempt {attempt}/{max_attempts} "
+                      f"({type(e).__name__}: {e}) — restarting day in {wait}s")
+                time.sleep(wait)
+            else:
+                print(f"[TARGETED_BT] Stream failed after {max_attempts} attempts: {e}")
+        except Exception as e:
+            # Non-network error — don't retry blindly, surface it.
+            raise
+    # Exhausted retries — re-raise the last network error for the caller to report.
+    raise last_err
+
+
+def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
+    """One streaming attempt. Fresh state; raises on premature drop."""
+    bt_state:        dict = {}   # ticker_direction → {"strike","expiry","fills":[...],"last_alerted_count"}
     alerts_fired:    list = []
     event_count      = 0
     targeted_events  = 0
@@ -223,6 +254,15 @@ def _run_backtest_thread(date: str, bot_token: str, chat_id: str, detail: bool =
 
     try:
         alerts_fired, event_count, targeted_events, seen_names = _stream_one_day(date, api_key)
+    except (requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout) as e:
+        send_telegram(
+            f"❌ Backtest for {date} failed: Bullflow stream kept dropping "
+            f"after several retries ({type(e).__name__}). This is usually a "
+            f"transient Bullflow/network issue — try again in a minute.",
+            bot_token, chat_id)
+        return
     except Exception as e:
         send_telegram(f"❌ Backtest error ({date}): {e}", bot_token, chat_id)
         return
