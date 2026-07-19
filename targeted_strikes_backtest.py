@@ -129,8 +129,10 @@ def _build_performance_summary(alerts: list) -> list:
 
     exp_rets   = [a["pricing"]["expiry_pct"]        for a in priced]
     max_gains  = [a["pricing"]["max_gain_pct"]      for a in priced]
-    pre_dds    = [a["pricing"]["pre_peak_draw_pct"] for a in priced]
-    life_dds   = [a["pricing"]["max_draw_pct"]      for a in priced]
+    max_dds    = [a["pricing"]["max_dd_pct"]           for a in priced]
+    givebacks  = [a["pricing"].get("giveback_pct", 0.0) for a in priced]
+    life_dds   = [a["pricing"].get("mae_pct",
+                                   a["pricing"]["max_draw_pct"]) for a in priced]
 
     n = len(priced)
     wins_exp    = sum(1 for r in exp_rets  if r > 0)
@@ -157,9 +159,11 @@ def _build_performance_summary(alerts: list) -> list:
         "",
         f"📈 Avg max gain:        {_pct_str(avg(max_gains))}  "
         f"(median {_pct_str(_median(max_gains))})",
-        f"📉 Avg pre-peak DD:     {_pct_str(avg(pre_dds))}  "
-        f"(median {_pct_str(_median(pre_dds))})",
-        f"💀 Avg full-life DD:    {_pct_str(avg(life_dds))}  "
+        f"📉 Avg max drawdown:    {_pct_str(avg(max_dds))}  "
+        f"(median {_pct_str(_median(max_dds))})   ← below entry before peak",
+        f"↩️  Avg give-back:       {_pct_str(avg(givebacks))}  "
+        f"(median {_pct_str(_median(givebacks))})   ← from peak",
+        f"💀 Avg life low vs entry: {_pct_str(avg(life_dds))}  "
         f"(median {_pct_str(_median(life_dds))})",
         f"🏁 Avg return @ expiry: {_pct_str(avg(exp_rets))}  "
         f"(median {_pct_str(_median(exp_rets))})",
@@ -292,13 +296,18 @@ def _enrich_alert_pricing(alert: dict) -> None:
     min_px = min(lows)
     exp_px = life[-1]["close"]                # close of the last bar (expiry day)
 
-    # Pre-peak drawdown: the lowest low BEFORE the max high was reached. This
-    # is the heat you'd actually have taken before the runup — unlike the
-    # full-life min, which for OTM options is usually ~$0 from expiry decay.
+    # MAX DRAWDOWN: how far below ENTRY it traded BEFORE reaching its peak.
+    # This is the heat you'd have to sit through while still holding for the
+    # run — the number that decides whether you'd have survived the trade.
     peak_idx = max(range(len(life)),
                    key=lambda i: life[i].get("high", 0) or 0)
-    pre_peak = [b["low"] for b in life[:peak_idx + 1] if b.get("low")]
-    pre_peak_min = min(pre_peak) if pre_peak else min_px
+    pre_peak_lows = [b["low"] for b in life[:peak_idx + 1] if b.get("low")]
+    dd_low = min(pre_peak_lows) if pre_peak_lows else min_px
+
+    # Give-back after the peak (peak -> lowest low that follows it). Useful
+    # for "could I have held the winner", but NOT the drawdown.
+    post_peak_lows = [b["low"] for b in life[peak_idx:] if b.get("low")]
+    giveback_low = min(post_peak_lows) if post_peak_lows else max_px
 
     def pct(a, b):
         return ((a - b) / b * 100.0) if b else 0.0
@@ -308,9 +317,18 @@ def _enrich_alert_pricing(alert: dict) -> None:
         "min":         min_px,
         "max":         max_px,
         "at_expiry":   exp_px,
-        "pre_peak_min":     pre_peak_min,
-        "pre_peak_draw_pct": pct(pre_peak_min, entry_price),
+        # THE drawdown: lowest point below entry before the peak.
+        "dd_low":      dd_low,
+        "max_dd_pct":  pct(dd_low, entry_price),
+        # Back-compat aliases — same value, older keys.
+        "pre_peak_min":      dd_low,
+        "pre_peak_draw_pct": pct(dd_low, entry_price),
         "max_gain_pct":  pct(max_px, entry_price),
+        # Post-peak give-back (peak -> subsequent low). Not a drawdown.
+        "giveback_low":  giveback_low,
+        "giveback_pct":  pct(giveback_low, max_px),
+        # Worst level vs entry across the whole life (incl. expiry decay).
+        "mae_pct":       pct(min_px, entry_price),
         "max_draw_pct":  pct(min_px, entry_price),
         "expiry_pct":    pct(exp_px, entry_price),
         "bars":        len(life),
@@ -598,12 +616,17 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
         if pr:
             summary.append(
                 f"   💵 entry ${pr['entry']:.2f} → max ${pr['max']:.2f} "
-                f"({pr['max_gain_pct']:+.0f}%) | pre-peak dd ${pr['pre_peak_min']:.2f} "
-                f"({pr['pre_peak_draw_pct']:+.0f}%)"
+                f"({pr['max_gain_pct']:+.0f}%)"
             )
             summary.append(
-                f"      exp ${pr['at_expiry']:.2f} ({pr['expiry_pct']:+.0f}%) "
-                f"| life min ${pr['min']:.2f} ({pr['max_draw_pct']:+.0f}%)"
+                f"      max DD {pr['max_dd_pct']:+.0f}% "
+                f"(low ${pr['dd_low']:.2f} before peak) "
+                f"| exp ${pr['at_expiry']:.2f} ({pr['expiry_pct']:+.0f}%)"
+            )
+            summary.append(
+                f"      give-back after peak {pr['giveback_pct']:+.0f}% "
+                f"(${pr['max']:.2f}→${pr['giveback_low']:.2f}) "
+                f"| life low ${pr['min']:.2f} ({pr['mae_pct']:+.0f}%)"
             )
         _ta = _tkr_prem_str(a.get("tkr_at_alert"))
         _t3 = _tkr_prem_str(a.get("tkr_at_330"))
@@ -643,8 +666,8 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
 
     cols = ["Date", f"Crossed {THRESHOLD}x Time", "Fill Time", "Ticker", "Direction",
             "Strike", "Expiry", "Count", "Add-On", "Early Session", "Combined Premium",
-            "Entry", "Min", "Max", "At Expiry", "Max Gain %", "Max Draw %", "Expiry %",
-            "Pre-Peak Min", "Pre-Peak DD %", "Pricing Note",
+            "Entry", "Min", "Max", "At Expiry", "Max Gain %", "Max DD %", "DD Low", "Give-Back %", "Give-Back Low", "Life Low % (vs entry)", "Expiry %",
+            "Pricing Note",
             "Tkr Put Prem @Alert", "Tkr Call Prem @Alert", "Tkr Put% @Alert",
             "Tkr Put Prem @3:30", "Tkr Call Prem @3:30", "Tkr Put% @3:30"]
     ws.append(cols)
@@ -669,10 +692,12 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
             round(pr["max"], 2)        if pr else "",
             round(pr["at_expiry"], 2)  if pr else "",
             round(pr["max_gain_pct"], 1) if pr else "",
-            round(pr["max_draw_pct"], 1) if pr else "",
+            round(pr.get("max_dd_pct", 0), 1)   if pr else "",
+            round(pr.get("dd_low", 0), 2)       if pr else "",
+            round(pr.get("giveback_pct", 0), 1) if pr else "",
+            round(pr.get("giveback_low", 0), 2) if pr else "",
+            round(pr.get("mae_pct", pr.get("max_draw_pct", 0)), 1) if pr else "",
             round(pr["expiry_pct"], 1)   if pr else "",
-            round(pr["pre_peak_min"], 2)      if pr else "",
-            round(pr["pre_peak_draw_pct"], 1) if pr else "",
             (a.get("pricing_note") or "")
             if pr or a.get("pricing_note") is not None
             else "not priced (add-on row)",
