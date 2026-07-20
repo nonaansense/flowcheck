@@ -793,7 +793,8 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
             "Entry", "Min", "Max", "At Expiry", "Max Gain %", "Max DD %", "DD Low", "Give-Back %", "Give-Back Low", "Life Low % (vs entry)", "Expiry %",
             "Pricing Note",
             "Tkr Put Prem @Alert", "Tkr Call Prem @Alert", "Tkr Put% @Alert",
-            "Tkr Put Prem @3:30", "Tkr Call Prem @3:30", "Tkr Put% @3:30"]
+            "Tkr Put Prem @3:30", "Tkr Call Prem @3:30", "Tkr Put% @3:30",
+            "Swing Score", "Swing DQ", "Score: 30M", "Score: Daily", "Score: Flow"]
     ws.append(cols)
     for c in range(1, len(cols) + 1):
         cell = ws.cell(row=1, column=c)
@@ -805,6 +806,7 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
         pr = a.get("pricing") or {}
         _ta = a.get("tkr_at_alert") or {}
         _t3 = a.get("tkr_at_330") or {}
+        _sb = a.get("swing_breakdown") or {}
         ws.append([
             a["date"], cross_time, a["time"], a["ticker"], a["direction"].upper(),
             a["strike"], a["expiry"], a["count"],
@@ -831,6 +833,9 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
             round(_t3.get("put", 0), 2), round(_t3.get("call", 0), 2),
             round(_t3["put"] / (_t3["call"] + _t3["put"]) * 100, 1)
             if (_t3.get("call", 0) + _t3.get("put", 0)) else "",
+            a.get("swing_score") or "",
+            a.get("swing_dq") or "",
+            _sb.get("m30", ""), _sb.get("daily", ""), _sb.get("flow", ""),
         ])
 
     for i, col in enumerate(cols, 1):
@@ -927,9 +932,14 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
             time_str = f"{THRESHOLD}x@{cross_time} → {a['count']}x@{a['time']}"
         else:
             time_str = f"@{cross_time}"
+        sc = ""
+        if a.get("swing_score"):
+            sc = f"  🎯{a['swing_score']:.0f}"
+        elif a.get("swing_dq"):
+            sc = "  🎯dq"
         summary.append(
             f"{a['date']} {emoji} ${a['ticker']} {a['strike']}{otype} {a['expiry']}  "
-            f"{a['count']}x  {_fmt_prem(a['total_prem'])}  {time_str}{early_s}"
+            f"{a['count']}x  {_fmt_prem(a['total_prem'])}  {time_str}{early_s}{sc}"
         )
     if len(latest_per_key) > 40:
         summary.append(f"... and {len(latest_per_key) - 40} more — see attached workbook")
