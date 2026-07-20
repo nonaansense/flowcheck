@@ -7,22 +7,25 @@ which is a different question from whether the flow was interesting. Most
 targeted-strike alerts fire late in the session on 0-3 DTE contracts; those
 are scalps, not swings, and the DTE gate below reflects that deliberately.
 
-Scoring (0-100):
-  DTE suitability        25   swing needs time; 0-2 DTE is disqualifying
-  Daily/4H alignment     20   reuses swing_scanner._score_technicals, which
-                              also GATEKEEPS on daily + 4H regime (None =
-                              disqualified — the trend disagrees)
-  30M chart structure    20   30-minute trend (EMA9/21 stack) + distance to
-                              the next 30M support/resistance pivot
-  Flow conviction        10   run length, premium, sweep share
-  Premium skew           10   does the ticker's put/call premium agree with
-                              the alert's direction?
-  GEX positioning        10   room to the next wall in the trade's direction
-  Dark pool               5   real off-exchange prints (Bullflow API)
+Scoring (0-100) — TECHNICALS-DOMINANT:
+
+These alerts are structurally 0-5 DTE, so DTE is context, not a gate. What
+decides whether one is worth holding is the CHART: is the 30M structure
+behind the trade, and is there room to the next level? Technicals carry 65
+of the 100 points.
+
+  30M chart structure    40   trend (EMA9/21 stack), momentum, position in
+                              range, and distance to the next 30M pivot
+  Higher-timeframe trend 25   daily/4H regime agreement
+  Flow conviction        12   run length, premium, sweep share
+  Premium skew            8   ticker put/call premium vs alert direction
+  GEX positioning         7   room to the next wall
+  Dark pool               5   real off-exchange prints
+  (DTE is reported for context and only blocks 0DTE overnight holds)
 
 Gatekeepers (score forced to 0, reason recorded):
-  • DTE < TARGETED_SWING_MIN_DTE (default 5)
-  • Daily/4H regime disagrees with the alert direction
+  • 30M trend strongly opposes the trade direction
+  • Daily/4H regime disagrees (swing_scanner._score_technicals returns None)
 
 Config:
   TARGETED_SWING_MIN_DTE   = 5     minimum DTE to be swing-eligible
@@ -47,16 +50,18 @@ def _fmt_prem(p: float) -> str:
 # ────────────────────────── component scorers ──────────────────────────
 
 def _score_dte(dte: int) -> tuple:
-    """0-25. Swings need runway; weeklies expiring in days do not qualify."""
-    if dte < MIN_DTE:
-        return 0.0, f"only {dte}DTE — too short to swing"
-    if dte <= 9:
-        return 12.0, f"{dte}DTE — tight for a swing"
-    if dte <= 21:
-        return 25.0, f"{dte}DTE — good swing runway"
-    if dte <= 60:
-        return 22.0, f"{dte}DTE — plenty of time"
-    return 16.0, f"{dte}DTE — long-dated, slower to move"
+    """
+    Context only — NOT a gate. Targeted_Strikes_Expiry is structurally a
+    0-5 DTE signal, so gating on DTE would reject the entire population.
+    0DTE still gets flagged because it cannot be held overnight at all.
+    """
+    if dte <= 0:
+        return 0.0, "0DTE — cannot hold overnight"
+    if dte == 1:
+        return 1.0, "1DTE — overnight hold only"
+    if dte <= 3:
+        return 2.0, f"{dte}DTE"
+    return 3.0, f"{dte}DTE"
 
 
 def _score_flow(run: dict) -> tuple:
@@ -93,7 +98,7 @@ def _score_flow(run: dict) -> tuple:
         pts += 2; notes.append(f"{sweeps}/{count} sweeps")
     elif share > 0:
         pts += 1
-    return min(pts, 10.0), notes
+    return min(pts, 12.0), notes
 
 
 def _score_premium_skew(ticker: str, direction: str) -> tuple:
@@ -107,9 +112,9 @@ def _score_premium_skew(ticker: str, direction: str) -> tuple:
         return 0.0, []
     aligned_pct = s["call_pct"] if direction == "call" else s["put_pct"]
     if aligned_pct >= 70:
-        return 10.0, [f"flow {aligned_pct:.0f}% {direction}-side"]
+        return 8.0, [f"flow {aligned_pct:.0f}% {direction}-side"]
     if aligned_pct >= 55:
-        return 6.0, [f"flow leans {direction} ({aligned_pct:.0f}%)"]
+        return 5.0, [f"flow leans {direction} ({aligned_pct:.0f}%)"]
     if aligned_pct >= 45:
         return 3.0, []
     return 0.0, [f"⚠️ flow is {100-aligned_pct:.0f}% the OTHER way"]
@@ -139,13 +144,13 @@ def _score_gex(ticker: str, direction: str, spot: float) -> tuple:
                      and float(s.get("gex", 0)) > 0]
             nearest = max(walls, key=lambda s: float(s["strike"])) if walls else None
         if not nearest:
-            return 8.0, ["no GEX wall blocking"]
+            return 6.0, ["no GEX wall blocking"]
         dist_pct = abs(float(nearest["strike"]) - spot) / spot * 100
         if dist_pct >= 3:
-            return 10.0, [f"{dist_pct:.1f}% of room to GEX wall"]
+            return 7.0, [f"{dist_pct:.1f}% of room to GEX wall"]
         if dist_pct >= 1.5:
-            return 6.0, [f"{dist_pct:.1f}% to GEX wall"]
-        return 2.0, [f"⚠️ GEX wall only {dist_pct:.1f}% away"]
+            return 4.0, [f"{dist_pct:.1f}% to GEX wall"]
+        return 1.0, [f"⚠️ GEX wall only {dist_pct:.1f}% away"]
     except Exception:
         return 0.0, []
 
@@ -168,17 +173,39 @@ def _pivots(bars: list, lookback: int = 2) -> tuple:
     return highs, lows
 
 
+def _rsi(closes: list, period: int = 14) -> float:
+    """Wilder RSI on the given closes. 0.0 if not enough data."""
+    if len(closes) < period + 1:
+        return 0.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(d, 0.0))
+        losses.append(max(-d, 0.0))
+    ag = sum(gains[:period]) / period
+    al = sum(losses[:period]) / period
+    for i in range(period, len(gains)):
+        ag = (ag * (period - 1) + gains[i]) / period
+        al = (al * (period - 1) + losses[i]) / period
+    if al == 0:
+        return 100.0
+    rs = ag / al
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
 def _score_30m_structure(ticker: str, direction: str) -> tuple:
     """
-    0-20 from the 30-MINUTE chart: overall trend + where price sits relative
-    to support/resistance.
+    0-40 from the 30-MINUTE chart. This is the heart of the rating: these
+    contracts are 0-5 DTE, so the intraday chart — not the calendar — decides
+    whether the trade has room to work.
 
-    Trend (0-10): EMA9 vs EMA21 stack on 30M closes, plus price above/below.
-    Levels (0-10): distance to the next 30M resistance (for calls) or support
-    (for puts). Buying straight into overhead resistance is the single most
-    common way a good-looking flow setup stalls, so it's scored explicitly.
+      Trend      (0-12): EMA9 vs EMA21 stack + price position
+      Momentum   (0-8) : RSI direction and headroom (not already exhausted)
+      Range pos  (0-6) : where price sits in the recent 30M range
+      Levels     (0-14): distance to the next 30M pivot in the trade's way
 
-    Returns (points, notes, detail_dict).
+    Returns (points, notes, detail_dict). A strongly opposed trend returns
+    the sentinel -1 so the caller can disqualify.
     """
     try:
         from swing_scanner import _fetch_15min, _aggregate, _ema
@@ -199,23 +226,62 @@ def _score_30m_structure(ticker: str, direction: str) -> tuple:
     bull   = direction == "call"
     pts, notes = 0.0, []
 
-    # ── Trend on 30M (0-10) ──
+    # ── Trend (0-12) ──
+    opposed = False
     if ema9 and ema21:
-        stacked_up   = ema9 > ema21 and px > ema9
-        stacked_down = ema9 < ema21 and px < ema9
-        aligned      = stacked_up if bull else stacked_down
-        opposed      = stacked_down if bull else stacked_up
-        if aligned:
-            pts += 10.0
-            notes.append(f"30M trend aligned (EMA9 {'>' if bull else '<'} EMA21, "
-                         f"price {'above' if bull else 'below'})")
-        elif opposed:
-            notes.append("⚠️ 30M trend opposes the trade")
+        up   = ema9 > ema21 and px > ema9
+        dn   = ema9 < ema21 and px < ema9
+        if (up if bull else dn):
+            pts += 12.0
+            notes.append(f"30M trend aligned (EMA9 {'>' if bull else '<'} EMA21)")
+        elif (dn if bull else up):
+            opposed = True
+            notes.append("⚠️ 30M trend strongly opposes the trade")
         else:
-            pts += 4.0
+            pts += 5.0
             notes.append("30M trend mixed/flat")
 
-    # ── Support & resistance from 30M pivots (0-10) ──
+    # ── Momentum (0-8) — RSI direction plus room left to run ──
+    rsi = _rsi(closes)
+    rsi_prev = _rsi(closes[:-3]) if len(closes) > 20 else rsi
+    if rsi:
+        rising = rsi > rsi_prev
+        if bull:
+            if 50 <= rsi <= 70 and rising:
+                pts += 8.0; notes.append(f"RSI {rsi:.0f} rising — momentum with room")
+            elif rsi > 70:
+                pts += 3.0; notes.append(f"⚠️ RSI {rsi:.0f} overbought")
+            elif rsi >= 45:
+                pts += 5.0; notes.append(f"RSI {rsi:.0f}")
+            else:
+                pts += 1.0; notes.append(f"RSI {rsi:.0f} weak")
+        else:
+            if 30 <= rsi <= 50 and not rising:
+                pts += 8.0; notes.append(f"RSI {rsi:.0f} falling — momentum with room")
+            elif rsi < 30:
+                pts += 3.0; notes.append(f"⚠️ RSI {rsi:.0f} oversold")
+            elif rsi <= 55:
+                pts += 5.0; notes.append(f"RSI {rsi:.0f}")
+            else:
+                pts += 1.0; notes.append(f"RSI {rsi:.0f} against")
+
+    # ── Position in recent 30M range (0-6) ──
+    recent = bars[-26:]                     # ~2 sessions
+    hi = max(b["high"] for b in recent)
+    lo = min(b["low"] for b in recent if b["low"] > 0)
+    rng_pos = ((px - lo) / (hi - lo) * 100) if hi > lo else 50.0
+    # Calls want strength but not the absolute top; puts the mirror.
+    score_pos = rng_pos if bull else (100 - rng_pos)
+    if 55 <= score_pos <= 85:
+        pts += 6.0; notes.append(f"breaking out of 2-day range ({score_pos:.0f}%)")
+    elif score_pos > 85:
+        pts += 3.0; notes.append(f"extended in range ({score_pos:.0f}%)")
+    elif score_pos >= 40:
+        pts += 4.0
+    else:
+        pts += 1.0; notes.append(f"weak position in range ({score_pos:.0f}%)")
+
+    # ── Levels (0-14) — the obstacle in the trade's path ──
     highs, lows = _pivots(bars)
     res = [h for h in highs if h > px]
     sup = [l for l in lows  if l < px]
@@ -223,39 +289,44 @@ def _score_30m_structure(ticker: str, direction: str) -> tuple:
     nearest_sup = max(sup) if sup else None
 
     detail = {
-        "px": round(px, 2),
+        "px": round(px, 2), "rsi": round(rsi, 1),
+        "range_pos": round(rng_pos, 1),
         "ema9": round(ema9, 2), "ema21": round(ema21, 2),
         "resistance": round(nearest_res, 2) if nearest_res else None,
         "support":    round(nearest_sup, 2) if nearest_sup else None,
     }
 
-    # For a call, the obstacle is overhead resistance; for a put, support below.
     obstacle = nearest_res if bull else nearest_sup
     if obstacle and px:
         room_pct = abs(obstacle - px) / px * 100
         detail["room_pct"] = round(room_pct, 2)
         if room_pct >= 2.0:
-            pts += 10.0
+            pts += 14.0
             notes.append(f"{room_pct:.1f}% clear to 30M "
                          f"{'resistance' if bull else 'support'} ${obstacle:.2f}")
         elif room_pct >= 1.0:
-            pts += 6.0
+            pts += 9.0
             notes.append(f"{room_pct:.1f}% to 30M "
                          f"{'resistance' if bull else 'support'} ${obstacle:.2f}")
+        elif room_pct >= 0.5:
+            pts += 4.0
+            notes.append(f"only {room_pct:.1f}% to 30M "
+                         f"{'resistance' if bull else 'support'} ${obstacle:.2f}")
         else:
-            pts += 1.0
             notes.append(f"⚠️ 30M {'resistance' if bull else 'support'} "
-                         f"${obstacle:.2f} only {room_pct:.1f}% away")
+                         f"${obstacle:.2f} right here ({room_pct:.1f}%)")
     else:
-        pts += 8.0
-        notes.append(f"no 30M {'resistance' if bull else 'support'} in range")
+        pts += 11.0
+        notes.append(f"clear air — no 30M {'resistance' if bull else 'support'} above"
+                     if bull else "clear air — no 30M support below")
 
-    # Note where the protective level sits — useful for stop placement.
     backstop = nearest_sup if bull else nearest_res
     if backstop:
         notes.append(f"30M {'support' if bull else 'resistance'} ${backstop:.2f}")
 
-    return min(pts, 20.0), notes, detail
+    if opposed:
+        return -1.0, notes, detail          # sentinel: caller disqualifies
+    return min(pts, 40.0), notes, detail
 
 
 def _score_darkpool(ticker: str, direction: str, spot: float) -> tuple:
@@ -308,15 +379,13 @@ def rate_run(run: dict) -> dict:
     result = {**run, "score": 0.0, "notes": [], "disqualified": None,
               "tech": None}
 
-    # Gate 1 — DTE.
+    # DTE is context only now — these alerts are structurally 0-5 DTE, so
+    # gating on it would reject the whole population. Only a 0DTE contract
+    # gets called out, since it cannot be held past the close.
     dte_pts, dte_note = _score_dte(run.get("dte", 0))
-    if dte_pts == 0:
-        result["disqualified"] = dte_note
-        return result
 
-    # Gate 2 — technical regime. _score_technicals returns None when the
-    # daily/4H trend disagrees with the direction; that's a hard stop for a
-    # swing regardless of how strong the flow looked.
+    # Gate 1 — higher-timeframe regime. _score_technicals returns None when
+    # the daily/4H trend disagrees with the direction.
     try:
         from swing_scanner import _score_technicals
         tech = _score_technicals(ticker, direction)
@@ -328,13 +397,19 @@ def rate_run(run: dict) -> dict:
         return result
     result["tech"] = tech
 
-    notes = [dte_note] + list(tech.get("tech_notes", []))
-    tech_pts = float(tech.get("tech_score", 0)) / 10.0 * 20.0
-    score = dte_pts + tech_pts
-
+    # Gate 2 — the 30M chart itself. For a 0-5 DTE hold this matters more
+    # than the daily, so a strongly opposed intraday trend is fatal.
     m30_pts, m30_notes, m30_detail = _score_30m_structure(ticker, direction)
-    score += m30_pts; notes += m30_notes
     result["m30"] = m30_detail
+    if m30_pts < 0:
+        result["disqualified"] = "30M trend opposes the trade"
+        result["notes"] = m30_notes
+        return result
+
+    notes = [dte_note] + list(tech.get("tech_notes", []))
+    tech_pts = float(tech.get("tech_score", 0)) / 10.0 * 25.0
+    score = dte_pts + tech_pts + m30_pts
+    notes += m30_notes
 
     flow_pts, flow_notes = _score_flow(run);                score += flow_pts; notes += flow_notes
     skew_pts, skew_notes = _score_premium_skew(ticker, direction); score += skew_pts; notes += skew_notes

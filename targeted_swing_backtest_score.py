@@ -27,12 +27,12 @@ Because GEX is dropped, the remaining weights are rescaled to 100 so
 backtest scores stay comparable to live scores in magnitude. They are NOT
 identical measures, and the report says so.
 
-  DTE suitability     28   (live 25)
-  30M structure       22   (live 20)
-  Daily trend         22   (live 20, from the same point-in-time bars)
-  Flow conviction     11   (live 10)
-  Premium skew        11   (live 10)
-  Dark pool            6   (live 5)
+  30M structure       44   trend, RSI, distance to next pivot
+  Daily trend         28   from the same point-in-time bars
+  Flow conviction     13   run length + premium
+  Premium skew         9   ticker put/call vs direction
+  DTE context          3   0-5 DTE is the norm here, so context only
+  Dark pool            3   real off-exchange prints, cut off at alert time
 """
 import os
 import time
@@ -106,6 +106,18 @@ def _ema(vals: list, period: int) -> float:
     return e
 
 
+def _rsi(closes: list, period: int = 14) -> float:
+    if len(closes) < period + 1:
+        return 0.0
+    g=[max(closes[i]-closes[i-1],0.0) for i in range(1,len(closes))]
+    l=[max(closes[i-1]-closes[i],0.0) for i in range(1,len(closes))]
+    ag=sum(g[:period])/period; al=sum(l[:period])/period
+    for i in range(period,len(g)):
+        ag=(ag*(period-1)+g[i])/period; al=(al*(period-1)+l[i])/period
+    if al==0: return 100.0
+    return 100.0-(100.0/(1.0+ag/al))
+
+
 def _pivots(bars: list, lookback: int = 2) -> tuple:
     highs, lows = [], []
     for i in range(lookback, len(bars) - lookback):
@@ -120,19 +132,20 @@ def _pivots(bars: list, lookback: int = 2) -> tuple:
 # ───────────────── component scorers ─────────────────
 
 def _score_dte(dte: int) -> tuple:
-    if dte < MIN_DTE:
-        return 0.0, f"only {dte}DTE — too short to swing"
-    if dte <= 9:
-        return 13.0, f"{dte}DTE — tight for a swing"
-    if dte <= 21:
-        return 28.0, f"{dte}DTE — good swing runway"
-    if dte <= 60:
-        return 25.0, f"{dte}DTE — plenty of time"
-    return 18.0, f"{dte}DTE — long-dated"
+    """Context only — these alerts are structurally 0-5 DTE, so gating on
+    DTE would reject the entire population."""
+    if dte <= 0:
+        return 0.0, "0DTE"
+    if dte == 1:
+        return 1.0, "1DTE"
+    if dte <= 3:
+        return 2.0, f"{dte}DTE"
+    return 3.0, f"{dte}DTE"
 
 
 def _score_structure(bars: list, direction: str) -> tuple:
-    """0-22 from 30M structure, using only bars available at alert time."""
+    """0-44 from 30M structure — the dominant component. Uses only bars
+    available at alert time."""
     if len(bars) < 25:
         return 0.0, ["insufficient 30M history"], {}
     closes = [b["close"] for b in bars]
@@ -145,11 +158,11 @@ def _score_structure(bars: list, direction: str) -> tuple:
         up = ema9 > ema21 and px > ema9
         dn = ema9 < ema21 and px < ema9
         if (up if bull else dn):
-            pts += 11.0; notes.append("30M trend aligned")
+            pts += 14.0; notes.append("30M trend aligned")
         elif (dn if bull else up):
             notes.append("30M trend opposed")
         else:
-            pts += 4.0; notes.append("30M trend mixed")
+            pts += 6.0; notes.append("30M trend mixed")
 
     highs, lows = _pivots(bars)
     res = [h for h in highs if h > px]
@@ -164,15 +177,28 @@ def _score_structure(bars: list, direction: str) -> tuple:
         room = abs(obstacle - px) / px * 100
         detail["room_pct"] = round(room, 2)
         if room >= 2.0:
-            pts += 11.0; notes.append(f"{room:.1f}% clear")
+            pts += 16.0; notes.append(f"{room:.1f}% clear")
         elif room >= 1.0:
-            pts += 6.0; notes.append(f"{room:.1f}% to level")
+            pts += 10.0; notes.append(f"{room:.1f}% to level")
         else:
-            pts += 1.0; notes.append(f"level only {room:.1f}% away")
+            pts += 3.0; notes.append(f"level only {room:.1f}% away")
     else:
-        pts += 8.0
+        pts += 13.0
 
-    return min(pts, 22.0), notes, detail
+    # RSI + range position add the remaining technical depth.
+    rsi = _rsi(closes)
+    if rsi:
+        good = (50 <= rsi <= 70) if bull else (30 <= rsi <= 50)
+        ext  = (rsi > 70) if bull else (rsi < 30)
+        if good:
+            pts += 14.0; notes.append(f"RSI {rsi:.0f} with room")
+        elif ext:
+            pts += 5.0; notes.append(f"RSI {rsi:.0f} extended")
+        else:
+            pts += 8.0; notes.append(f"RSI {rsi:.0f}")
+        detail["rsi"] = round(rsi, 1)
+
+    return min(pts, 44.0), notes, detail
 
 
 def _score_daily_trend(bars: list, direction: str) -> tuple:
@@ -196,10 +222,10 @@ def _score_daily_trend(bars: list, direction: str) -> tuple:
     opposed = (px < ema_fast and ema_fast < ema_slow) if bull else \
               (px > ema_fast and ema_fast > ema_slow)
     if aligned:
-        return 22.0, ["daily regime aligned"]
+        return 28.0, ["daily regime aligned"]
     if opposed:
         return 0.0, ["daily regime opposes trade"]
-    return 9.0, ["daily regime mixed"]
+    return 12.0, ["daily regime mixed"]
 
 
 def _score_flow(run: dict) -> tuple:
@@ -218,7 +244,7 @@ def _score_flow(run: dict) -> tuple:
         pts += 3
     else:
         pts += 1
-    return min(pts, 11.0), notes
+    return min(pts, 13.0), notes
 
 
 def _score_skew(run: dict, direction: str) -> tuple:
@@ -230,9 +256,9 @@ def _score_skew(run: dict, direction: str) -> tuple:
         return 0.0, []
     aligned = (c / tot * 100) if direction == "call" else (p / tot * 100)
     if aligned >= 70:
-        return 11.0, [f"flow {aligned:.0f}% aligned"]
+        return 9.0, [f"flow {aligned:.0f}% aligned"]
     if aligned >= 55:
-        return 7.0, [f"flow leans {direction}"]
+        return 6.0, [f"flow leans {direction}"]
     if aligned >= 45:
         return 3.0, []
     return 0.0, [f"flow {100-aligned:.0f}% against"]
@@ -265,7 +291,7 @@ def _score_darkpool(ticker: str, date: str, direction: str, spot: float,
         pts += 1.0
     elif s["lean"] != "neutral":
         pts -= 1.0; notes.append(f"prints lean {s['lean']} — against trade")
-    return max(0.0, min(pts, 6.0)), notes, s
+    return max(0.0, min(pts, 3.0)), notes, s
 
 
 # ───────────────── main entry ─────────────────
@@ -292,9 +318,6 @@ def score_historical_alert(alert: dict) -> dict:
     dte = int(trigger.get("dte", 0) or 0)
 
     dte_pts, dte_note = _score_dte(dte)
-    if dte_pts == 0:
-        alert["swing_dq"] = dte_note
-        return alert
 
     # Point-in-time cutoff = the triggering fill's own timestamp.
     try:
