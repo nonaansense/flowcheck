@@ -58,8 +58,15 @@ def _build_url(api_key: str, date: str) -> str:
             f"?key={api_key}&date={date}&speed={SPEED}")
 
 
-def _parse_occ(symbol: str) -> dict | None:
-    """Parse OCC option symbol: O:GOOGL260717C00370000"""
+def _parse_occ(symbol: str, as_of: str = None) -> dict | None:
+    """
+    Parse OCC option symbol: O:GOOGL260717C00370000
+
+    `as_of` (YYYY-MM-DD) is the date to measure DTE against. In a backtest
+    this MUST be the replay date — measuring against datetime.now() would
+    make every historical contract look 0DTE and silently disqualify it from
+    swing scoring.
+    """
     if not symbol:
         return None
     m = re.search(r'O:([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)', symbol)
@@ -73,7 +80,11 @@ def _parse_occ(symbol: str) -> dict | None:
     expiry      = f"{mm}/{dd}/{yy}"
     try:
         exp_dt = datetime(int(f"20{yy}"), int(mm), int(dd), tzinfo=timezone.utc)
-        dte    = max(0, (exp_dt - datetime.now(timezone.utc)).days)
+        if as_of:
+            ref = datetime.strptime(as_of, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        else:
+            ref = datetime.now(timezone.utc)
+        dte = max(0, (exp_dt - ref).days)
     except Exception:
         dte = 0
     return {"ticker": ticker, "option_type": option_type,
@@ -508,7 +519,7 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
             targeted_events += 1
 
             symbol = inner.get("symbol", inner.get("ticker", ""))
-            parsed = _parse_occ(symbol) if "O:" in str(symbol) else None
+            parsed = _parse_occ(symbol, as_of=date) if "O:" in str(symbol) else None
             if not parsed:
                 raw_ticker = (inner.get("ticker", "") or "").upper()[:10]
                 if not raw_ticker:

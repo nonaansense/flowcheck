@@ -333,16 +333,16 @@ def setup_flowcheck_filters():
         "premiumMin":    int(os.environ.get("BF_HC_MIN_PREMIUM",    "500000")),
         "dteMin":        int(os.environ.get("BF_HC_MIN_DTE",        "2")),
         "dteMax":        int(os.environ.get("BF_HC_MAX_DTE",        "30")),
-        "minOTMPercent": float(os.environ.get("BF_HC_MIN_OTM",     "1")),
-        "maxOTMPercent": float(os.environ.get("BF_HC_MAX_OTM",     "30")),
-        "minSigScore":   float(os.environ.get("BF_HC_MIN_SIGSCORE", "0.51")),
-        "maxIV":         float(os.environ.get("BF_HC_MAX_IV",       "100")),
+        "otmPercentMin": float(os.environ.get("BF_HC_MIN_OTM",     "1")),
+        "otmPercentMax": float(os.environ.get("BF_HC_MAX_OTM",     "30")),
+        "scoreMin":   float(os.environ.get("BF_HC_MIN_SIGSCORE", "0.51")),
+        "impliedVolatilityMax":         float(os.environ.get("BF_HC_MAX_IV",       "100")),
         "quickFilters":  ["Stocks", "Sweeps", "AA", "Vol>OI"],
     }
     print(f"[BULLFLOW] High Conviction: ${hc_filters['premiumMin']:,}+ | "
           f"DTE {hc_filters['dteMin']}-{hc_filters['dteMax']} | "
-          f"OTM {hc_filters['minOTMPercent']}-{hc_filters['maxOTMPercent']}% | "
-          f"SigScore≥{hc_filters['minSigScore']} | IV≤{hc_filters['maxIV']}%")
+          f"OTM {hc_filters['otmPercentMin']}-{hc_filters['otmPercentMax']}% | "
+          f"SigScore≥{hc_filters['scoreMin']} | IV≤{hc_filters['impliedVolatilityMax']}%")
 
     # ── ETFs-Order-Flow (SPY + QQQ) ───────────────────────────────────────────
     # ETF Order Flow — read from Railway env vars (BF_ETF_*)
@@ -352,17 +352,17 @@ def setup_flowcheck_filters():
         "premiumMin":    int(os.environ.get("BF_ETF_MIN_PREMIUM",    "300000")),
         "dteMin":        int(os.environ.get("BF_ETF_MIN_DTE",        "2")),
         "dteMax":        int(os.environ.get("BF_ETF_MAX_DTE",        "30")),
-        "minOTMPercent": float(os.environ.get("BF_ETF_MIN_OTM",     "2")),
-        "maxOTMPercent": float(os.environ.get("BF_ETF_MAX_OTM",     "45")),
-        "minSigScore":   float(os.environ.get("BF_ETF_MIN_SIGSCORE", "0.51")),
-        "maxIV":         float(os.environ.get("BF_ETF_MAX_IV",       "30")),
+        "otmPercentMin": float(os.environ.get("BF_ETF_MIN_OTM",     "2")),
+        "otmPercentMax": float(os.environ.get("BF_ETF_MAX_OTM",     "45")),
+        "scoreMin":   float(os.environ.get("BF_ETF_MIN_SIGSCORE", "0.51")),
+        "impliedVolatilityMax":         float(os.environ.get("BF_ETF_MAX_IV",       "30")),
         "quickFilters":  ["Sweeps", "AA", "Unusual", "Vol>OI"],
     }
     print(f"[BULLFLOW] ETFs-Order-Flow: ${etf_filters['premiumMin']:,}+ | "
           f"Tickers: {','.join(etf_filters['tickerAllowlist'])} | "
           f"DTE {etf_filters['dteMin']}-{etf_filters['dteMax']} | "
-          f"OTM {etf_filters['minOTMPercent']}-{etf_filters['maxOTMPercent']}% | "
-          f"SigScore≥{etf_filters['minSigScore']} | IV≤{etf_filters['maxIV']}%")
+          f"OTM {etf_filters['otmPercentMin']}-{etf_filters['otmPercentMax']}% | "
+          f"SigScore≥{etf_filters['scoreMin']} | IV≤{etf_filters['impliedVolatilityMax']}%")
 
     # ── Create/verify both alerts ─────────────────────────────────────────────
     _bk2 = os.environ.get("BULLFLOW_API_KEY","")

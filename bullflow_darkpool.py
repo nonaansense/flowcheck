@@ -104,22 +104,30 @@ def fetch_dark_pool_trades(ticker: str, date: str = None,
 
 
 def get_dark_pool_summary(ticker: str, date: str = None,
-                          spot: float = 0.0) -> dict:
+                          spot: float = 0.0,
+                          cutoff_ts: float = 0.0) -> dict:
     """
     Aggregate a ticker's dark pool activity for a day.
+
+    `cutoff_ts` (epoch SECONDS) restricts the aggregate to prints that
+    occurred at or before that moment. Backtests MUST pass it — the endpoint
+    returns the whole day, so without it a score computed at 11:00am would
+    include 3:00pm prints, which is forward-looking. Live callers leave it 0.
 
     Returns {} when there's no data. Otherwise:
       total_notional, print_count, largest, avg_price, pct_day_volume,
       pct_30d_volume, above_spot, below_spot, lean
-
-    `lean` compares print prices to `spot`: prints executed above the current
-    price skew "accumulation", below skew "distribution". This is a soft hint,
-    not a side indicator — TRF prints carry no buy/sell flag, so treat it as
-    context rather than signal.
     """
     rows = fetch_dark_pool_trades(ticker, date)
     if not rows:
         return {}
+
+    if cutoff_ts:
+        cut_ms = cutoff_ts * 1000.0
+        rows = [r for r in rows
+                if float(r.get("sipTimestampMs", 0) or 0) <= cut_ms]
+        if not rows:
+            return {}
 
     total = sum(float(r.get("notional", 0) or 0) for r in rows)
     if total <= 0:

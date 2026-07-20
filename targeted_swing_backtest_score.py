@@ -238,14 +238,18 @@ def _score_skew(run: dict, direction: str) -> tuple:
     return 0.0, [f"flow {100-aligned:.0f}% against"]
 
 
-def _score_darkpool(ticker: str, date: str, direction: str, spot: float) -> tuple:
-    """Bullflow darkPoolTrades is date-ranged, so this IS point-in-time.
-    Note: it covers the WHOLE day, including prints after the alert fired —
-    an intraday cutoff isn't applied because sipTimestampMs would need to be
-    filtered per row; treated as same-day context, not a precise snapshot."""
+def _score_darkpool(ticker: str, date: str, direction: str, spot: float,
+                    cutoff_ts: float = 0.0) -> tuple:
+    """
+    Bullflow darkPoolTrades is date-ranged AND each row carries
+    sipTimestampMs, so passing cutoff_ts restricts the aggregate to prints
+    that had already happened when the alert fired. Without that cutoff this
+    component would be forward-looking.
+    """
     try:
         from bullflow_darkpool import get_dark_pool_summary, fmt_notional
-        s = get_dark_pool_summary(ticker, date=date, spot=spot)
+        s = get_dark_pool_summary(ticker, date=date, spot=spot,
+                                  cutoff_ts=cutoff_ts)
     except Exception:
         return 0.0, [], {}
     if not s:
@@ -317,7 +321,8 @@ def score_historical_alert(alert: dict) -> dict:
     struct_pts, struct_notes, struct_detail = _score_structure(bars, direction)
     flow_pts, flow_notes = _score_flow(alert)
     skew_pts, skew_notes = _score_skew(alert, direction)
-    dp_pts, dp_notes, dp = _score_darkpool(ticker, date, direction, spot)
+    dp_pts, dp_notes, dp = _score_darkpool(ticker, date, direction, spot,
+                                           cutoff_ts=cutoff)
 
     score = dte_pts + daily_pts + struct_pts + flow_pts + skew_pts + dp_pts
     alert["swing_score"] = round(min(score, 100.0), 1)
