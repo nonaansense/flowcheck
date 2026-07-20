@@ -436,6 +436,12 @@ async def startup():
                     return
                 from ticker_premium_tracker import send_daily_update
                 send_daily_update(send_sms)
+                # Rate today's targeted alerts for swing-worthiness.
+                try:
+                    from targeted_swing_rating import send_swing_report
+                    send_swing_report(send_sms)
+                except Exception as _swe:
+                    print(f"[SWINGRATE] error: {_swe}")
             except Exception as _tpe:
                 print(f"[TKRPREM] Scheduler error: {_tpe}")
         scheduler.add_job(_run_ticker_premium_update, "cron",

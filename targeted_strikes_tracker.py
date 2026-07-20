@@ -259,6 +259,39 @@ def process_targeted_strikes(alert: dict, filter_name: str) -> dict | None:
     }
 
 
+def get_todays_alerted_runs() -> list:
+    """
+    Every run that fired an alert today, for downstream scoring (e.g. the
+    3:30pm swing rating). Returns one dict per ticker+direction run that
+    reached the threshold.
+    """
+    _load()
+    today = _today_str()
+    out = []
+    for key, st in _TARGETED.items():
+        if st.get("day") != today:
+            continue
+        if st.get("last_alerted_count", 0) < THRESHOLD:
+            continue
+        fills = st.get("fills", [])
+        direction = "put" if key.endswith("_put") else "call"
+        out.append({
+            "ticker":     key.rsplit("_", 1)[0],
+            "direction":  direction,
+            "strike":     st.get("strike", ""),
+            "expiry":     st.get("expiry", ""),
+            "count":      len(fills),
+            "total_prem": sum(f.get("premium", 0) for f in fills),
+            "sweeps":     sum(1 for f in fills if f.get("sweep")),
+            "dte":        fills[-1].get("dte", 0) if fills else 0,
+            "early":      any(f.get("early") for f in fills),
+            "last_px":    fills[-1].get("price", 0) if fills else 0,
+            "stock_px":   fills[-1].get("stock_px", 0) if fills else 0,
+            "fills":      fills,
+        })
+    return out
+
+
 def build_targeted_strikes_alert(result: dict) -> str:
     ticker     = result["ticker"]
     strike     = result["strike"]

@@ -108,6 +108,27 @@ def _median(vals: list) -> float:
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
+def _pricing_warning() -> list:
+    """Loud banner when pricing was unavailable for the whole run."""
+    if _MASSIVE_AUTH_FAILED:
+        return [
+            "",
+            "⚠️ OPTION PRICING UNAVAILABLE",
+            "Every Massive key was rejected (401), so all pricing columns are",
+            "blank. Check MASSIVE_API_KEYS / MASSIVE_API_KEY in Railway.",
+        ]
+    if _MASSIVE_BAD_KEYS:
+        return [
+            "",
+            "⚠️ PARTIAL PRICING — one or more Massive keys are dead:",
+            f"   rejected: {', '.join(_MASSIVE_BAD_KEYS)}",
+            "Requests rotate across all keys, so roughly 1-in-N fetches hit the",
+            "dead key and 401 — leaving scattered blank rows. Remove or replace",
+            "that key in Railway and re-run for complete pricing.",
+        ]
+    return []
+
+
 def _build_performance_summary(alerts: list) -> list:
     """
     Aggregate performance across every alert that has pricing data.
@@ -222,6 +243,61 @@ def _build_performance_summary(alerts: list) -> list:
     return lines
 
 
+_MASSIVE_AUTH_FAILED = False   # True only when EVERY key is rejected
+_MASSIVE_BAD_KEYS: list = []   # keys that returned 401/403, reported once
+
+
+def _massive_key_health() -> tuple:
+    """
+    Probe EVERY configured Massive key and report which work.
+
+    A single dead key in the rotation (e.g. a stale MASSIVE_API_KEY_3 or a
+    legacy POLYGON_API_KEY) makes roughly 1-in-N requests 401 — producing
+    scattered blank pricing that looks like missing data rather than an auth
+    problem. Testing keys[0] alone would miss that entirely.
+
+    Bypasses _massive_acquire: this is diagnosis, not data, and must not burn
+    rate-limit slots. Returns (good_count, bad_labels).
+    """
+    good, bad = 0, []
+    try:
+        import bullflow_presets as _bp
+        keys = _bp._massive_keys()
+        if not keys:
+            return 0, ["no keys configured"]
+        # Label each key by which env var it most likely came from.
+        labels = {}
+        raw = os.environ.get("MASSIVE_API_KEYS", "").strip()
+        if raw:
+            for i, k in enumerate([x.strip() for x in raw.split(",") if x.strip()]):
+                labels[k] = f"MASSIVE_API_KEYS[{i}]"
+        for name in ("MASSIVE_API_KEY", "MASSIVE_API_KEY_2",
+                     "MASSIVE_API_KEY_3", "POLYGON_API_KEY"):
+            v = os.environ.get(name, "").strip()
+            if v:
+                labels.setdefault(v, name)
+
+        base = os.environ.get("MASSIVE_BASE_URL", "https://api.massive.com")
+        for k in keys:
+            label = labels.get(k, f"...{k[-4:]}" if len(k) > 4 else "key")
+            try:
+                r = requests.get(f"{base}/v2/aggs/ticker/AAPL/prev",
+                                 params={"apiKey": k}, timeout=10)
+                if r.status_code in (401, 403):
+                    bad.append(label)
+                    print(f"[TARGETED_BT] Massive key {label}: "
+                          f"REJECTED (HTTP {r.status_code})")
+                else:
+                    good += 1
+                    print(f"[TARGETED_BT] Massive key {label}: OK "
+                          f"(HTTP {r.status_code})")
+            except Exception as e:
+                print(f"[TARGETED_BT] Massive key {label}: probe error {e}")
+    except Exception as e:
+        print(f"[TARGETED_BT] key health check error: {e}")
+    return good, bad
+
+
 def _enrich_alert_pricing(alert: dict) -> None:
     """
     Enrich one fired alert with option-price stats over the life of the trade,
@@ -254,6 +330,11 @@ def _enrich_alert_pricing(alert: dict) -> None:
         alert["pricing_note"] = "no alert date"
         return
 
+    global _MASSIVE_AUTH_FAILED, _MASSIVE_BAD_KEYS
+    if _MASSIVE_AUTH_FAILED:
+        alert["pricing_note"] = "skipped — all Massive keys rejected (401)"
+        return
+
     try:
         from preset_backtest import _fetch_option_intraday
         bars = _fetch_option_intraday(occ, start_iso, expiry_iso)
@@ -261,6 +342,18 @@ def _enrich_alert_pricing(alert: dict) -> None:
         print(f"[TARGETED_BT] pricing fetch error {occ}: {e}")
         alert["pricing_note"] = f"fetch error: {type(e).__name__}"
         return
+
+    # An empty result right after a fresh key check almost always means auth.
+    # Probe once so we can fail the whole pass fast instead of sleeping 60s
+    # between every doomed request.
+    if not bars and not _MASSIVE_BAD_KEYS:
+        good, bad = _massive_key_health()
+        if bad:
+            _MASSIVE_BAD_KEYS = bad
+        if good == 0:
+            _MASSIVE_AUTH_FAILED = True
+            alert["pricing_note"] = "all Massive keys rejected (401)"
+            return
     if not bars:
         alert["pricing_note"] = "no Massive bars for contract"
         return
@@ -589,6 +682,15 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
         for a in latest_per_key.values():
             _enrich_alert_pricing(a)
 
+    # Point-in-time swing scoring (no lookahead — see module docstring).
+    if os.environ.get("TARGETED_SWING_BACKTEST_SCORE", "true").lower() in ("true","1","yes","on"):
+        try:
+            from targeted_swing_backtest_score import score_historical_alert
+            for a in latest_per_key.values():
+                score_historical_alert(a)
+        except Exception as _se:
+            print(f"[SWINGBT] scoring error: {_se}")
+
     summary = [
         f"🎯 Targeted Strikes Backtest: {date}",
         f"━━━ {len(latest_per_key)} strikes crossed {THRESHOLD}x "
@@ -612,6 +714,11 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
             f"{emoji} ${a['ticker']} {a['strike']}{otype} {a['expiry']}  "
             f"{a['count']}x  {_fmt_prem(a['total_prem'])}  {time_str}{early_s}"
         )
+        if a.get("swing_score"):
+            summary.append(f"   🎯 swing score {a['swing_score']:.0f}/100"
+                           + (f" — {a['swing_notes'][0]}" if a.get("swing_notes") else ""))
+        elif a.get("swing_dq"):
+            summary.append(f"   🎯 not swing-eligible: {a['swing_dq']}")
         pr = a.get("pricing")
         if pr:
             summary.append(
@@ -634,7 +741,13 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
             summary.append(f"   📊 {a['ticker']} @alert: {_ta}")
         if _t3:
             summary.append(f"   📊 {a['ticker']} @3:30:  {_t3}")
+    summary += _pricing_warning()
     summary += _build_performance_summary(list(latest_per_key.values()))
+    try:
+        from targeted_swing_backtest_score import score_correlation_summary
+        summary += score_correlation_summary(list(latest_per_key.values()))
+    except Exception:
+        pass
     send_telegram("\n".join(summary), bot_token, chat_id)
 
     if detail:
@@ -771,6 +884,15 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
     if os.environ.get("TARGETED_STRIKES_PRICING", "true").lower() in ("true","1","yes","on"):
         for a in latest_per_key.values():
             _enrich_alert_pricing(a)
+
+    # Point-in-time swing scoring (no lookahead — see module docstring).
+    if os.environ.get("TARGETED_SWING_BACKTEST_SCORE", "true").lower() in ("true","1","yes","on"):
+        try:
+            from targeted_swing_backtest_score import score_historical_alert
+            for a in latest_per_key.values():
+                score_historical_alert(a)
+        except Exception as _se:
+            print(f"[SWINGBT] scoring error: {_se}")
     by_ticker: dict = {}
     for a in latest_per_key.values():
         by_ticker[a["ticker"]] = by_ticker.get(a["ticker"], 0) + 1
@@ -801,7 +923,13 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
     if len(latest_per_key) > 40:
         summary.append(f"... and {len(latest_per_key) - 40} more — see attached workbook")
 
+    summary += _pricing_warning()
     summary += _build_performance_summary(list(latest_per_key.values()))
+    try:
+        from targeted_swing_backtest_score import score_correlation_summary
+        summary += score_correlation_summary(list(latest_per_key.values()))
+    except Exception:
+        pass
 
     send_telegram("\n".join(summary), bot_token, chat_id)
 
