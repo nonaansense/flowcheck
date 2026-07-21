@@ -196,3 +196,4 @@ def format_summary(s: dict) -> list:
             f"{fmt_notional(s['below_spot'])} below ${s['spot']:.2f}"
         )
     return lines
+
