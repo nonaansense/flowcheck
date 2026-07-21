@@ -33,6 +33,7 @@ you about decay, not about whether the setup worked.
 Telegram: /factor_lab YYYY-MM-DD YYYY-MM-DD
 """
 import os
+import json
 import math
 import threading
 from datetime import datetime
@@ -60,9 +61,33 @@ FACTOR_LABELS = {
 # ───────────────────── statistics ─────────────────────
 
 def _usable(alerts: list) -> list:
-    """Alerts with both pricing and recorded factors."""
-    return [a for a in alerts
-            if a.get("pricing") and a.get("factors") and not a.get("swing_dq")]
+    """
+    Alerts that can be analysed: they have a realised outcome (pricing) and
+    recorded factors.
+
+    Deliberately does NOT exclude alerts flagged swing_dq. A disqualification
+    means "don't trade this", not "bad data" — and the reasons for DQ (daily
+    regime opposed, etc.) are themselves factors under test. Filtering them
+    out would remove the contrast group and make those factors unmeasurable.
+    """
+    return [a for a in alerts if a.get("pricing") and a.get("factors")]
+
+
+def _drop_reasons(alerts: list) -> list:
+    """Explain what got excluded, so an empty sample is diagnosable."""
+    total = len(alerts)
+    no_price = sum(1 for a in alerts if not a.get("pricing"))
+    no_fact  = sum(1 for a in alerts if a.get("pricing") and not a.get("factors"))
+    usable   = total - no_price - no_fact
+    lines = [f"   {total} scored alerts → {usable} usable"]
+    if no_price:
+        lines.append(f"   • {no_price} dropped: no option pricing (Massive)")
+    if no_fact:
+        lines.append(f"   • {no_fact} dropped: no factors recorded")
+    dq = sum(1 for a in alerts if a.get("swing_dq"))
+    if dq:
+        lines.append(f"   ({dq} flagged untradeable — KEPT for analysis)")
+    return lines
 
 
 POOL_KEY = "factor_lab_pool"
@@ -110,7 +135,17 @@ def save_to_pool(alerts: list) -> int:
     with _POOL_LOCK:
         try:
             from storage import db_get, db_set
-            pool = db_get(POOL_KEY) or []
+            # db_get returns a STRING — the repo convention is json dumps/loads.
+            # Passing a raw list meant the isinstance check below failed on
+            # every read and the pool silently reset to empty each run.
+            raw = db_get(POOL_KEY)
+            pool = []
+            if raw:
+                try:
+                    pool = json.loads(raw) if isinstance(raw, str) else raw
+                except Exception as pe:
+                    print(f"[FACTORLAB] pool parse error: {pe}")
+                    pool = []
             if not isinstance(pool, list):
                 pool = []
             by_key = {r.get("k"): r for r in pool if isinstance(r, dict)}
@@ -120,7 +155,7 @@ def save_to_pool(alerts: list) -> int:
             merged = sorted(by_key.values(), key=lambda r: r.get("d", ""))
             if len(merged) > POOL_MAX:
                 merged = merged[-POOL_MAX:]      # keep the most recent
-            db_set(POOL_KEY, merged)
+            db_set(POOL_KEY, json.dumps(merged))
             print(f"[FACTORLAB] pool now {len(merged)} alerts "
                   f"(+{len(usable)} from this run)")
             return len(merged)
@@ -133,7 +168,10 @@ def load_pool() -> list:
     """Pooled records re-inflated into the shape analyze_factor expects."""
     try:
         from storage import db_get
-        pool = db_get(POOL_KEY) or []
+        raw = db_get(POOL_KEY)
+        if not raw:
+            return []
+        pool = json.loads(raw) if isinstance(raw, str) else raw
         if not isinstance(pool, list):
             return []
     except Exception as e:
@@ -159,7 +197,7 @@ def clear_pool() -> bool:
     with _POOL_LOCK:
         try:
             from storage import db_set
-            db_set(POOL_KEY, [])
+            db_set(POOL_KEY, json.dumps([]))
             print("[FACTORLAB] pool cleared")
             return True
         except Exception as e:
@@ -266,9 +304,10 @@ def run_factor_lab(alerts: list) -> list:
     """
     usable = _usable(alerts)
     if len(usable) < MIN_N * 2:
-        return [f"⚠️ Only {len(usable)} usable alerts (need ≥{MIN_N*2}).",
-                "Run a wider date range, and check that option pricing is",
-                "working — alerts without pricing can't be scored."]
+        return ([f"⚠️ Only {len(usable)} usable alerts (need ≥{MIN_N*2})."]
+                + _drop_reasons(alerts)
+                + ["", "If most were dropped for pricing, Massive isn't"
+                       " returning bars — check the logs for HTTP 401/429."])
 
     in_s, out_s = _split_chronologically(usable)
     factors = [f for f in FACTOR_LABELS if any(f in a["factors"] for a in usable)]

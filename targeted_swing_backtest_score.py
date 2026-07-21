@@ -337,9 +337,11 @@ def score_historical_alert(alert: dict) -> dict:
     spot = bars[-1]["close"] if bars else float(trigger.get("stock_px", 0) or 0)
 
     daily_pts, daily_notes = _score_daily_trend(bars, direction)
-    if daily_pts == 0 and "opposes" in " ".join(daily_notes):
-        alert["swing_dq"] = "daily regime opposed the trade"
-        return alert
+    # NOTE: a daily-regime conflict marks the alert as untradeable, but we do
+    # NOT return here. "daily_aligned" is one of the factors under test, so
+    # dropping opposed alerts would delete the contrast group and make the
+    # factor unmeasurable. Score it, record the factors, flag it at the end.
+    daily_opposed = (daily_pts == 0 and "opposes" in " ".join(daily_notes))
 
     struct_pts, struct_notes, struct_detail = _score_structure(bars, direction)
     flow_pts, flow_notes = _score_flow(alert)
@@ -385,6 +387,10 @@ def score_historical_alert(alert: dict) -> dict:
     }
     if not bars:
         alert["swing_notes"].append("⚠️ no bar data — score is DTE/flow only")
+    if daily_opposed:
+        # Untradeable, but retained for factor analysis.
+        alert["swing_dq"] = "daily regime opposed the trade"
+        alert["swing_score"] = 0.0
     return alert
 
 
