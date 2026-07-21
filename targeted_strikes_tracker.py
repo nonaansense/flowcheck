@@ -349,7 +349,17 @@ def build_targeted_strikes_alert(result: dict) -> str:
         lines.append(span_line)
 
     if early:
-        lines.append("⏰ EARLY SESSION — one or more fills before 10:25am ET")
+        # Read the configured cutoff — hardcoding "10:25am" mislabels every
+        # alert whenever TARGETED_STRIKES_EARLY_CUTOFF is set to something else.
+        try:
+            _hh, _mm = _early_cutoff()
+            _ampm = "am" if _hh < 12 else "pm"
+            _h12 = _hh if 1 <= _hh <= 12 else (_hh - 12 if _hh > 12 else 12)
+            _cut = f"{_h12}:{_mm:02d}{_ampm}"
+        except Exception:
+            _cut = EARLY_CUTOFF_STR
+        _gate = " (alert held until cutoff)" if GATE_UNTIL_CUTOFF else ""
+        lines.append(f"⏰ EARLY SESSION — one or more fills before {_cut} ET{_gate}")
 
     # Ticker's whole-day call/put premium context (all strikes/expiries).
     tkr_flow = result.get("tkr_flow")
@@ -364,9 +374,62 @@ def build_targeted_strikes_alert(result: dict) -> str:
     if last_stock_px:
         lines.append(f"🟢 Stock @ ${last_stock_px:.2f} at alert time")
 
+    lines += _inline_rating(result)
+
     lines += [
         "",
         f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
     ]
 
     return "\n".join(lines)
+
+
+def _inline_rating(result: dict) -> list:
+    """
+    Rate this alert at fire time and render it as message lines.
+
+    Off by default: rating pulls 15M bars, GEX and dark pool, which adds a
+    few seconds per alert. Enable with TARGETED_STRIKES_INLINE_RATING=true.
+    Returns [] on any failure — a rating problem must never block the alert.
+    """
+    if os.environ.get("TARGETED_STRIKES_INLINE_RATING", "false").lower() \
+            not in ("true", "1", "yes", "on"):
+        return []
+    try:
+        from targeted_swing_rating import rate_run
+        fills = result.get("fills", [])
+        run = {
+            "ticker":     result["ticker"],
+            "direction":  result.get("direction", "call"),
+            "strike":     result.get("strike", ""),
+            "expiry":     result.get("expiry", ""),
+            "count":      result.get("count", 0),
+            "total_prem": result.get("total_prem", 0),
+            "sweeps":     sum(1 for f in fills if f.get("sweep")),
+            "dte":        fills[-1].get("dte", 0) if fills else 0,
+            "stock_px":   fills[-1].get("stock_px", 0) if fills else 0,
+            "fills":      fills,
+        }
+        r = rate_run(run)
+    except Exception as e:
+        print(f"[TARGETED] inline rating error: {e}")
+        return []
+
+    if r.get("disqualified"):
+        return ["", f"🎯 Swing rating: ✗ not eligible — {r['disqualified']}"]
+
+    sc = r.get("score", 0)
+    grade = "🟢 STRONG" if sc >= 75 else "🟡 MODERATE" if sc >= 55 else "🔴 WEAK"
+    out = ["", f"🎯 Swing rating: {grade} {sc:.0f}/100"]
+    m = r.get("m30") or {}
+    if m.get("support") or m.get("resistance"):
+        sup = f"${m['support']:.2f}" if m.get("support") else "none"
+        res = f"${m['resistance']:.2f}" if m.get("resistance") else "clear"
+        out.append(f"   30M: sup {sup} / res {res}"
+                   + (f" | RSI {m['rsi']:.0f}" if m.get("rsi") else ""))
+    t = r.get("tech") or {}
+    if t.get("stop") and t.get("target"):
+        out.append(f"   stop ${t['stop']:.2f} | target ${t['target']:.2f}")
+    for n in (r.get("notes") or [])[:3]:
+        out.append(f"   • {n}")
+    return out

@@ -1176,6 +1176,14 @@ def handle_command(text: str, from_chat_id: str):
                 send_reply(f"Invalid date: {_tbt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
                            from_chat_id)
 
+    elif cmd in ("factor_lab", "factorlab", "factors"):
+        send_reply("Factor Lab runs as part of a range backtest.\n"
+                   "Use: /targeted_backtest_range YYYY-MM-DD YYYY-MM-DD\n\n"
+                   "It A/B-tests each factor one at a time, screens on the "
+                   "older half, then re-tests survivors on held-out data with "
+                   "a Bonferroni-corrected threshold. Use 2-3 months for "
+                   "enough samples.", from_chat_id)
+
     elif cmd in ("targeted_backtest_range", "targetedbtrange", "backtest_targeted_range"):
         if len(args) < 2:
             send_reply('Usage: /targeted_backtest_range YYYY-MM-DD YYYY-MM-DD  e.g. 2026-06-01 2026-06-30\nStreams each weekday at 60x speed. Sends a summary + an .xlsx with one row per alert. Max 31 days.',
@@ -2772,7 +2780,7 @@ def handle_help(reply_chat_id: str):
         "/pair_backtest YYYY-MM-DD detail — include full alert breakdowns",
         "/repeat_backtest YYYY-MM-DD [detail] — backtest repeat call activity",
         "/targeted_backtest YYYY-MM-DD [detail] — backtest targeted strike/expiry stacking",
-        "/targeted_backtest_range YYYY-MM-DD YYYY-MM-DD [detail] — same, over a date range (.xlsx)",
+        "/targeted_backtest_range YYYY-MM-DD YYYY-MM-DD [detail] — same, over a date range (.xlsx + factor lab)",
         "/swing - top 5 swing plays from full-day flow + chart story",
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",
         "/preset_backtest_range YYYY-MM-DD YYYY-MM-DD — month backtest to Excel (tab per date)",

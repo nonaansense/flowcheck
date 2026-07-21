@@ -954,6 +954,15 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
 
     send_telegram("\n".join(summary), bot_token, chat_id)
 
+    # Single-factor A/B analysis — only meaningful over a wide range.
+    try:
+        from factor_lab import run_factor_lab
+        fl = run_factor_lab(list(latest_per_key.values()))
+        if fl:
+            send_telegram("\n".join(fl), bot_token, chat_id)
+    except Exception as _fe:
+        print(f"[FACTORLAB] error: {_fe}")
+
     try:
         from sms import send_telegram_document
         xlsx_path = _build_range_workbook(all_alerts, start_date, end_date)

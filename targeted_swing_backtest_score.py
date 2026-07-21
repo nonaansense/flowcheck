@@ -356,6 +356,33 @@ def score_historical_alert(alert: dict) -> dict:
         "flow": flow_pts, "skew": skew_pts, "darkpool": dp_pts,
     }
     alert["swing_struct"] = struct_detail
+
+    # Raw point-in-time FACTORS for single-factor analysis. Each is a plain
+    # boolean recorded as of the alert, so factor_lab can A/B them without
+    # re-deriving anything (and without touching post-alert data).
+    snap = alert.get("tkr_at_alert") or {}
+    tot_pc = float(snap.get("call", 0)) + float(snap.get("put", 0))
+    aligned_pct = 0.0
+    if tot_pc > 0:
+        aligned_pct = (float(snap.get("call", 0)) / tot_pc * 100) if direction == "call" \
+                      else (float(snap.get("put", 0)) / tot_pc * 100)
+    rsi = struct_detail.get("rsi", 0) or 0
+    bull = direction == "call"
+    alert["factors"] = {
+        "30m_trend_aligned":  "30M trend aligned" in " ".join(struct_notes),
+        "daily_aligned":      daily_pts >= 28,
+        "room_2pct_plus":     (struct_detail.get("room_pct") or 0) >= 2.0,
+        "rsi_favorable":      bool(rsi) and ((50 <= rsi <= 70) if bull else (30 <= rsi <= 50)),
+        "rsi_extended":       bool(rsi) and ((rsi > 70) if bull else (rsi < 30)),
+        "flow_skew_aligned":  aligned_pct >= 60,
+        "big_premium_500k":   float(alert.get("total_prem", 0)) >= 500_000,
+        "long_run_6plus":     int(alert.get("count", 0)) >= 6,
+        "sweep_heavy":        (sum(1 for f in fills if f.get("sweep")) / len(fills)) >= 0.5 if fills else False,
+        "early_session":      bool(alert.get("early")),
+        "is_call":            bull,
+        "dte_2plus":          dte >= 2,
+        "darkpool_aligned":   (dp or {}).get("lean") == ("accumulation" if bull else "distribution"),
+    }
     if not bars:
         alert["swing_notes"].append("⚠️ no bar data — score is DTE/flow only")
     return alert
