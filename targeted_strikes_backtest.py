@@ -956,10 +956,21 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
 
     # Single-factor A/B analysis — only meaningful over a wide range.
     try:
-        from factor_lab import run_factor_lab
-        fl = run_factor_lab(list(latest_per_key.values()))
-        if fl:
-            send_telegram("\n".join(fl), bot_token, chat_id)
+        from factor_lab import run_factor_lab, save_to_pool, load_pool, pool_summary
+        this_run = list(latest_per_key.values())
+        # Bullflow caps a replay at 31 days, so accumulate across runs — a
+        # single month is far too small for the factor tests to have power.
+        n_pool = save_to_pool(this_run)
+        pooled = load_pool()
+        msg = []
+        if n_pool:
+            msg += pool_summary() + [""]
+        # Analyse the POOL when it is bigger than this run alone.
+        target = pooled if len(pooled) > len(this_run) else this_run
+        if len(pooled) > len(this_run):
+            msg += [f"(analysing pooled {len(pooled)} alerts, not just this month)", ""]
+        msg += run_factor_lab(target)
+        send_telegram("\n".join(msg), bot_token, chat_id)
     except Exception as _fe:
         print(f"[FACTORLAB] error: {_fe}")
 

@@ -1177,12 +1177,33 @@ def handle_command(text: str, from_chat_id: str):
                            from_chat_id)
 
     elif cmd in ("factor_lab", "factorlab", "factors"):
-        send_reply("Factor Lab runs as part of a range backtest.\n"
-                   "Use: /targeted_backtest_range YYYY-MM-DD YYYY-MM-DD\n\n"
-                   "It A/B-tests each factor one at a time, screens on the "
-                   "older half, then re-tests survivors on held-out data with "
-                   "a Bonferroni-corrected threshold. Use 2-3 months for "
-                   "enough samples.", from_chat_id)
+        # Analyse everything accumulated so far. Bullflow caps a replay at
+        # 31 days, so the pool is how multiple months get combined.
+        try:
+            from factor_lab import load_pool, run_factor_lab, pool_summary
+            pooled = load_pool()
+            if not pooled:
+                send_reply("Factor pool is empty.\n"
+                           "Run /targeted_backtest_range YYYY-MM-DD YYYY-MM-DD "
+                           "for a few months first — each run adds to the pool.",
+                           from_chat_id)
+            else:
+                out = pool_summary() + [""] + run_factor_lab(pooled)
+                send_reply("\n".join(out), from_chat_id)
+        except Exception as e:
+            send_reply(f"Factor lab error: {e}", from_chat_id)
+
+    elif cmd in ("factor_pool", "factorpool", "pool"):
+        try:
+            from factor_lab import pool_summary, clear_pool
+            if args and str(args[0]).lower() in ("clear", "reset", "wipe"):
+                ok = clear_pool()
+                send_reply("🗑 Factor pool cleared — re-run your months."
+                           if ok else "❌ Could not clear pool.", from_chat_id)
+            else:
+                send_reply("\n".join(pool_summary()), from_chat_id)
+        except Exception as e:
+            send_reply(f"Pool error: {e}", from_chat_id)
 
     elif cmd in ("targeted_backtest_range", "targetedbtrange", "backtest_targeted_range"):
         if len(args) < 2:
@@ -2780,7 +2801,9 @@ def handle_help(reply_chat_id: str):
         "/pair_backtest YYYY-MM-DD detail — include full alert breakdowns",
         "/repeat_backtest YYYY-MM-DD [detail] — backtest repeat call activity",
         "/targeted_backtest YYYY-MM-DD [detail] — backtest targeted strike/expiry stacking",
-        "/targeted_backtest_range YYYY-MM-DD YYYY-MM-DD [detail] — same, over a date range (.xlsx + factor lab)",
+        "/targeted_backtest_range YYYY-MM-DD YYYY-MM-DD [detail] — same, over a date range (max 31d, .xlsx + factor lab)",
+        "/factor_lab — single-factor A/B across ALL accumulated backtest months",
+        "/factor_pool [clear] — pool status, or wipe it to start over",
         "/swing - top 5 swing plays from full-day flow + chart story",
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",
         "/preset_backtest_range YYYY-MM-DD YYYY-MM-DD — month backtest to Excel (tab per date)",

@@ -34,6 +34,7 @@ Telegram: /factor_lab YYYY-MM-DD YYYY-MM-DD
 """
 import os
 import math
+import threading
 from datetime import datetime
 
 MIN_N = int(os.environ.get("FACTOR_LAB_MIN_N", "20"))
@@ -57,6 +58,147 @@ FACTOR_LABELS = {
 
 
 # ───────────────────── statistics ─────────────────────
+
+def _usable(alerts: list) -> list:
+    """Alerts with both pricing and recorded factors."""
+    return [a for a in alerts
+            if a.get("pricing") and a.get("factors") and not a.get("swing_dq")]
+
+
+POOL_KEY = "factor_lab_pool"
+POOL_MAX = int(os.environ.get("FACTOR_LAB_POOL_MAX", "3000"))
+
+# save_to_pool is read-modify-write against Supabase. Several range backtests
+# can run at once (each is its own thread), and without serialisation their
+# writes clobber each other — thread A and B both read N records, both write
+# N+their own, and whichever finishes last silently erases the other's month.
+_POOL_LOCK = threading.Lock()
+
+
+def _pool_record(a: dict) -> dict:
+    """Minimal record — only what the analysis needs, so the pool stays small."""
+    pr = a.get("pricing") or {}
+    return {
+        "k":   f"{a.get('date','')}_{a.get('ticker','')}_{a.get('strike','')}"
+               f"_{a.get('expiry','')}_{a.get('direction','')}",
+        "d":   a.get("date", ""),
+        "t":   a.get("ticker", ""),
+        "dir": a.get("direction", ""),
+        "f":   a.get("factors") or {},
+        "mg":  round(float(pr.get("max_gain_pct", 0)), 1),
+        "ex":  round(float(pr.get("expiry_pct", 0)), 1),
+        "sc":  a.get("swing_score") or 0,
+    }
+
+
+def save_to_pool(alerts: list) -> int:
+    """
+    Append this run's scored alerts to the persistent pool.
+
+    Bullflow caps a replay range at 31 days, so a statistically useful sample
+    can only be built by running several months and accumulating. Records are
+    deduped by date+contract, so re-running a month overwrites rather than
+    double-counts.
+
+    Returns the pool size after saving.
+    """
+    usable = _usable(alerts)
+    if not usable:
+        return 0
+    # Hold the lock across the WHOLE read-modify-write, not just the write —
+    # re-reading inside the lock is what makes concurrent runs safe.
+    with _POOL_LOCK:
+        try:
+            from storage import db_get, db_set
+            pool = db_get(POOL_KEY) or []
+            if not isinstance(pool, list):
+                pool = []
+            by_key = {r.get("k"): r for r in pool if isinstance(r, dict)}
+            for a in usable:
+                r = _pool_record(a)
+                by_key[r["k"]] = r
+            merged = sorted(by_key.values(), key=lambda r: r.get("d", ""))
+            if len(merged) > POOL_MAX:
+                merged = merged[-POOL_MAX:]      # keep the most recent
+            db_set(POOL_KEY, merged)
+            print(f"[FACTORLAB] pool now {len(merged)} alerts "
+                  f"(+{len(usable)} from this run)")
+            return len(merged)
+        except Exception as e:
+            print(f"[FACTORLAB] pool save error: {e}")
+            return 0
+
+
+def load_pool() -> list:
+    """Pooled records re-inflated into the shape analyze_factor expects."""
+    try:
+        from storage import db_get
+        pool = db_get(POOL_KEY) or []
+        if not isinstance(pool, list):
+            return []
+    except Exception as e:
+        print(f"[FACTORLAB] pool load error: {e}")
+        return []
+    out = []
+    for r in pool:
+        if not isinstance(r, dict) or not r.get("f"):
+            continue
+        out.append({
+            "date": r.get("d", ""), "time": "", "ticker": r.get("t", ""),
+            "direction": r.get("dir", ""), "factors": r.get("f", {}),
+            "pricing": {"max_gain_pct": r.get("mg", 0),
+                        "expiry_pct": r.get("ex", 0)},
+            "swing_dq": None, "swing_score": r.get("sc", 0),
+        })
+    return out
+
+
+def clear_pool() -> bool:
+    """Wipe the pool. Use when it was filled from runs with broken data
+    (e.g. dead Massive key -> every technical factor recorded as False)."""
+    with _POOL_LOCK:
+        try:
+            from storage import db_set
+            db_set(POOL_KEY, [])
+            print("[FACTORLAB] pool cleared")
+            return True
+        except Exception as e:
+            print(f"[FACTORLAB] pool clear error: {e}")
+            return False
+
+
+def pool_health() -> list:
+    """
+    Warn if the pool looks like it was built without technical data. If the
+    Massive key was dead during a run, every 30M/daily factor lands as False
+    and the analysis is worthless — that's silent unless it's checked.
+    """
+    pool = load_pool()
+    if not pool:
+        return []
+    tech = ["30m_trend_aligned", "daily_aligned", "room_2pct_plus", "rsi_favorable"]
+    n_tech_true = sum(1 for p in pool
+                      if any(p["factors"].get(t) for t in tech))
+    pct = n_tech_true / len(pool) * 100
+    if pct < 10:
+        return ["", f"⚠️ Only {pct:.0f}% of pooled alerts have ANY technical factor set.",
+                "   That usually means option/stock bar data was unavailable",
+                "   (dead Massive key) when these months were backtested.",
+                "   Fix the key, then /factor_pool clear and re-run the months."]
+    return []
+
+
+def pool_summary() -> list:
+    """One-line status of the accumulated pool."""
+    pool = load_pool()
+    if not pool:
+        return ["Factor pool is empty — run /targeted_backtest_range first."]
+    dates = sorted({p["date"] for p in pool if p.get("date")})
+    months = sorted({d[:7] for d in dates})
+    return ([f"📦 Factor pool: {len(pool)} alerts across {len(months)} month(s)",
+             f"   {dates[0]} → {dates[-1]}",
+             f"   months: {', '.join(months)}"] + pool_health())
+
 
 def _norm_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
@@ -86,12 +228,6 @@ def _two_proportion_test(s1: int, n1: int, s2: int, n2: int) -> dict:
 def _won(alert: dict) -> bool:
     pr = alert.get("pricing") or {}
     return float(pr.get("max_gain_pct", 0)) >= WIN_TARGET
-
-
-def _usable(alerts: list) -> list:
-    """Alerts with both pricing and recorded factors."""
-    return [a for a in alerts
-            if a.get("pricing") and a.get("factors") and not a.get("swing_dq")]
 
 
 # ───────────────────── analysis ─────────────────────
