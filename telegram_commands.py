@@ -1202,7 +1202,9 @@ def handle_command(text: str, from_chat_id: str):
                            "Runs each month back-to-back, saving to the factor "
                            "pool after each one.", from_chat_id)
             else:
-                err = start_backtest_months(months, BOT_TOKEN, from_chat_id, detail)
+                import os as _qos
+                _q_bot = _qos.environ.get("TELEGRAM_BOT_TOKEN", "")
+                err = start_backtest_months(months, _q_bot, from_chat_id, detail)
                 if err:
                     send_reply(f"❌ {err}", from_chat_id)
         except Exception as e:
