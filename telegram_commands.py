@@ -1176,6 +1176,38 @@ def handle_command(text: str, from_chat_id: str):
                 send_reply(f"Invalid date: {_tbt_date!r} — format: YYYY-MM-DD e.g. 2026-05-27",
                            from_chat_id)
 
+    elif cmd in ("targeted_backtest_months", "targetedbtmonths", "btmonths"):
+        # Queue whole months to run back-to-back in ONE worker.
+        # Accepts: /btmonths 2026-01 2026-06   (inclusive range)
+        #      or: /btmonths 2026-01 2026-03 2026-05   (explicit list)
+        try:
+            from targeted_strikes_backtest import start_backtest_months
+            import re as _re
+            toks = [a for a in args if _re.match(r'^\d{4}-\d{2}$', str(a).strip())]
+            detail = any(str(a).lower() == "detail" for a in args)
+            if len(toks) == 2:
+                # Treat two args as an inclusive span.
+                y1, m1 = int(toks[0][:4]), int(toks[0][5:7])
+                y2, m2 = int(toks[1][:4]), int(toks[1][5:7])
+                months, y, m = [], y1, m1
+                while (y, m) <= (y2, m2) and len(months) <= 12:
+                    months.append(f"{y:04d}-{m:02d}")
+                    m += 1
+                    if m > 12:
+                        m = 1; y += 1
+            else:
+                months = toks
+            if not months:
+                send_reply("Usage: /targeted_backtest_months 2026-01 2026-06\n"
+                           "Runs each month back-to-back, saving to the factor "
+                           "pool after each one.", from_chat_id)
+            else:
+                err = start_backtest_months(months, BOT_TOKEN, from_chat_id, detail)
+                if err:
+                    send_reply(f"❌ {err}", from_chat_id)
+        except Exception as e:
+            send_reply(f"Queue error: {e}", from_chat_id)
+
     elif cmd in ("factor_lab", "factorlab", "factors"):
         # Analyse everything accumulated so far. Bullflow caps a replay at
         # 31 days, so the pool is how multiple months get combined.
@@ -2802,6 +2834,7 @@ def handle_help(reply_chat_id: str):
         "/repeat_backtest YYYY-MM-DD [detail] — backtest repeat call activity",
         "/targeted_backtest YYYY-MM-DD [detail] — backtest targeted strike/expiry stacking",
         "/targeted_backtest_range YYYY-MM-DD YYYY-MM-DD [detail] — same, over a date range (max 31d, .xlsx + factor lab)",
+        "/targeted_backtest_months 2026-01 2026-06 — queue whole months, one at a time",
         "/factor_lab — single-factor A/B across ALL accumulated backtest months",
         "/factor_pool [clear] — pool status, or wipe it to start over",
         "/swing - top 5 swing plays from full-day flow + chart story",

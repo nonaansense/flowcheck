@@ -999,6 +999,91 @@ def start_backtest(date: str, bot_token: str, chat_id: str, detail: bool = False
     return True
 
 
+_QUEUE_RUNNING = False
+
+
+def _month_bounds(ym: str) -> tuple:
+    """'2026-01' -> ('2026-01-01', '2026-01-31'), clamped to today."""
+    y, m = int(ym[:4]), int(ym[5:7])
+    start = datetime(y, m, 1)
+    end = (datetime(y + (m == 12), (m % 12) + 1, 1) - timedelta(days=1))
+    today = datetime.now()
+    if end > today:
+        end = today
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def _run_months_thread(months: list, bot_token: str, chat_id: str, detail: bool):
+    """
+    Run each month to completion, one at a time, in ONE worker thread.
+
+    Sequential on purpose: concurrent ranges share the same Massive budget
+    (2 keys x 5/min) and the 10/min dark pool limit, so running them in
+    parallel is slower overall AND makes rate-limit failures more likely.
+    Each month saves to the factor pool as it finishes, so a crash or a
+    container restart only costs the month in flight — not the whole batch.
+    """
+    global _QUEUE_RUNNING
+    from sms import send_telegram
+    _QUEUE_RUNNING = True
+    done, failed = [], []
+    try:
+        send_telegram(
+            f"📋 Queued {len(months)} month(s): {', '.join(months)}\n"
+            f"Running one at a time — each saves to the factor pool as it "
+            f"finishes, so progress survives a restart.\n"
+            f"Expect roughly 1.5-2.5h per month.",
+            bot_token, chat_id)
+        for i, ym in enumerate(months, 1):
+            s, e = _month_bounds(ym)
+            print(f"[QUEUE] ({i}/{len(months)}) {ym}: {s} → {e}")
+            try:
+                _run_range_thread(s, e, bot_token, chat_id, detail)
+                done.append(ym)
+            except Exception as ex:
+                print(f"[QUEUE] {ym} failed: {ex}")
+                failed.append(ym)
+                send_telegram(f"⚠️ {ym} failed: {ex}\nContinuing with the rest.",
+                              bot_token, chat_id)
+        lines = [f"✅ Queue finished — {len(done)}/{len(months)} month(s) done"]
+        if failed:
+            lines.append(f"❌ Failed: {', '.join(failed)} (re-run these; "
+                         f"duplicates are deduped automatically)")
+        try:
+            from factor_lab import pool_summary
+            lines += [""] + pool_summary()
+            lines += ["", "Run /factor_lab to analyse everything pooled."]
+        except Exception:
+            pass
+        send_telegram("\n".join(lines), bot_token, chat_id)
+    finally:
+        _QUEUE_RUNNING = False
+
+
+def start_backtest_months(months: list, bot_token: str, chat_id: str,
+                          detail: bool = False) -> str:
+    """
+    Queue whole months to run back-to-back. `months` are 'YYYY-MM' strings.
+    Returns "" on success or an error message.
+    """
+    if _QUEUE_RUNNING:
+        return "A queue is already running — wait for it to finish."
+    clean = []
+    for m in months:
+        m = str(m).strip()
+        if not re.match(r'^\d{4}-\d{2}$', m):
+            return f"Bad month format: '{m}' — use YYYY-MM (e.g. 2026-01)"
+        clean.append(m)
+    if not clean:
+        return "No months given."
+    if len(clean) > 12:
+        return "Max 12 months per queue."
+    threading.Thread(target=_run_months_thread,
+                     args=(clean, bot_token, chat_id, detail),
+                     daemon=True, name="targeted_month_queue").start()
+    return ""
+
+
 def start_backtest_range(start_date: str, end_date: str, bot_token: str, chat_id: str, detail: bool = False) -> bool:
     """Validate date formats and launch a multi-day backtest in a background thread."""
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', start_date) or not re.match(r'^\d{4}-\d{2}-\d{2}$', end_date):
