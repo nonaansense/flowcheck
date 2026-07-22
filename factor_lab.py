@@ -549,14 +549,38 @@ def run_factor_lab(alerts: list) -> list:
         lines.append("   Nothing here is worth trading on yet.")
         lines.append("")
 
+    near = [r for r in results
+            if r.get("screened") and not r["holds"]
+            and r.get("out_diff") is not None and r.get("in_diff") is not None
+            and r["in_diff"] * r["out_diff"] > 0 and abs(r["out_diff"]) >= 5.0]
+    if near:
+        lines.append("🟡 CONSISTENT ACROSS BOTH HALVES, but not yet significant")
+        for r in near:
+            lines.append(f"  {r['label']}: {r['in_diff']:+.0f}pp in-sample, "
+                         f"{r['out_diff']:+.0f}pp out-of-sample "
+                         f"(p={r['out_p']:.3f}, need <{bonf:.4f})")
+        lines += ["   These are the ones to watch. Same direction and a",
+                  "   material effect in BOTH halves is what a real edge looks",
+                  "   like early — but it is also what noise looks like, so",
+                  "   more data is the only way to tell.", ""]
+
     lines.append("── everything else (informational only) ──")
     for r in weak[:8]:
         flag = []
         if r["underpowered"]:  flag.append("underpowered")
         if not r["screened"]:  flag.append(f"not significant in-sample (p={r['in_p']:.3f})"
                                            if r["in_p"] is not None else "no in-sample data")
-        elif not r["holds"]:   flag.append(f"FAILED out-of-sample (p={r['out_p']:.3f})"
-                                           if r["out_p"] is not None else "no out-of-sample data")
+        elif not r["holds"]:
+            # Show the out-of-sample EFFECT alongside the p. "+18pp, p=0.08"
+            # is an underpowered but consistent result; "+2pp, p=0.08" is
+            # nothing. Reporting only the p makes those look identical.
+            if r["out_p"] is not None and r["out_diff"] is not None:
+                consistent = r["in_diff"] * r["out_diff"] > 0 and abs(r["out_diff"]) >= 5
+                tag = "CONSISTENT but underpowered" if consistent else "FAILED"
+                flag.append(f"{tag} out-of-sample: {r['out_diff']:+.0f}pp, "
+                            f"p={r['out_p']:.3f}")
+            else:
+                flag.append("no out-of-sample data")
         # Show the IN-SAMPLE diff next to the in-sample p — pairing a
         # full-sample effect size with an in-sample p-value reads as a
         # contradiction (e.g. "+22pp, p=0.62") and invites bad conclusions.
