@@ -238,6 +238,174 @@ def pool_summary() -> list:
              f"   months: {', '.join(months)}"] + pool_health())
 
 
+def _min_detectable_effect(n1: int, n2: int, base_rate: float,
+                           alpha: float, power: float = 0.80) -> float:
+    """
+    Smallest difference in win rate (percentage points) this sample could
+    detect at the given alpha and power.
+
+    Uses the standard two-proportion approximation:
+        MDE ≈ (z_alpha/2 + z_beta) * sqrt(p(1-p) * (1/n1 + 1/n2))
+
+    This is the number that tells you whether "not significant" means "no
+    edge" or simply "not enough data". At n≈145 split 13 ways with a
+    Bonferroni correction, only very large effects are visible — so a null
+    result carries almost no information about small, realistic edges.
+    """
+    if n1 < 2 or n2 < 2:
+        return 100.0
+    z_a = {0.05: 1.960, 0.01: 2.576, 0.0038: 2.895,
+           0.005: 2.807, 0.001: 3.291}.get(round(alpha, 4), 2.9)
+    z_b = 0.842                                   # 80% power
+    p = min(max(base_rate, 0.05), 0.95)
+    se = math.sqrt(p * (1 - p) * (1 / n1 + 1 / n2))
+    return (z_a + z_b) * se * 100
+
+
+def _power_note(usable: list, in_s: list, n_tests: int) -> list:
+    """Explain what this sample size can and cannot resolve."""
+    n = len(usable)
+    wins = sum(1 for a in usable if _won(a))
+    base = wins / n if n else 0.35
+    # Typical split: roughly half the alerts carry a given factor.
+    half_in = max(len(in_s) // 2, 1)
+    mde_in = _min_detectable_effect(half_in, half_in, base, 0.05)
+    bonf = 0.05 / max(n_tests, 1)
+    mde_full = _min_detectable_effect(n // 2, n // 2, base, bonf)
+
+    # How many alerts would be needed to see a realistic 15pp edge?
+    need = n
+    while need < 5000:
+        if _min_detectable_effect(need // 2, need // 2, base, bonf) <= 15.0:
+            break
+        need += 25
+
+    lines = [
+        "",
+        "📐 WHAT THIS SAMPLE CAN RESOLVE",
+        f"   base win rate: {base*100:.0f}%  ({wins}/{n} hit +{WIN_TARGET:.0f}%)",
+        f"   in-sample screening can detect ≥{mde_in:.0f}pp effects",
+        f"   corrected full-sample can detect ≥{mde_full:.0f}pp effects",
+    ]
+    if need < 5000:
+        lines.append(f"   to detect a realistic 15pp edge you'd need ~{need} alerts")
+    else:
+        lines.append("   a 15pp edge is not reachable at any practical sample size here")
+    lines.append("   → 'not significant' at this n mostly means UNDERPOWERED,")
+    lines.append("     not 'no edge exists'.")
+    return lines
+
+
+def pool_stats() -> list:
+    """
+    Full performance report computed from ALREADY-STORED pool records.
+    No replay, no API calls — everything here comes from data collected
+    during previous backtest runs.
+
+    Covers win rates at several targets, outcome distribution, direction
+    split, month-by-month breakdown (the decay check), and score-vs-outcome
+    buckets.
+    """
+    pool = load_pool()
+    if not pool:
+        return ["Factor pool is empty — nothing to analyse."]
+
+    n = len(pool)
+    gains = [float(p["pricing"]["max_gain_pct"]) for p in pool]
+    exps  = [float(p["pricing"]["expiry_pct"])   for p in pool]
+
+    def med(v):
+        s = sorted(v); k = len(s)
+        return 0.0 if not s else (s[k // 2] if k % 2 else (s[k//2 - 1] + s[k//2]) / 2)
+
+    avg = lambda v: (sum(v) / len(v)) if v else 0.0
+    hit = lambda t: sum(1 for g in gains if g >= t)
+
+    dates = sorted({p["date"] for p in pool if p.get("date")})
+    lines = [
+        "📊 POOL PERFORMANCE (from stored data — no re-run)",
+        f"━━━ {n} alerts | {dates[0] if dates else '?'} → "
+        f"{dates[-1] if dates else '?'} ━━━",
+        "",
+        "🎯 WIN RATE BY TARGET (max gain reached at any point)",
+    ]
+    for t in (25, 50, 100, 200):
+        h = hit(t)
+        lines.append(f"   +{t}%: {h}/{n} ({h/n*100:.0f}%)")
+
+    win_exp = sum(1 for e in exps if e > 0)
+    lines += [
+        "",
+        "📈 OUTCOME DISTRIBUTION",
+        f"   avg max gain:  {avg(gains):+.0f}%   median {med(gains):+.0f}%",
+        f"   avg at expiry: {avg(exps):+.0f}%   median {med(exps):+.0f}%",
+        f"   green at expiry: {win_exp}/{n} ({win_exp/n*100:.0f}%)",
+    ]
+
+    # Direction split.
+    calls = [p for p in pool if p.get("direction") == "call"]
+    puts  = [p for p in pool if p.get("direction") == "put"]
+    if calls and puts:
+        cg = [p["pricing"]["max_gain_pct"] for p in calls]
+        pg = [p["pricing"]["max_gain_pct"] for p in puts]
+        cw = sum(1 for g in cg if g >= WIN_TARGET)
+        pw = sum(1 for g in pg if g >= WIN_TARGET)
+        lines += [
+            "",
+            "📞 BY DIRECTION",
+            f"   calls: {len(calls)} | {cw} hit +{WIN_TARGET:.0f}% "
+            f"({cw/len(calls)*100:.0f}%) | avg max {avg(cg):+.0f}%",
+            f"   puts:  {len(puts)} | {pw} hit +{WIN_TARGET:.0f}% "
+            f"({pw/len(puts)*100:.0f}%) | avg max {avg(pg):+.0f}%",
+        ]
+
+    # Month by month — this is the decay / regime check.
+    months = {}
+    for p in pool:
+        months.setdefault(p["date"][:7], []).append(p)
+    if len(months) > 1:
+        lines += ["", "📅 BY MONTH (is the edge stable or decaying?)"]
+        for m in sorted(months):
+            g = [x["pricing"]["max_gain_pct"] for x in months[m]]
+            w = sum(1 for x in g if x >= WIN_TARGET)
+            lines.append(f"   {m}: n={len(g):3d} | {w:2d} hit +{WIN_TARGET:.0f}% "
+                         f"({w/len(g)*100:3.0f}%) | avg max {avg(g):+5.0f}%")
+
+    # Score vs outcome — does the composite rating predict anything?
+    scored = [p for p in pool if p.get("swing_score")]
+    if len(scored) >= 8:
+        lines += ["", "🎯 SWING SCORE vs OUTCOME"]
+        for label, lo, hi in [("70-100", 70, 101), ("55-69", 55, 70),
+                              ("40-54", 40, 55), ("0-39", 0, 40)]:
+            grp = [p for p in scored if lo <= p["swing_score"] < hi]
+            if not grp:
+                continue
+            g = [x["pricing"]["max_gain_pct"] for x in grp]
+            w = sum(1 for x in g if x >= WIN_TARGET)
+            lines.append(f"   {label}: n={len(g):3d} | {w:2d} hit +{WIN_TARGET:.0f}% "
+                         f"({w/len(g)*100:3.0f}%) | avg max {avg(g):+5.0f}%")
+        lines.append("   (monotonic = the score works; flat = it doesn't)")
+
+    # Per-factor win rates, sorted — descriptive, no significance claimed.
+    lines += ["", "🔍 WIN RATE BY FACTOR (descriptive only — see /factor_lab)"]
+    rows = []
+    for f, label in FACTOR_LABELS.items():
+        wf = [p for p in pool if p["factors"].get(f)]
+        wo = [p for p in pool if not p["factors"].get(f)]
+        if len(wf) < 5 or len(wo) < 5:
+            continue
+        r1 = sum(1 for p in wf if p["pricing"]["max_gain_pct"] >= WIN_TARGET) / len(wf) * 100
+        r2 = sum(1 for p in wo if p["pricing"]["max_gain_pct"] >= WIN_TARGET) / len(wo) * 100
+        rows.append((r1 - r2, label, r1, r2, len(wf), len(wo)))
+    rows.sort(reverse=True)
+    for d, label, r1, r2, n1, n2 in rows[:10]:
+        lines.append(f"   {d:+5.0f}pp  {label}: {r1:.0f}% (n={n1}) vs {r2:.0f}% (n={n2})")
+
+    lines += ["", "⚠️ Descriptive only. Differences here are NOT tested for",
+              "   significance — run /factor_lab for that."]
+    return lines
+
+
 def _norm_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
@@ -365,6 +533,9 @@ def run_factor_lab(alerts: list) -> list:
         "",
     ]
 
+    lines += _power_note(usable, in_s, n_tests)
+    lines.append("")
+
     strong = [r for r in results if r["holds"] and not r["underpowered"]]
     weak   = [r for r in results if r not in strong]
 
@@ -393,6 +564,16 @@ def run_factor_lab(alerts: list) -> list:
         lines.append(f"  {r['label']}: {d:+.0f}pp in-sample "
                      f"(full {r['diff']:+.0f}pp, n={r['n_with']}/{r['n_without']}) "
                      f"— {', '.join(flag)}")
+
+    pos = sum(1 for r in results if r["diff"] > 0)
+    tot = len(results)
+    if tot >= 8:
+        lines += ["",
+                  f"🧭 Aggregate lean: {pos}/{tot} factors point positive.",
+                  "   Under pure noise this should be about half. A strong",
+                  "   skew hints at something real but is NOT evidence on its",
+                  "   own — the factors overlap heavily (a call in an uptrend",
+                  "   trips several at once), so they are not independent."]
 
     lines += [
         "",
