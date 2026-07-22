@@ -143,6 +143,60 @@ def _score_dte(dte: int) -> tuple:
     return 3.0, f"{dte}DTE"
 
 
+def _levels(bars: list, lookback: int = 3, cluster_pct: float = 0.4) -> tuple:
+    """
+    Support/resistance LEVELS, not raw pivots.
+
+    A 2-bar fractal on 30M data marks ~16 pivots per 10 sessions, so the
+    "nearest" one is almost always within a fraction of a percent — which
+    made any "room to the next level" test fire on ~5% of alerts and be
+    useless. Two corrections:
+
+      1. Wider lookback (3) so minor wiggles don't qualify.
+      2. Cluster pivots within cluster_pct of each other into one level and
+         count touches. A level touched once is noise; touched 2+ times it is
+         real structure.
+
+    Returns (resistance_levels, support_levels), each a list of
+    (price, touch_count) sorted by price.
+    """
+    raw_hi, raw_lo = [], []
+    for i in range(lookback, len(bars) - lookback):
+        w = bars[i - lookback:i + lookback + 1]
+        if bars[i]["high"] >= max(b["high"] for b in w):
+            raw_hi.append(bars[i]["high"])
+        if bars[i]["low"] <= min(b["low"] for b in w if b["low"] > 0):
+            raw_lo.append(bars[i]["low"])
+
+    def cluster(vals):
+        if not vals:
+            return []
+        vals = sorted(vals)
+        out, cur = [], [vals[0]]
+        for v in vals[1:]:
+            if abs(v - cur[-1]) / cur[-1] * 100 <= cluster_pct:
+                cur.append(v)
+            else:
+                out.append((sum(cur) / len(cur), len(cur)))
+                cur = [v]
+        out.append((sum(cur) / len(cur), len(cur)))
+        return out
+
+    return cluster(raw_hi), cluster(raw_lo)
+
+
+def _nearest_level(levels: list, px: float, above: bool, min_touches: int = 2):
+    """Nearest clustered level in the given direction with enough touches."""
+    cands = [(p, t) for p, t in levels
+             if (p > px if above else p < px) and t >= min_touches]
+    if not cands:
+        # Fall back to single-touch levels rather than claiming clear air.
+        cands = [(p, t) for p, t in levels if (p > px if above else p < px)]
+    if not cands:
+        return None, 0
+    return min(cands, key=lambda x: x[0]) if above else max(cands, key=lambda x: x[0])
+
+
 def _score_structure(bars: list, direction: str) -> tuple:
     """0-44 from 30M structure — the dominant component. Uses only bars
     available at alert time."""
@@ -164,11 +218,9 @@ def _score_structure(bars: list, direction: str) -> tuple:
         else:
             pts += 6.0; notes.append("30M trend mixed")
 
-    highs, lows = _pivots(bars)
-    res = [h for h in highs if h > px]
-    sup = [l for l in lows if l < px]
-    nr = min(res) if res else None
-    ns = max(sup) if sup else None
+    res_lv, sup_lv = _levels(bars)
+    nr, _ = _nearest_level(res_lv, px, above=True)
+    ns, _ = _nearest_level(sup_lv, px, above=False)
     obstacle = nr if bull else ns
     detail = {"px": round(px, 2), "resistance": round(nr, 2) if nr else None,
               "support": round(ns, 2) if ns else None}

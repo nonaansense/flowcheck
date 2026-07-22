@@ -386,8 +386,13 @@ def run_factor_lab(alerts: list) -> list:
                                            if r["in_p"] is not None else "no in-sample data")
         elif not r["holds"]:   flag.append(f"FAILED out-of-sample (p={r['out_p']:.3f})"
                                            if r["out_p"] is not None else "no out-of-sample data")
-        lines.append(f"  {r['label']}: {r['diff']:+.0f}pp "
-                     f"(n={r['n_with']}/{r['n_without']}) — {', '.join(flag)}")
+        # Show the IN-SAMPLE diff next to the in-sample p — pairing a
+        # full-sample effect size with an in-sample p-value reads as a
+        # contradiction (e.g. "+22pp, p=0.62") and invites bad conclusions.
+        d = r["in_diff"] if r.get("in_diff") is not None else r["diff"]
+        lines.append(f"  {r['label']}: {d:+.0f}pp in-sample "
+                     f"(full {r['diff']:+.0f}pp, n={r['n_with']}/{r['n_without']}) "
+                     f"— {', '.join(flag)}")
 
     lines += [
         "",
