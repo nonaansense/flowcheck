@@ -91,7 +91,8 @@ def _drop_reasons(alerts: list) -> list:
     return lines
 
 
-POOL_KEY = "factor_lab_pool"
+SETUP_KEY = "factor_lab_active_setup"
+LEGACY_POOL_KEY = "factor_lab_pool"      # the original, unnamespaced pool
 POOL_MAX = int(os.environ.get("FACTOR_LAB_POOL_MAX", "3000"))
 
 # save_to_pool is read-modify-write against Supabase. Several range backtests
@@ -99,6 +100,101 @@ POOL_MAX = int(os.environ.get("FACTOR_LAB_POOL_MAX", "3000"))
 # writes clobber each other — thread A and B both read N records, both write
 # N+their own, and whichever finishes last silently erases the other's month.
 _POOL_LOCK = threading.Lock()
+
+
+def get_setup() -> str:
+    """
+    Name of the setup currently being collected into.
+
+    Different detection configurations (threshold, consecutive vs spread,
+    cutoff) produce different alert populations. Pooling them together would
+    average unlike things and make every result meaningless, so each setup
+    gets its own pool.
+    """
+    try:
+        from storage import db_get
+        raw = db_get(SETUP_KEY)
+        if raw:
+            name = json.loads(raw) if isinstance(raw, str) and raw.startswith('"') else raw
+            return str(name).strip() or "default"
+    except Exception:
+        pass
+    return "default"
+
+
+def set_setup(name: str) -> list:
+    """Switch which pool new backtest data lands in. Creates it if new."""
+    name = "".join(c for c in str(name).strip().lower().replace(" ", "_")
+                   if c.isalnum() or c in "_-")[:32]
+    if not name:
+        return ["Setup name cannot be empty."]
+    prev = get_setup()
+    try:
+        from storage import db_set
+        db_set(SETUP_KEY, json.dumps(name))
+    except Exception as e:
+        return [f"Could not switch setup: {e}"]
+    n_new = len(load_pool(name))
+    n_prev = len(load_pool(prev))
+    return [
+        f"✅ Active setup: '{name}'",
+        f"   this pool has {n_new} alert(s)",
+        f"   previous setup '{prev}' still holds {n_prev} alert(s) — untouched",
+        "",
+        "New backtest runs now collect into this setup only.",
+        f"Switch back any time with /setup {prev}",
+    ]
+
+
+def _pool_key(setup: str = None) -> str:
+    """'default' maps to the original key so existing data is preserved."""
+    s = setup or get_setup()
+    return LEGACY_POOL_KEY if s == "default" else f"{LEGACY_POOL_KEY}_{s}"
+
+
+def list_setups() -> list:
+    """Every setup that has data, with counts and date ranges."""
+    known = {"default"}
+    try:
+        from storage import db_get
+        raw = db_get("factor_lab_setup_index")
+        if raw:
+            idx = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(idx, list):
+                known.update(idx)
+    except Exception:
+        pass
+    active = get_setup()
+    known.add(active)
+
+    lines = ["📚 SETUPS"]
+    for s in sorted(known):
+        pool = load_pool(s)
+        mark = " ← active" if s == active else ""
+        if pool:
+            dates = sorted({p["date"] for p in pool if p.get("date")})
+            lines.append(f"   {s}: {len(pool)} alerts "
+                         f"({dates[0]} → {dates[-1]}){mark}")
+        else:
+            lines.append(f"   {s}: empty{mark}")
+    lines += ["", "Switch with /setup <name>. Each pool is independent —",
+              "switching never deletes anything."]
+    return lines
+
+
+def _register_setup(name: str):
+    """Keep an index of setup names so list_setups can find them."""
+    try:
+        from storage import db_get, db_set
+        raw = db_get("factor_lab_setup_index")
+        idx = (json.loads(raw) if isinstance(raw, str) else raw) if raw else []
+        if not isinstance(idx, list):
+            idx = []
+        if name not in idx:
+            idx.append(name)
+            db_set("factor_lab_setup_index", json.dumps(idx))
+    except Exception:
+        pass
 
 
 def _pool_record(a: dict) -> dict:
@@ -139,7 +235,7 @@ def save_to_pool(alerts: list) -> int:
             # db_get returns a STRING — the repo convention is json dumps/loads.
             # Passing a raw list meant the isinstance check below failed on
             # every read and the pool silently reset to empty each run.
-            raw = db_get(POOL_KEY)
+            raw = db_get(_pool_key())
             pool = []
             if raw:
                 try:
@@ -156,8 +252,9 @@ def save_to_pool(alerts: list) -> int:
             merged = sorted(by_key.values(), key=lambda r: r.get("d", ""))
             if len(merged) > POOL_MAX:
                 merged = merged[-POOL_MAX:]      # keep the most recent
-            db_set(POOL_KEY, json.dumps(merged))
-            print(f"[FACTORLAB] pool now {len(merged)} alerts "
+            db_set(_pool_key(), json.dumps(merged))
+            _register_setup(get_setup())
+            print(f"[FACTORLAB] pool '{get_setup()}' now {len(merged)} alerts "
                   f"(+{len(usable)} from this run)")
             return len(merged)
         except Exception as e:
@@ -165,11 +262,11 @@ def save_to_pool(alerts: list) -> int:
             return 0
 
 
-def load_pool() -> list:
+def load_pool(setup: str = None) -> list:
     """Pooled records re-inflated into the shape analyze_factor expects."""
     try:
         from storage import db_get
-        raw = db_get(POOL_KEY)
+        raw = db_get(_pool_key(setup))
         if not raw:
             return []
         pool = json.loads(raw) if isinstance(raw, str) else raw
@@ -198,7 +295,7 @@ def clear_pool() -> bool:
     with _POOL_LOCK:
         try:
             from storage import db_set
-            db_set(POOL_KEY, json.dumps([]))
+            db_set(_pool_key(), json.dumps([]))
             print("[FACTORLAB] pool cleared")
             return True
         except Exception as e:
@@ -234,7 +331,7 @@ def pool_summary() -> list:
         return ["Factor pool is empty — run /targeted_backtest_range first."]
     dates = sorted({p["date"] for p in pool if p.get("date")})
     months = sorted({d[:7] for d in dates})
-    return ([f"📦 Factor pool: {len(pool)} alerts across {len(months)} month(s)",
+    return ([f"📦 Factor pool [{get_setup()}]: {len(pool)} alerts across {len(months)} month(s)",
              f"   {dates[0]} → {dates[-1]}",
              f"   months: {', '.join(months)}"] + pool_health())
 

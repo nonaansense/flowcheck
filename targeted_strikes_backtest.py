@@ -34,6 +34,49 @@ SKIP_EARLY       = os.environ.get("TARGETED_STRIKES_SKIP_EARLY", "false").lower(
 GATE_UNTIL_CUTOFF = os.environ.get("TARGETED_STRIKES_GATE_UNTIL_CUTOFF", "false").lower() in ("true","1","yes","on")
 
 
+# ── per-run config overrides ────────────────────────────────────────────
+# THRESHOLD / cutoff settings above are module constants read from the
+# environment at import. Changing them to test a variant would require a
+# redeploy AND would change LIVE alerting at the same time. These overrides
+# let a backtest run a different configuration in-process, leaving the live
+# stream untouched.
+_OVERRIDE: dict = {}
+
+
+def set_overrides(**kw):
+    """Set config for the current backtest run. Pass nothing to clear."""
+    global _OVERRIDE
+    _OVERRIDE = {k: v for k, v in kw.items() if v is not None}
+    if _OVERRIDE:
+        print(f"[TARGETED_BT] config override: {_OVERRIDE}")
+
+
+def _threshold() -> int:
+    return int(_OVERRIDE.get("threshold", THRESHOLD))
+
+
+def _gate_until_cutoff() -> bool:
+    return bool(_OVERRIDE.get("gate", GATE_UNTIL_CUTOFF))
+
+
+def _skip_early() -> bool:
+    return bool(_OVERRIDE.get("skip_early", SKIP_EARLY))
+
+
+def config_label() -> str:
+    """Short slug describing the active config — used to name the pool."""
+    t = _threshold()
+    parts = [f"t{t}"]
+    if _OVERRIDE.get("nocutoff"):
+        parts.append("nocutoff")
+    else:
+        if _gate_until_cutoff():
+            parts.append("gated")
+        if _skip_early():
+            parts.append("skipearly")
+    return "_".join(parts)
+
+
 def _early_cutoff():
     try:
         hh, mm = EARLY_CUTOFF_STR.split(":")
@@ -47,7 +90,8 @@ def _is_early_str(est_str: str) -> bool:
     try:
         hh_mm = est_str[11:16]
         hh, mm = int(hh_mm[:2]), int(hh_mm[3:5])
-        cutoff_hh, cutoff_mm = _early_cutoff()
+        cutoff_hh, cutoff_mm = (9, 30) if _OVERRIDE.get("nocutoff") \
+                               else _early_cutoff()
         return (hh, mm) < (cutoff_hh, cutoff_mm)
     except Exception:
         return False
@@ -573,7 +617,7 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
                     _r330[direction] += premium
                     _r330[f"{direction}_n"] += 1
 
-            if SKIP_EARLY and early:
+            if _skip_early() and early:
                 continue   # drop pre-cutoff fill entirely — not counted, not stored
 
             key = f"{ticker}_{direction}"   # streak is per ticker+direction
@@ -608,9 +652,9 @@ def _stream_one_day_once(url: str, date: str) -> tuple[list, int, int, dict]:
             # GATE_UNTIL_CUTOFF: hold the alert while the triggering fill is
             # pre-cutoff (early=True); don't advance last_alerted so a later
             # at/after-cutoff fill fires with the full accumulated count.
-            gated = GATE_UNTIL_CUTOFF and early
+            gated = (not _OVERRIDE.get("nocutoff")) and _gate_until_cutoff() and early
 
-            if count >= THRESHOLD and count > last_alerted and not gated:
+            if count >= _threshold() and count > last_alerted and not gated:
                 streak["last_alerted_count"] = count
                 _snap = dict(tkr_prem.get(ticker,
                              {"call": 0.0, "put": 0.0, "call_n": 0, "put_n": 0}))
@@ -704,7 +748,7 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
 
     summary = [
         f"🎯 Targeted Strikes Backtest: {date}",
-        f"━━━ {len(latest_per_key)} strikes crossed {THRESHOLD}x "
+        f"━━━ {len(latest_per_key)} strikes crossed {_threshold()}x "
         f"| {len(alerts_fired)} total alerts ({early_count} early-session) "
         f"| {targeted_events} events ━━━",
         "",
@@ -715,10 +759,10 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
         early_s = " ⏰EARLY" if a["early"] else ""
         fills   = a.get("fills", [])
         # time the run first crossed THRESHOLD = the THRESHOLD-th fill's time
-        cross_time = (fills[THRESHOLD - 1].get("time") or a["time"]) if len(fills) >= THRESHOLD else a["time"]
+        cross_time = (fills[_threshold() - 1].get("time") or a["time"]) if len(fills) >= _threshold() else a["time"]
         latest_time = a["time"]
-        if a["count"] > THRESHOLD:
-            time_str = f"crossed {THRESHOLD}x @ {cross_time}, latest @ {latest_time}"
+        if a["count"] > _threshold():
+            time_str = f"crossed {_threshold()}x @ {cross_time}, latest @ {latest_time}"
         else:
             time_str = f"@ {cross_time}"
         summary.append(
@@ -768,7 +812,7 @@ def _report_results(date: str, alerts_fired: list, event_count: int, targeted_ev
                 "ticker": a["ticker"], "strike": a["strike"], "expiry": a["expiry"],
                 "direction": a["direction"], "fills": a["fills"], "count": a["count"],
                 "total_prem": a["total_prem"], "is_addon": a["is_addon"],
-                "early": a["early"], "threshold": THRESHOLD,
+                "early": a["early"], "threshold": _threshold(),
             }
             send_telegram(build_targeted_strikes_alert(result), bot_token, chat_id)
 
@@ -788,7 +832,7 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
 
     from openpyxl.utils import get_column_letter
 
-    cols = ["Date", f"Crossed {THRESHOLD}x Time", "Fill Time", "Ticker", "Direction",
+    cols = ["Date", f"Crossed {_threshold()}x Time", "Fill Time", "Ticker", "Direction",
             "Strike", "Expiry", "Count", "Add-On", "Early Session", "Combined Premium",
             "Entry", "Min", "Max", "At Expiry", "Max Gain %", "Max DD %", "DD Low", "Give-Back %", "Give-Back Low", "Life Low % (vs entry)", "Expiry %",
             "Pricing Note",
@@ -802,7 +846,7 @@ def _build_range_workbook(all_alerts: list, start_date: str, end_date: str) -> s
 
     for a in sorted(all_alerts, key=lambda x: (x["date"], x["time"])):
         fills = a.get("fills", [])
-        cross_time = (fills[THRESHOLD - 1].get("time") or a["time"]) if len(fills) >= THRESHOLD else a["time"]
+        cross_time = (fills[_threshold() - 1].get("time") or a["time"]) if len(fills) >= _threshold() else a["time"]
         pr = a.get("pricing") or {}
         _ta = a.get("tkr_at_alert") or {}
         _t3 = a.get("tkr_at_330") or {}
@@ -916,7 +960,7 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
     top_tickers = sorted(by_ticker.items(), key=lambda x: -x[1])[:10]
     summary = [
         f"🎯 Targeted Strikes Range Backtest: {range_label}",
-        f"━━━ {len(latest_per_key)} distinct strikes crossed {THRESHOLD}x "
+        f"━━━ {len(latest_per_key)} distinct strikes crossed {_threshold()}x "
         f"| {len(all_alerts)} total alerts ({early_count} early-session) ━━━",
         "",
         "Top tickers: " + ", ".join(f"{t}({c})" for t, c in top_tickers),
@@ -927,9 +971,9 @@ def _run_range_thread(start_date: str, end_date: str, bot_token: str, chat_id: s
         otype  = "C" if a["direction"] == "call" else "P"
         early_s = " ⏰" if a["early"] else ""
         fills   = a.get("fills", [])
-        cross_time = (fills[THRESHOLD - 1].get("time") or a["time"]) if len(fills) >= THRESHOLD else a["time"]
-        if a["count"] > THRESHOLD:
-            time_str = f"{THRESHOLD}x@{cross_time} → {a['count']}x@{a['time']}"
+        cross_time = (fills[_threshold() - 1].get("time") or a["time"]) if len(fills) >= _threshold() else a["time"]
+        if a["count"] > _threshold():
+            time_str = f"{_threshold()}x@{cross_time} → {a['count']}x@{a['time']}"
         else:
             time_str = f"@{cross_time}"
         sc = ""
@@ -1028,6 +1072,19 @@ def _run_months_thread(months: list, bot_token: str, chat_id: str, detail: bool)
     _QUEUE_RUNNING = True
     done, failed = [], []
     try:
+        # A non-default config collects into its OWN pool, so variant results
+        # never get averaged in with the baseline.
+        if _OVERRIDE:
+            try:
+                from factor_lab import set_setup, get_setup
+                want = config_label()
+                if get_setup() != want:
+                    set_setup(want)
+                    send_telegram(f"📚 Collecting into setup '{want}' — "
+                                  f"your other pools are untouched.",
+                                  bot_token, chat_id)
+            except Exception as _se:
+                print(f"[QUEUE] setup switch failed: {_se}")
         send_telegram(
             f"📋 Queued {len(months)} month(s): {', '.join(months)}\n"
             f"Running one at a time — each saves to the factor pool as it "
@@ -1058,6 +1115,32 @@ def _run_months_thread(months: list, bot_token: str, chat_id: str, detail: bool)
         send_telegram("\n".join(lines), bot_token, chat_id)
     finally:
         _QUEUE_RUNNING = False
+
+
+def parse_config_args(args: list) -> dict:
+    """
+    Pull config tokens out of a command's args.
+
+      threshold=2 / t2   -> minimum consecutive fills
+      nocutoff           -> detect all day from 9:30, no gating, no early flag
+
+    Returns a dict suitable for set_overrides().
+    """
+    cfg = {}
+    for a in args:
+        a = str(a).strip().lower()
+        if a in ("nocutoff", "no_cutoff", "allday", "all_day"):
+            cfg["nocutoff"] = True
+            cfg["gate"] = False
+            cfg["skip_early"] = False
+        elif a.startswith("threshold="):
+            try:
+                cfg["threshold"] = max(2, int(a.split("=", 1)[1]))
+            except Exception:
+                pass
+        elif re.match(r'^t\d+$', a):
+            cfg["threshold"] = max(2, int(a[1:]))
+    return cfg
 
 
 def start_backtest_months(months: list, bot_token: str, chat_id: str,

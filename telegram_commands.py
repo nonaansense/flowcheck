@@ -1181,10 +1181,13 @@ def handle_command(text: str, from_chat_id: str):
         # Accepts: /btmonths 2026-01 2026-06   (inclusive range)
         #      or: /btmonths 2026-01 2026-03 2026-05   (explicit list)
         try:
-            from targeted_strikes_backtest import start_backtest_months
+            from targeted_strikes_backtest import (start_backtest_months,
+                                                   parse_config_args,
+                                                   set_overrides)
             import re as _re
             toks = [a for a in args if _re.match(r'^\d{4}-\d{2}$', str(a).strip())]
             detail = any(str(a).lower() == "detail" for a in args)
+            set_overrides(**parse_config_args(args))
             if len(toks) == 2:
                 # Treat two args as an inclusive span.
                 y1, m1 = int(toks[0][:4]), int(toks[0][5:7])
@@ -1209,6 +1212,16 @@ def handle_command(text: str, from_chat_id: str):
                     send_reply(f"❌ {err}", from_chat_id)
         except Exception as e:
             send_reply(f"Queue error: {e}", from_chat_id)
+
+    elif cmd in ("setup", "setups"):
+        try:
+            from factor_lab import set_setup, list_setups
+            if args:
+                send_reply("\n".join(set_setup(str(args[0]))), from_chat_id)
+            else:
+                send_reply("\n".join(list_setups()), from_chat_id)
+        except Exception as e:
+            send_reply(f"Setup error: {e}", from_chat_id)
 
     elif cmd in ("forward_register", "fwdregister", "register_hypothesis"):
         try:
@@ -2895,6 +2908,7 @@ def handle_help(reply_chat_id: str):
         "/pool_stats — win rates + performance from already-collected data (no re-run)",
         "/exit_sim [segment] — per-trade expectancy; add 'segment' to test filtered subsets",
         "/robustness [seg] — is a positive segment real, or 3 lucky trades? (both/all3/trend/rsi/score70)",
+        "/setups — list pools per setup; /setup <name> — switch which pool collects new runs",
         "/forward_register — lock in the hypothesis before live testing",
         "/forward_status — live results vs the registered expectation",
         "/forward_update — fetch outcomes for recorded forward trades",
