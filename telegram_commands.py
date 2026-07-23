@@ -1210,6 +1210,14 @@ def handle_command(text: str, from_chat_id: str):
         except Exception as e:
             send_reply(f"Queue error: {e}", from_chat_id)
 
+    elif cmd in ("robustness", "robust", "stress"):
+        try:
+            from factor_lab import robustness
+            seg = str(args[0]).strip() if args else ""
+            send_reply("\n".join(robustness(seg)), from_chat_id)
+        except Exception as e:
+            send_reply(f"Robustness error: {e}", from_chat_id)
+
     elif cmd in ("exit_sim", "exitsim", "expectancy"):
         try:
             from factor_lab import exit_simulation, exit_by_segment
@@ -2865,6 +2873,7 @@ def handle_help(reply_chat_id: str):
         "/factor_pool [clear] — pool status, or wipe it to start over",
         "/pool_stats — win rates + performance from already-collected data (no re-run)",
         "/exit_sim [segment] — per-trade expectancy; add 'segment' to test filtered subsets",
+        "/robustness [seg] — is a positive segment real, or 3 lucky trades? (both/all3/trend/rsi/score70)",
         "/selftest — validate the whole pipeline in seconds BEFORE running backtests",
         "/swing - top 5 swing plays from full-day flow + chart story",
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",

@@ -35,6 +35,7 @@ Telegram: /factor_lab YYYY-MM-DD YYYY-MM-DD
 import os
 import json
 import math
+import random
 import threading
 from datetime import datetime
 
@@ -403,6 +404,141 @@ def pool_stats() -> list:
 
     lines += ["", "⚠️ Descriptive only. Differences here are NOT tested for",
               "   significance — run /factor_lab for that."]
+    return lines
+
+
+def _expectancy(rows: list, target: float, cost: float) -> float:
+    if not rows:
+        return 0.0
+    tot = sum(target if r[0] >= target else r[1] for r in rows)
+    return tot / len(rows) - cost
+
+
+def robustness(segment: str = "") -> list:
+    """
+    Stress-test a segment's expectancy.
+
+    A +60%/trade result built on a handful of extreme winners is not an edge,
+    it is a small sample containing a few lottery tickets. Three checks:
+
+      CONCENTRATION — share of gross profit from the top 3 trades. Above
+                      ~60% means the result rests on almost nothing.
+      JACKKNIFE     — recompute after deleting the single best trade. If the
+                      sign flips, one trade was the strategy.
+      BOOTSTRAP     — resample with replacement 2000x for a 95% interval on
+                      expectancy. If that interval spans zero, the edge is
+                      not established at ANY confidence.
+
+    segment: "" = all, or one of "score55", "score70", "trend", "rsi",
+             "daily", "both", "all3".
+    """
+    pool = load_pool()
+    if not pool:
+        return ["Factor pool is empty."]
+    cost = float(os.environ.get("EXIT_SIM_COST_PCT", "6"))
+
+    sel = {
+        "": ("ALL alerts", lambda p: True),
+        "score55": ("score ≥ 55", lambda p: (p.get("swing_score") or 0) >= 55),
+        "score70": ("score ≥ 70", lambda p: (p.get("swing_score") or 0) >= 70),
+        "trend":   ("30M trend aligned", lambda p: p["factors"].get("30m_trend_aligned")),
+        "rsi":     ("RSI favorable", lambda p: p["factors"].get("rsi_favorable")),
+        "daily":   ("Daily aligned", lambda p: p["factors"].get("daily_aligned")),
+        "both":    ("trend AND RSI", lambda p: p["factors"].get("30m_trend_aligned")
+                    and p["factors"].get("rsi_favorable")),
+        "all3":    ("trend AND RSI AND daily",
+                    lambda p: p["factors"].get("30m_trend_aligned")
+                    and p["factors"].get("rsi_favorable")
+                    and p["factors"].get("daily_aligned")),
+    }
+    key = segment.lower().strip()
+    if key not in sel:
+        return [f"Unknown segment '{segment}'. Options: "
+                + ", ".join(k or "(blank=all)" for k in sel)]
+    label, pred = sel[key]
+    ps = [p for p in pool if pred(p)]
+    rows = [(float(p["pricing"]["max_gain_pct"]),
+             float(p["pricing"]["expiry_pct"])) for p in ps]
+    if len(rows) < 12:
+        return [f"{label}: only {len(rows)} alerts — too few to stress-test."]
+
+    # Pick the best target the same way exit_by_segment does, then also test
+    # a couple of lower ones — a rule that only works at the search boundary
+    # is fragile by construction.
+    targets = [50, 100, 150, 200, 300, 500, 800]
+    best_t = max(targets, key=lambda t: _expectancy(rows, t, cost))
+    n = len(rows)
+
+    lines = [
+        f"🔬 ROBUSTNESS — {label}",
+        f"━━━ n={n} | best rule +{best_t:.0f}% | {cost:.0f}% costs ━━━",
+        "",
+    ]
+
+    exp = _expectancy(rows, best_t, cost)
+    wins = [r for r in rows if r[0] >= best_t]
+    lines.append(f"expectancy: {exp:+.1f}%/trade from {len(wins)}/{n} winners "
+                 f"({len(wins)/n*100:.0f}%)")
+    if best_t == max(targets):
+        lines.append("⚠️ best target is the HIGHEST tested — the search ran to")
+        lines.append("   the boundary, so this is really 'hold for the tail'.")
+    lines.append("")
+
+    # ── concentration ──
+    contribs = sorted((best_t if r[0] >= best_t else r[1]) for r in rows)
+    gains = [c for c in contribs if c > 0]
+    top3 = sum(sorted(gains, reverse=True)[:3])
+    tot_gain = sum(gains) or 1.0
+    conc = top3 / tot_gain * 100
+    lines += ["📊 CONCENTRATION",
+              f"   top 3 trades = {conc:.0f}% of all gross profit"]
+    lines.append("   ⚠️ result rests on a handful of trades"
+                 if conc >= 60 else "   ✅ profit is reasonably spread")
+    lines.append("")
+
+    # ── jackknife ──
+    lines.append("🔪 DROP-THE-BEST-TRADE")
+    best_i = max(range(n), key=lambda i: (best_t if rows[i][0] >= best_t
+                                          else rows[i][1]))
+    jack = _expectancy([r for i, r in enumerate(rows) if i != best_i],
+                       best_t, cost)
+    lines.append(f"   without its single best trade: {jack:+.1f}%/trade")
+    if exp > 0 and jack <= 0:
+        lines.append("   ❌ SIGN FLIPS — one trade WAS the strategy")
+    elif exp > 0:
+        lines.append(f"   ✅ still positive (kept {jack/exp*100:.0f}% of the edge)")
+
+    # drop best 3
+    order = sorted(range(n), key=lambda i: -(best_t if rows[i][0] >= best_t
+                                             else rows[i][1]))
+    jack3 = _expectancy([r for i, r in enumerate(rows) if i not in order[:3]],
+                        best_t, cost)
+    lines.append(f"   without its best 3 trades:     {jack3:+.1f}%/trade")
+    if exp > 0 and jack3 <= 0:
+        lines.append("   ❌ three trades carry the entire result")
+    lines.append("")
+
+    # ── bootstrap ──
+    rnd = random.Random(12345)
+    boots = []
+    for _ in range(2000):
+        samp = [rows[rnd.randrange(n)] for _ in range(n)]
+        boots.append(_expectancy(samp, best_t, cost))
+    boots.sort()
+    lo, hi = boots[int(0.025 * len(boots))], boots[int(0.975 * len(boots))]
+    p_neg = sum(1 for b in boots if b <= 0) / len(boots) * 100
+    lines += ["🎲 BOOTSTRAP (2000 resamples)",
+              f"   95% interval: {lo:+.1f}% to {hi:+.1f}%",
+              f"   chance the true expectancy is ≤0: {p_neg:.0f}%"]
+    if lo <= 0:
+        lines += ["   ❌ interval spans zero — the edge is NOT established.",
+                  "      This sample cannot distinguish it from break-even."]
+    else:
+        lines.append("   ✅ interval stays positive")
+
+    lines += ["", "📌 Even a clean pass here is in-sample. The segment and the",
+              "   target were both chosen by looking at this data. Only",
+              "   forward results on unseen alerts settle it."]
     return lines
 
 
