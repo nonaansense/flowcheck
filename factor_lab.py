@@ -406,6 +406,106 @@ def pool_stats() -> list:
     return lines
 
 
+def _sim_one(rows: list, cost: float) -> dict:
+    """Best target and expectancy for one set of (max_gain, expiry) rows."""
+    n = len(rows)
+    if n < 12:
+        return {}
+    out = {"n": n, "best_t": None, "best_exp": -999.0, "best_hit": 0.0}
+    for t in (50, 100, 150, 200, 300, 500):
+        wins = [r for r in rows if r[0] >= t]
+        loss = [r for r in rows if r[0] < t]
+        if not wins or not loss:
+            continue
+        exp = (len(wins) * t + sum(l[1] for l in loss)) / n - cost
+        if exp > out["best_exp"]:
+            out.update(best_t=t, best_exp=exp, best_hit=len(wins) / n * 100)
+    hold = sum(r[1] for r in rows) / n - cost
+    out["hold"] = hold
+    if hold > out["best_exp"]:
+        out.update(best_t=None, best_exp=hold, best_hit=0.0)
+    return out
+
+
+def exit_by_segment() -> list:
+    """
+    Run the exit simulation on FILTERED subsets.
+
+    The whole-population result can be negative while a quality subset is
+    positive — that is the entire point of having factors. This answers the
+    actual trading question: "if I only took the good-looking alerts, would
+    that have made money?"
+
+    Segments are the score buckets and the factors that showed the largest
+    effects, plus their combination.
+    """
+    pool = load_pool()
+    if not pool:
+        return ["Factor pool is empty."]
+    cost = float(os.environ.get("EXIT_SIM_COST_PCT", "6"))
+    rows_of = lambda ps: [(float(p["pricing"]["max_gain_pct"]),
+                           float(p["pricing"]["expiry_pct"])) for p in ps]
+
+    segs = [("ALL alerts", pool)]
+    scored = [p for p in pool if p.get("swing_score")]
+    if scored:
+        segs += [("score ≥ 55", [p for p in scored if p["swing_score"] >= 55]),
+                 ("score ≥ 70", [p for p in scored if p["swing_score"] >= 70])]
+    for f in ("30m_trend_aligned", "rsi_favorable", "daily_aligned"):
+        segs.append((FACTOR_LABELS.get(f, f),
+                     [p for p in pool if p["factors"].get(f)]))
+    both = [p for p in pool if p["factors"].get("30m_trend_aligned")
+            and p["factors"].get("rsi_favorable")]
+    segs.append(("30M trend AND RSI", both))
+    allthree = [p for p in both if p["factors"].get("daily_aligned")]
+    segs.append(("trend AND RSI AND daily", allthree))
+
+    lines = [
+        "🎯 EXIT SIM BY SEGMENT",
+        f"━━━ does filtering turn it profitable? ({cost:.0f}% costs) ━━━",
+        "",
+        "segment                    │   n │ best rule │ exp/trade",
+        "───────────────────────────┼─────┼───────────┼──────────",
+    ]
+    positives = []
+    for label, ps in segs:
+        r = _sim_one(rows_of(ps), cost)
+        if not r:
+            lines.append(f"  {label[:25]:<25} │ {len(ps):3d} │ too few   │    —")
+            continue
+        rule = f"+{r['best_t']:.0f}%" if r["best_t"] else "hold"
+        mark = "✅" if r["best_exp"] > 0 else "  "
+        lines.append(f"  {label[:25]:<25} │ {r['n']:3d} │ {rule:>9} │ "
+                     f"{r['best_exp']:+7.1f}% {mark}")
+        if r["best_exp"] > 0:
+            positives.append((label, r))
+
+    lines.append("")
+    if positives:
+        lines.append("📌 POSITIVE SEGMENTS")
+        for label, r in positives:
+            rule = f"take profit at +{r['best_t']:.0f}%" if r["best_t"] else "hold to expiry"
+            lines.append(f"   {label}: {rule} → {r['best_exp']:+.1f}%/trade "
+                         f"(n={r['n']})")
+        lines += [
+            "",
+            "⚠️ THIS IS EXPLORATORY, NOT A RESULT.",
+            "   ~8 segments x 6 targets = ~48 combinations were searched, so",
+            "   the best-looking one is expected to look good by chance alone.",
+            "   Small n makes it worse. Do NOT size a position on this.",
+            "   Treat the best segment as ONE hypothesis and forward-test it",
+            "   on alerts that are not in this pool.",
+        ]
+    else:
+        lines += [
+            "📌 No segment produced positive expectancy.",
+            "   Filtering by the strongest factors did not overcome the cost",
+            "   and the payoff structure. That is a real finding: on this",
+            "   alert population, there is no profitable exit rule to find.",
+        ]
+    return lines
+
+
 def exit_simulation() -> list:
     """
     Convert peak-based stats into realistic per-trade expectancy.

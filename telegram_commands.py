@@ -1212,8 +1212,11 @@ def handle_command(text: str, from_chat_id: str):
 
     elif cmd in ("exit_sim", "exitsim", "expectancy"):
         try:
-            from factor_lab import exit_simulation
-            send_reply("\n".join(exit_simulation()), from_chat_id)
+            from factor_lab import exit_simulation, exit_by_segment
+            if args and str(args[0]).lower() in ("seg", "segment", "segments", "filter"):
+                send_reply("\n".join(exit_by_segment()), from_chat_id)
+            else:
+                send_reply("\n".join(exit_simulation()), from_chat_id)
         except Exception as e:
             send_reply(f"Exit sim error: {e}", from_chat_id)
 
@@ -2861,7 +2864,7 @@ def handle_help(reply_chat_id: str):
         "/factor_lab — single-factor A/B across ALL accumulated backtest months",
         "/factor_pool [clear] — pool status, or wipe it to start over",
         "/pool_stats — win rates + performance from already-collected data (no re-run)",
-        "/exit_sim — what a real take-profit rule would have returned per trade",
+        "/exit_sim [segment] — per-trade expectancy; add 'segment' to test filtered subsets",
         "/selftest — validate the whole pipeline in seconds BEFORE running backtests",
         "/swing - top 5 swing plays from full-day flow + chart story",
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",
