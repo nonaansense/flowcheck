@@ -406,6 +406,97 @@ def pool_stats() -> list:
     return lines
 
 
+def exit_simulation() -> list:
+    """
+    Convert peak-based stats into realistic per-trade expectancy.
+
+    Every "win rate" elsewhere in this module is measured at the PEAK — the
+    option touched +X% at some point. That is not achievable in real time:
+    you cannot know the high in advance. What is achievable is a resting
+    limit order at +X%, which fills if price ever trades through it.
+
+    So for each target T:
+        max_gain >= T  →  the limit filled, return = +T
+        max_gain <  T  →  never reached, you hold to expiry, return = expiry%
+
+    This needs no price path and no re-run — max_gain and expiry are already
+    stored for every pooled alert.
+
+    Also reports the BREAK-EVEN win rate: with capped upside and near-total
+    downside, a high hit rate can still lose money, and that is the single
+    most important number for a 0-5 DTE system.
+
+    Costs: options spreads are wide. EXIT_SIM_COST_PCT (default 6) is
+    deducted round-trip from every trade.
+    """
+    pool = load_pool()
+    if not pool:
+        return ["Factor pool is empty — nothing to simulate."]
+
+    cost = float(os.environ.get("EXIT_SIM_COST_PCT", "6"))
+    n = len(pool)
+    rows = [(float(p["pricing"]["max_gain_pct"]),
+             float(p["pricing"]["expiry_pct"])) for p in pool]
+
+    lines = [
+        "💰 EXIT RULE SIMULATION",
+        f"━━━ {n} alerts | limit-exit at target, else hold to expiry ━━━",
+        f"assumes {cost:.0f}% round-trip cost (spread + slippage)",
+        "",
+        "target │  hit% │ avg loser │ avg/trade │ break-even │ verdict",
+        "───────┼───────┼───────────┼───────────┼────────────┼─────────",
+    ]
+
+    best = None
+    for t in (25, 50, 100, 150, 200, 300):
+        wins = [r for r in rows if r[0] >= t]
+        loss = [r for r in rows if r[0] < t]
+        if not wins or not loss:
+            continue
+        avg_loss = sum(l[1] for l in loss) / len(loss)
+        # Net per-trade expectancy, cost applied to every trade.
+        exp = (len(wins) * t + sum(l[1] for l in loss)) / n - cost
+        hit = len(wins) / n * 100
+        # Break-even hit rate: w*T = (1-w)*|avg_loss|
+        al = abs(avg_loss)
+        be = (al / (t + al) * 100) if (t + al) > 0 else 100.0
+        verdict = "✅" if exp > 0 else "❌"
+        lines.append(f"  +{t:<4.0f} │ {hit:4.0f}% │ {avg_loss:+8.0f}% │ "
+                     f"{exp:+8.1f}% │ {be:9.0f}% │ {verdict}")
+        if best is None or exp > best[1]:
+            best = (t, exp, hit, be)
+
+    # Pure hold-to-expiry baseline.
+    hold = sum(r[1] for r in rows) / n - cost
+    lines.append(f"  hold  │     — │        — │ {hold:+8.1f}% │         — │ "
+                 f"{'✅' if hold > 0 else '❌'}")
+
+    lines += ["", "📌 READ THIS"]
+    if best and best[1] > 0:
+        t, exp, hit, be = best
+        lines += [
+            f"   Best rule: take profit at +{t:.0f}%.",
+            f"   Expectancy {exp:+.1f}% per trade — hit rate {hit:.0f}% vs "
+            f"{be:.0f}% needed.",
+            "   Positive, but this target was chosen by looking at these same",
+            "   trades. Treat it as a hypothesis to forward-test, not a result.",
+        ]
+    else:
+        lines += [
+            "   No target produces positive expectancy on this data.",
+            "   That is the gap between a peak-based win rate and real P&L:",
+            "   upside is capped at the target while losers decay toward -100%,",
+            "   so a 56% touch-rate can still lose money.",
+        ]
+    lines += [
+        "",
+        "⚠️ Assumes the limit fills whenever price trades through it, and",
+        "   models no stop-loss (the pool stores outcomes, not price paths).",
+        "   A stop would cut the losers and change these numbers materially.",
+    ]
+    return lines
+
+
 def _norm_cdf(z: float) -> float:
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
