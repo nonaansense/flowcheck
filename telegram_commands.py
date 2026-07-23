@@ -1210,6 +1210,27 @@ def handle_command(text: str, from_chat_id: str):
         except Exception as e:
             send_reply(f"Queue error: {e}", from_chat_id)
 
+    elif cmd in ("forward_register", "fwdregister", "register_hypothesis"):
+        try:
+            from forward_test import register
+            send_reply("\n".join(register()), from_chat_id)
+        except Exception as e:
+            send_reply(f"Register error: {e}", from_chat_id)
+
+    elif cmd in ("forward_status", "fwdstatus", "forward"):
+        try:
+            from forward_test import status
+            send_reply("\n".join(status()), from_chat_id)
+        except Exception as e:
+            send_reply(f"Forward status error: {e}", from_chat_id)
+
+    elif cmd in ("forward_update", "fwdupdate"):
+        try:
+            from forward_test import update_outcomes
+            send_reply("\n".join(update_outcomes()), from_chat_id)
+        except Exception as e:
+            send_reply(f"Forward update error: {e}", from_chat_id)
+
     elif cmd in ("robustness", "robust", "stress"):
         try:
             from factor_lab import robustness
@@ -2874,6 +2895,9 @@ def handle_help(reply_chat_id: str):
         "/pool_stats — win rates + performance from already-collected data (no re-run)",
         "/exit_sim [segment] — per-trade expectancy; add 'segment' to test filtered subsets",
         "/robustness [seg] — is a positive segment real, or 3 lucky trades? (both/all3/trend/rsi/score70)",
+        "/forward_register — lock in the hypothesis before live testing",
+        "/forward_status — live results vs the registered expectation",
+        "/forward_update — fetch outcomes for recorded forward trades",
         "/selftest — validate the whole pipeline in seconds BEFORE running backtests",
         "/swing - top 5 swing plays from full-day flow + chart story",
         "/preset_backtest YYYY-MM-DD [detail] — backtest Bullflow preset alerts",

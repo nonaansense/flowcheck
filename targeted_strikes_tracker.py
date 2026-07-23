@@ -376,6 +376,14 @@ def build_targeted_strikes_alert(result: dict) -> str:
 
     lines += _inline_rating(result)
 
+    # Forward test: record this alert if it matches the pre-registered
+    # criteria. Silent no-op when nothing is registered.
+    try:
+        from forward_test import record_if_matches
+        record_if_matches(result)
+    except Exception as _fte:
+        print(f"[FWDTEST] hook error: {_fte}")
+
     lines += [
         "",
         f"📈 https://www.tradingview.com/chart/?symbol={ticker}",
